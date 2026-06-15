@@ -17,6 +17,11 @@
  *
  * Read top to bottom to see the whole process. 5 and 6 are kept adjacent on
  * purpose: the cheap-foolable vs must-not-be-fooled contrast is the design.
+ *
+ * WIRED in index.ts: 1 planDrafting, 2 planInjection, 3 reminder, 6 evidenceJudge.
+ * NOT YET WIRED: 4 continuation and 5 loopJudge define the autonomous re-prompt loop, which is
+ * intentionally not built in v1 (an until-done-style loop was judged too complex). They stay here so
+ * the full intended flow is reviewable; wire them if/when the loop is added.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────

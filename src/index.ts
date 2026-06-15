@@ -44,6 +44,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	let state: PlanState = { isPlanMode: false, objective: null, judgeModel: null };
 	// Reminder cadence: fire when an active goal exists but plan.md was not touched since last turn.
 	let lastInjectedPlan = "";
+	// newSession is only on the command-handler context; agent_end's ctx lacks it. Save it from /plan.
+	let savedCmdCtx: ExtensionCommandContext | null = null;
 
 	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, "plan.md");
 	const readPlan = (ctx: ExtensionContext): string => (existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
@@ -87,6 +89,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("plan", {
 		description: "Plan mode: set up goals (with evidence) in plan.md, then work them. /plan <objective>",
 		handler: async (args, ctx) => {
+			savedCmdCtx = ctx; // ctx here is an ExtensionCommandContext (has newSession); keep it for later
 			const arg = args.trim();
 			if (arg === "clear") {
 				await clearPlan(ctx);
@@ -144,7 +147,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	// --- review loop (after the agent drafts the plan) --------------------------------------------
 
-	async function reviewLoop(ctx: ExtensionContext, cmdCtx: ExtensionCommandContext): Promise<void> {
+	async function reviewLoop(ctx: ExtensionContext): Promise<void> {
 		while (true) {
 			const doc = parse(readPlan(ctx));
 			const choice = await ctx.ui.select(`Plan: ${doc.goals.length} goal(s). What next?`, [
@@ -158,7 +161,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Left plan mode. plan.md kept.", "info");
 				return;
 			}
-			if (choice.startsWith("Ready")) return startExecution(ctx, cmdCtx);
+			if (choice.startsWith("Ready")) return startExecution(ctx);
 			if (choice.startsWith("Edit")) {
 				const changes = await ctx.ui.editor("What should change about the plan?", "");
 				if (changes?.trim()) {
@@ -180,10 +183,10 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		updateWidget(ctx);
 	}
 
-	async function startExecution(ctx: ExtensionContext, cmdCtx: ExtensionCommandContext): Promise<void> {
-		// Offer a clean execution context (D13): some runs want the fresh handoff, some want to keep it.
+	async function startExecution(ctx: ExtensionContext): Promise<void> {
+		// Offer a clean execution context (D13). newSession lives only on the saved command context.
 		let fresh = false;
-		if (ctx.hasUI) {
+		if (ctx.hasUI && savedCmdCtx) {
 			const choice = await ctx.ui.select("Start working the plan in...", [
 				"This context (keep history)",
 				"A fresh, compacted context",
@@ -194,8 +197,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const doc = parse(readPlan(ctx));
 		if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
 
-		if (fresh) {
-			const result = await cmdCtx.newSession({ parentSession: ctx.sessionManager.getSessionFile() });
+		if (fresh && savedCmdCtx) {
+			const result = await savedCmdCtx.newSession({ parentSession: ctx.sessionManager.getSessionFile() });
 			if (result.cancelled) {
 				ctx.ui.notify("Execution cancelled.", "warning");
 				return;
@@ -269,7 +272,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("No goals found in plan.md yet — ask the agent to draft them.", "warning");
 			return;
 		}
-		await reviewLoop(ctx, ctx as ExtensionCommandContext);
+		await reviewLoop(ctx);
 	});
 
 	// Keep only the freshest injected plan summary; strip stale ones so history does not bloat and
