@@ -66,9 +66,8 @@ failure_modes:
 ```
 
 - A goal is a `## Goal:` header with an `<!-- id -->`, a `status:`
-  (`open` | `active` | `done` | `cancelled`), a falsifiable `done_when:` (what you expect, and the
-  symptom if it is NOT met), an optional `verify:` shell command, a `failure_modes:` pre-mortem
-  list, and `- [ ]` subtasks.
+  (`open` | `active` | `done` | `cancelled`), one falsifiable `done_when:`, an optional `verify:`
+  shell command, an optional short `failure_modes:` pre-mortem list, and `- [ ]` subtasks.
 - `done_when` names the evidence that distinguishes real success from a subtle failure. `verify`,
   when present, is the deterministic first stage of the sign-off check.
 - The agent ticks subtasks, appends to `## Log`, and sets `status` as it works. Multiple goals may

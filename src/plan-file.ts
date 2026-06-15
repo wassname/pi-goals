@@ -15,7 +15,7 @@
  *   ## Goal: <subject>
  *   <!-- id: <slug> -->
  *   status: open | active | done | cancelled
- *   done_when: <falsifiable check; plus the symptom if NOT met>
+ *   done_when: <one falsifiable check>
  *   verify: <shell command, optional>
  *   failure_modes:
  *     - <pre-mortem item>

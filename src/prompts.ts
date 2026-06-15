@@ -35,30 +35,34 @@
  * ──────────────────────────────────────────────────────────────────────── */
 export const planDrafting = `\
 You are in plan mode. Explore the repository read-only, then draft a plan into plan.md.
-Do not write or run code in this phase. Produce goals the human will review and approve.
+Do not write or run code in this phase. Produce a plan the human will review and approve.
+
+Right-size the plan — don't force structure that isn't there:
+- Default to ONE goal. Add another only when it's a genuinely separate checkpoint you'd want
+  signed off on its own (its own done_when that can pass or fail independently). A long list of
+  near-identical goals should be one goal with subtasks. Most objectives are 1-2 goals.
+- Subtasks are the steps inside a goal. Add them when a goal has 3+ distinct steps; skip them for
+  a single-action goal. Don't pad with trivial steps.
+- Don't invent phases to look thorough. When in doubt, merge.
 
 Write each goal in this shape:
 
 ## Goal: <one short imperative line>
 status: open
-done_when: <a falsifiable check, plus the symptom you'd see if it's NOT met>
-verify: <a shell command that exits 0 only when the goal is met — include this whenever
-         success is expressible as tests/lint/build/a threshold; omit it otherwise>
+done_when: <one falsifiable check — what is true on disk when this is done>
+verify: <optional shell command that exits 0 only when done_when holds; omit if not testable>
 failure_modes:
-  - <a concrete way this could look done but isn't>
-  - <another>
-  - <if verify exists: "verify passes on a trivial or gamed test">
-- [ ] <first subtask>
-- [ ] <next subtask>
+  - <a sneaky way this could look done but isn't — terse, optional>
+- [ ] <subtask>
+- [ ] <subtask>
 
-Rules for a good plan:
-- Keep goals small enough that done_when is checkable in one sitting.
-- done_when must be falsifiable. "Works well" is not a criterion; "p95 < 50ms on bench-X,
-  else timeouts in load-test.log" is.
-- failure_modes are a pre-mortem: the cheap, specific ways a later "done" could be wrong.
-  This is the highest-value part — it shapes what evidence you'll collect.
-- Prefer a verify command. A green deterministic check is worth more than a paragraph of
-  description, and it's the first thing checked at sign-off.
+Keep it lean:
+- done_when is ONE concrete, checkable condition — not a paragraph, no "if wrong" clause.
+  The symptom of failure goes in failure_modes, not here.
+- failure_modes: 0-2 terse items, only the non-obvious ways a "done" could be wrong (a
+  pre-mortem). If you add a verify command, one mode can be "verify passes on a gamed file".
+- subtasks: a short checklist of the real steps; omit them if the goal is a single action.
+- Prefer a verify command when success is a test/build/threshold — a green check beats prose.
 
 When the plan is drafted, present it and stop for review. Do not begin execution.`;
 
