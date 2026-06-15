@@ -99,16 +99,22 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				setJudge(arg.slice("judge".length).trim(), ctx);
 				return;
 			}
-			if (!arg) {
-				showPlan(ctx);
-				return;
+			// Bare `/plan` enters plan mode by prompting for the objective (the common expectation).
+			// If the user cancels with no objective, fall back to showing the current plan.
+			let objective = arg;
+			if (!objective) {
+				objective = (ctx.hasUI ? await ctx.ui.input("Plan mode — what's the objective?", "Describe what you want to plan") : undefined)?.trim() ?? "";
+				if (!objective) {
+					showPlan(ctx);
+					return;
+				}
 			}
 
-			state = { ...state, isPlanMode: true, objective: arg };
+			state = { ...state, isPlanMode: true, objective };
 			persist();
 			updateWidget(ctx);
 			pi.sendUserMessage(
-				`Enter plan mode for this objective: ${arg}\n\nExplore read-only, then write the plan to ${planPath(ctx)}.`,
+				`Enter plan mode for this objective: ${objective}\n\nExplore read-only, then write the plan to ${planPath(ctx)}.`,
 				{ deliverAs: "followUp" },
 			);
 		},
@@ -165,7 +171,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			if (choice.startsWith("Edit")) {
 				const changes = await ctx.ui.editor("What should change about the plan?", "");
 				if (changes?.trim()) {
-					pi.sendUserMessage(`Revise the plan at ${planPath(ctx)} with these changes, same format:\n\n${changes.trim()}`);
+					pi.sendUserMessage(`Revise the plan at ${planPath(ctx)} with these changes, same format:\n\n${changes.trim()}`, { deliverAs: "followUp" });
 					return; // agent_end re-opens the review loop
 				}
 				continue;
@@ -193,19 +199,29 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			]);
 			fresh = choice?.startsWith("A fresh") ?? false;
 		}
-		exitPlanMode(ctx);
 		const doc = parse(readPlan(ctx));
+		const planFile = planPath(ctx);
+		const parentSession = ctx.sessionManager.getSessionFile();
+		exitPlanMode(ctx);
 		if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
 
 		if (fresh && savedCmdCtx) {
-			const result = await savedCmdCtx.newSession({ parentSession: ctx.sessionManager.getSessionFile() });
+			const result = await savedCmdCtx.newSession({
+				parentSession,
+				withSession: async () => {
+					pi.sendUserMessage(
+						`Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`,
+						{ deliverAs: "followUp" },
+					);
+				},
+			});
 			if (result.cancelled) {
-				ctx.ui.notify("Execution cancelled.", "warning");
 				return;
 			}
+			return;
 		}
 		pi.sendUserMessage(
-			`Work the plan in ${planPath(ctx)}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`,
+			`Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`,
 			{ deliverAs: "followUp" },
 		);
 	}
