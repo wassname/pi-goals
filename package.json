@@ -1,0 +1,47 @@
+{
+  "name": "@wassname2/pi-plan",
+  "version": "0.0.1",
+  "description": "One plan.md: set goals via plan mode, work them, sign off only when a read-only check passes. Successor to pi-lgtm.",
+  "author": "wassname",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wassname/pi-plan.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "plan",
+    "goal",
+    "proof",
+    "uat",
+    "evidence",
+    "judge"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.0",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "latest"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/ test/",
+    "lint:fix": "biome check --fix src/ test/"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "@biomejs/biome": "^2.4.8",
+    "vitest": "^4.0.18"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
