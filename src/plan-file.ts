@@ -3,23 +3,29 @@
  *
  * Pure module, no pi deps, so it unit-tests without a runtime. The file is the canonical store and
  * the agent edits it with its normal Edit tool (create goals, tick subtasks, append log), guided by
- * the format in prompts.tsx and the reminder -- the form guides, it does not gate (spec D3). So this
+ * the format in prompts.ts and the reminder -- the form guides, it does not gate (spec D3). So this
  * module does NOT render or create goals; the format's single source of truth is the planDrafting
  * prompt. The only programmatic writers are setGoalStatus + appendLog, used by CompleteGoal to
  * record an accepted sign-off; both touch one line so the git diff stays readable.
  *
- * Format (spec §4):
+ * A goal's state lives in a checkbox on its header (single source of truth, renders natively):
+ *   [ ] open   [/] active (in progress)   [x] done   [-] cancelled
+ * Only CompleteGoal writes [x]; the agent sets [/] when it starts a goal.
+ *
+ * Format:
  *
  *   # Plan: <objective>
  *
- *   ## Goal: <subject>
+ *   ## Goal: [ ] <subject>
  *   <!-- id: <slug> -->
- *   status: open | active | done | cancelled
  *   done_when: <one falsifiable check>
  *   verify: <shell command, optional>
+ *   - [ ] <subtask>
+ *
  *   failure_modes:
  *     - <pre-mortem item>
- *   - [ ] <subtask>
+ *   evidence:
+ *     - <proof the done_when is met; filled at completion, read by CompleteGoal>
  *
  *   ## Log
  *   - <verbatim append-only line>
@@ -38,7 +44,10 @@ export interface Goal {
 	status: GoalStatus;
 	done_when: string;
 	verify?: string;
+	/** Pre-mortem: ways a "done" could be wrong. Written at planning. */
 	failure_modes: string[];
+	/** Proof the done_when is met, pointing at durable artifacts. Written at completion; read by CompleteGoal. */
+	evidence: string[];
 	subtasks: Subtask[];
 }
 
@@ -49,11 +58,16 @@ export interface PlanDoc {
 	log: string[];
 }
 
-const GOAL_HEADER = /^##\s+Goal:\s*(.*)$/;
+// Goal header carries the state checkbox: `## Goal: [x] subject`. The checkbox is optional so a
+// header written without one parses as open (group 1 undefined -> " ").
+const GOAL_HEADER = /^##\s+Goal:\s*(?:\[([ xX/-])\]\s+)?(.*)$/;
 const ANY_HEADER = /^#{1,6}\s/;
 const LOG_HEADER = /^##\s+Log\s*$/i;
 const ID_COMMENT = /^<!--\s*id:\s*(.+?)\s*-->$/;
 const CHECKBOX = /^- \[([ xX])\]\s+(.*)$/;
+
+const CHAR_TO_STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "done", "-": "cancelled" };
+const STATUS_TO_CHAR: Record<GoalStatus, string> = { open: " ", active: "/", done: "x", cancelled: "-" };
 
 export function parse(text: string): PlanDoc {
 	const lines = text.split("\n");
@@ -62,13 +76,14 @@ export function parse(text: string): PlanDoc {
 	const log: string[] = [];
 
 	let cur: Goal | null = null;
-	let inFailureModes = false;
+	// While inside a `failure_modes:`/`evidence:` block, points at the list the "- " items append to.
+	let curList: string[] | null = null;
 	let inLog = false;
 
 	const flush = () => {
 		if (cur) goals.push(cur);
 		cur = null;
-		inFailureModes = false;
+		curList = null;
 	};
 
 	for (const line of lines) {
@@ -82,7 +97,8 @@ export function parse(text: string): PlanDoc {
 		if (goalMatch) {
 			flush();
 			inLog = false;
-			cur = { id: "", subject: goalMatch[1].trim(), status: "open", done_when: "", failure_modes: [], subtasks: [] };
+			const status = CHAR_TO_STATUS[(goalMatch[1] ?? " ").toLowerCase()] ?? "open";
+			cur = { id: "", subject: goalMatch[2].trim(), status, done_when: "", failure_modes: [], evidence: [], subtasks: [] };
 			continue;
 		}
 
@@ -112,32 +128,32 @@ export function parse(text: string): PlanDoc {
 			continue;
 		}
 
-		// A checkbox (column 0) is a subtask; checked first so it is never read as a failure mode.
+		// A checkbox (column 0) is a subtask; checked first so it is never read as a list item.
 		const checkbox = CHECKBOX.exec(line);
 		if (checkbox) {
-			inFailureModes = false;
+			curList = null;
 			cur.subtasks.push({ done: checkbox[1].toLowerCase() === "x", text: checkbox[2].trim() });
 			continue;
 		}
 
-		const kv = /^(status|done_when|verify|failure_modes)\s*:\s*(.*)$/.exec(line);
+		const kv = /^(done_when|verify|failure_modes|evidence)\s*:\s*(.*)$/.exec(line);
 		if (kv) {
 			const [, key, value] = kv;
-			if (key === "status") cur.status = value.trim() as GoalStatus;
-			else if (key === "done_when") cur.done_when = value.trim();
+			if (key === "done_when") cur.done_when = value.trim();
 			else if (key === "verify") cur.verify = value.trim() || undefined;
-			else if (key === "failure_modes") inFailureModes = true;
+			// failure_modes/evidence open a "- " block; done_when/verify close any open one.
+			curList = key === "failure_modes" ? cur.failure_modes : key === "evidence" ? cur.evidence : null;
 			continue;
 		}
 
-		// Indented "- " items under failure_modes: (a column-0 checkbox already returned above).
-		if (inFailureModes) {
-			const fm = /^\s*-\s+(.*)$/.exec(line);
-			if (fm) {
-				cur.failure_modes.push(fm[1].trim());
+		// Indented "- " items under failure_modes:/evidence: (a column-0 checkbox already returned above).
+		if (curList) {
+			const item = /^\s*-\s+(.*)$/.exec(line);
+			if (item) {
+				curList.push(item[1].trim());
 				continue;
 			}
-			if (line.trim() !== "") inFailureModes = false;
+			if (line.trim() !== "") curList = null;
 		}
 	}
 	flush();
@@ -159,20 +175,21 @@ export function counts(doc: PlanDoc): { done: number; open: number; active: numb
 	return c;
 }
 
-/** Flip a goal's `status:` line in place (the one write CompleteGoal needs). */
+/** Flip a goal's header checkbox in place (the one write CompleteGoal needs). Normalizes a header that
+ *  lacks a checkbox by inserting one. */
 export function setGoalStatus(text: string, id: string, status: GoalStatus): string {
 	const lines = text.split("\n");
-	let i = lines.findIndex((l) => ID_COMMENT.test(l.trim()) && ID_COMMENT.exec(l.trim())?.[1] === id);
-	if (i === -1) throw new Error(`Goal #${id} not found`);
-	for (; i < lines.length; i++) {
-		if (i > 0 && ANY_HEADER.test(lines[i]) && !GOAL_HEADER.test(lines[i]) && !LOG_HEADER.test(lines[i])) break;
-		const kv = /^(status\s*:\s*)(.*)$/.exec(lines[i]);
-		if (kv) {
-			lines[i] = `${kv[1]}${status}`;
+	const idIdx = lines.findIndex((l) => ID_COMMENT.exec(l.trim())?.[1] === id);
+	if (idIdx === -1) throw new Error(`Goal #${id} not found`);
+	// The header sits just above the id comment; scan upward for it.
+	for (let i = idIdx; i >= 0; i--) {
+		const m = GOAL_HEADER.exec(lines[i]);
+		if (m) {
+			lines[i] = `## Goal: [${STATUS_TO_CHAR[status]}] ${m[2].trim()}`;
 			return lines.join("\n");
 		}
 	}
-	throw new Error(`Goal #${id} has no status: line`);
+	throw new Error(`Goal #${id} has no ## Goal: header`);
 }
 
 /**
@@ -184,7 +201,7 @@ export type SignOff =
 	| { kind: "rejected"; missing: string }
 	| { kind: "accepted" };
 
-/** Apply a sign-off outcome to plan.md text: accept flips status + logs; reject only logs. Pure. */
+/** Apply a sign-off outcome to plan.md text: accept flips the header checkbox to [x] + logs; reject only logs. Pure. */
 export function recordSignOff(
 	text: string,
 	goalId: string,

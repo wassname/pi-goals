@@ -39,7 +39,7 @@ pi -e npm:@wassname2/pi-plan
    agent calls `CompleteGoal`, which runs `verify` and a read-only judge and, on accept, marks it
    done and logs it.
 
-Other commands: `/plan` (print the plan), `/plan clear` (empty `plan.md`, history kept in git),
+Other commands: `/plan` (print the goals), `/plan clear` (empty `plan.md`, history kept in git),
 `/plan judge <model-ref>` (use a specific model for the sign-off judge; default is your current
 model).
 
@@ -50,41 +50,48 @@ One file holds the objective, the goals, and a short append-only log.
 ```markdown
 # Plan: ship the cache layer
 
-## Goal: Implement cache layer
+## Goal: [/] Implement cache layer
 <!-- id: cache-layer-1 -->
-status: active
-done_when: p95 < 50ms on bench-X. If wrong: timeouts in load-test.log
+done_when: p95 < 50ms on bench-X
 verify: pytest tests/cache -q && python bench/p95.py --max-ms 50
+- [x] wire cache client
+- [ ] eviction policy
+
 failure_modes:
   - cache silently bypassed (hit-rate ~0, latency ok by luck)
   - bench too small to exercise eviction
-- [x] wire cache client
-- [ ] eviction policy
+evidence:
+  - load-test.log p95=41ms; bench/p95.py exited 0
+  - cache hit-rate 0.93 in load-test.log (not bypassed)
 
 ## Log
 - 2026-06-15 14:02  cache client wired; eviction next
 ```
 
-- A goal is a `## Goal:` header with an `<!-- id -->`, a `status:`
-  (`open` | `active` | `done` | `cancelled`), one falsifiable `done_when:`, an optional `verify:`
-  shell command, an optional short `failure_modes:` pre-mortem list, and `- [ ]` subtasks.
-- `done_when` names the evidence that distinguishes real success from a subtle failure. `verify`,
-  when present, is the deterministic first stage of the sign-off check.
-- The agent ticks subtasks, appends to `## Log`, and sets `status` as it works. Multiple goals may
-  be `active`.
+- A goal is a `## Goal:` header whose checkbox carries its state (`[ ]` open, `[/]` active, `[x]`
+  done, `[-]` cancelled), then an `<!-- id -->`, one falsifiable `done_when:`, an optional `verify:`
+  shell command, `- [ ]` subtasks, an optional short `failure_modes:` pre-mortem list, and an
+  `evidence:` list.
+- `done_when` is the test, written at planning. `evidence` is the proof, a `- ` list the agent fills
+  at completion pointing at durable artifacts; `CompleteGoal` reads it from the file. `failure_modes`
+  is the pre-mortem. `verify`, when present, is the deterministic first stage of the sign-off.
+- The agent ticks subtasks, appends to `## Log`, and sets the header checkbox (`[/]` when it starts
+  a goal) as it works. Only `CompleteGoal` writes `[x]`. Multiple goals may be active.
 
 ## The sign-off check (`CompleteGoal`)
 
-`CompleteGoal(goal_id, evidence, paths?)` is the one blessed completion path:
+`CompleteGoal(goal_id)` is the one blessed completion path. It reads the goal's `evidence:` block
+from plan.md (so the proof is git-tracked and human-reviewable before sign-off, not buried in a tool
+call):
 
 1. If the goal has a `verify:` command, it is run. A non-zero exit rejects immediately, with no model
    call.
-2. Otherwise a read-only `pi` subprocess (the judge) inspects the evidence against the repo and the
-   named failure modes and returns a verdict. It re-derives from the artifacts you point it at
-   rather than trusting the claim, so point `evidence`/`paths` at durable artifacts (saved logs,
-   committed diffs, files).
-3. On accept, the goal's `status` flips to `done` and a `## Log` line is written. On reject, the
-   goal stays open and the agent is told what is missing.
+2. Otherwise a read-only `pi` subprocess (the judge) inspects the `evidence:` items against the repo
+   and the named failure modes and returns a verdict. It re-derives from the artifacts the evidence
+   points at rather than trusting the claim, so the `evidence:` list should name durable artifacts
+   (saved logs, committed diffs, files).
+3. On accept, the goal's header checkbox flips to `[x]` and a `## Log` line is written. On reject,
+   the goal stays open and the agent is told what is missing.
 
 The judge defaults to your current model (guaranteed authorized and capable). Set a different one
 with `/plan judge <provider/model>` for an independent cross-family check.

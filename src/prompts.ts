@@ -34,10 +34,10 @@
  * front, because the human reviews this output before any execution.
  * ──────────────────────────────────────────────────────────────────────── */
 export const planDrafting = `\
-You are in plan mode. Explore the repository read-only, then draft a plan into plan.md.
+You are in plan mode. Explore the repository read-only, then draft goals into plan.md.
 Do not write or run code in this phase. Produce a plan the human will review and approve.
 
-Right-size the plan, don't force structure that isn't there:
+Right-size it, don't force structure that isn't there:
 - Default to ONE goal. Add another only when it's a genuinely separate checkpoint you'd want
   signed off on its own (its own done_when that can pass or fail independently). A long list of
   near-identical goals should be one goal with subtasks. Most objectives are 1-2 goals.
@@ -45,26 +45,40 @@ Right-size the plan, don't force structure that isn't there:
   a single-action goal. Don't pad with trivial steps.
 - Don't invent phases to look thorough. When in doubt, merge.
 
-Write each goal in this shape:
+Write the whole file in this shape:
 
-## Goal: <one short imperative line>
-status: open
+# Plan: <the objective>
+
+## Goal: [ ] <one short imperative line>
+<!-- id: <kebab-case-slug, unique> -->
 done_when: <one falsifiable check; what is true on disk when this is done>
 verify: <optional shell command that exits 0 only when done_when holds; omit if not testable>
-failure_modes:
-  - <a sneaky way this could look done but isn't; terse, optional>
 - [ ] <subtask>
 - [ ] <subtask>
 
+failure_modes:
+  - <a sneaky way this could look done but isn't; terse, optional>
+evidence:
+  - <leave empty now; fill at sign-off with proof the done_when is met (durable artifacts)>
+
 Keep it lean:
+- The goal's state is the checkbox in its header: [ ] open, [/] active, [x] done, [-] cancelled.
+  Leave it [ ] at planning. Every goal needs its <!-- id --> line; CompleteGoal finds goals by it.
+- The subtask checklist comes right under the goal; failure_modes and the (empty) evidence block
+  sit at the end, after a blank line. Don't let the dash-lists run together.
+- evidence stays empty at planning. You fill it when the goal is actually done, just before calling
+  CompleteGoal, with a "- " list pointing at real artifacts (files, saved logs, committed diffs).
 - done_when is ONE concrete, checkable condition, not a paragraph, no "if wrong" clause.
   The symptom of failure goes in failure_modes, not here.
+- done_when names a real artifact: a file, a test result, a committed diff, a program's output.
+  Never write it about plan.md's own checkbox or ## Log: CompleteGoal writes those when it accepts,
+  so a done_when about them is circular and the sign-off can never pass.
 - failure_modes: 0-2 terse items, only the non-obvious ways a "done" could be wrong (a
   pre-mortem). If you add a verify command, one mode can be "verify passes on a gamed file".
 - subtasks: a short checklist of the real steps; omit them if the goal is a single action.
 - Prefer a verify command when success is a test/build/threshold. A green check beats prose.
 
-When the plan is drafted, present it and stop for review. Do not begin execution.`;
+When the goals are drafted, present them and stop for review. Do not begin execution.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * 2. planInjection  —  EXEC, injected at each agent start (and after compaction)
@@ -81,7 +95,7 @@ export function planInjection(p: {
   counts: { done: number; open: number };
 }): string {
   if (!p.activeGoal) {
-    return `Plan (plan.md): ${p.objective}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal or run /plan.`;
+    return `Plan (plan.md): ${p.objective}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its header to [/]) or run /plan.`;
   }
   const subtasks = p.activeGoal.openSubtasks.length
     ? p.activeGoal.openSubtasks.map((s) => `  - [ ] ${s}`).join("\n")
@@ -109,8 +123,9 @@ export const reminder = `\
 Keep plan.md current as you work:
 - tasks: tick the subtasks you've finished; add any new ones you've discovered.
 - log: append ONE short line to ## Log (append, don't rewrite earlier lines).
-- goal: if the active goal's evidence is in, sign it off by calling CompleteGoal with that
-  evidence. Don't edit status to done by hand; CompleteGoal runs the check and records it.
+- goal: when the active goal's done_when is met, fill its evidence: block in plan.md (a "- " list
+  pointing at durable artifacts), then call CompleteGoal with the goal_id. Don't tick the goal's
+  header [x] by hand; CompleteGoal reads the evidence, runs the check, and writes [x].
 - otherwise: keep working toward the active goal. Don't stop to ask unless you're genuinely
   blocked; if blocked, say what's blocking and why.
 </system-reminder>`;
@@ -122,9 +137,9 @@ Keep plan.md current as you work:
  * continue. Does not mutate the system prompt, so the cache holds.
  * ──────────────────────────────────────────────────────────────────────── */
 export const continuation = `\
-Continue toward the active goal in plan.md. If it now meets its done_when, call CompleteGoal
-with your evidence (point to durable artifacts: saved logs, committed diffs, files, not just
-claims). If you're blocked, state what's blocking it.`;
+Continue toward the active goal in plan.md. If it now meets its done_when, fill the goal's
+evidence: block (durable artifacts: saved logs, committed diffs, files, not just claims) and then
+call CompleteGoal with the goal_id. If you're blocked, state what's blocking it.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * 5. loopJudge  —  EXEC, runs after each turn to decide continue / pause

@@ -3,9 +3,8 @@ import { appendLog, counts, findGoal, parse, recordSignOff, setGoalStatus } from
 
 const SAMPLE = `# Plan: ship the cache layer
 
-## Goal: Implement cache layer
+## Goal: [/] Implement cache layer
 <!-- id: cache-layer-1 -->
-status: active
 done_when: p95 < 50ms on bench-X. If wrong: timeouts in load-test.log
 verify: pytest tests/cache -q
 failure_modes:
@@ -14,10 +13,12 @@ failure_modes:
 - [x] wire cache client
 - [ ] eviction policy
 - [ ] load test
+evidence:
+  - load-test.log shows p95=41ms
+  - hit-rate 0.93 in load-test.log
 
-## Goal: Document the API
+## Goal: [ ] Document the API
 <!-- id: document-the-api-1 -->
-status: open
 done_when: every public fn has a docstring; else sphinx warns
 failure_modes:
   - docstrings exist but are stale
@@ -53,12 +54,13 @@ describe("parse", () => {
 		expect(doc.goals.map((g) => g.id)).toEqual(["cache-layer-1", "document-the-api-1"]);
 	});
 
-	it("reads goal fields", () => {
+	it("reads goal fields, with status from the header checkbox", () => {
 		const g = findGoal(doc, "cache-layer-1");
 		expect(g?.subject).toBe("Implement cache layer");
-		expect(g?.status).toBe("active");
+		expect(g?.status).toBe("active"); // from the [/] in the header
 		expect(g?.done_when).toBe("p95 < 50ms on bench-X. If wrong: timeouts in load-test.log");
 		expect(g?.verify).toBe("pytest tests/cache -q");
+		expect(findGoal(doc, "document-the-api-1")?.status).toBe("open"); // from [ ]
 	});
 
 	it("separates failure_modes from subtasks", () => {
@@ -72,6 +74,14 @@ describe("parse", () => {
 		]);
 	});
 
+	it("reads the evidence block, separate from failure_modes and subtasks", () => {
+		const g = findGoal(doc, "cache-layer-1");
+		expect(g?.evidence).toEqual(["load-test.log shows p95=41ms", "hit-rate 0.93 in load-test.log"]);
+		expect(g?.failure_modes).toHaveLength(2); // unchanged by the evidence block that follows the subtasks
+		const g2 = findGoal(doc, "document-the-api-1");
+		expect(g2?.evidence).toEqual([]); // a goal with no evidence block parses to []
+	});
+
 	it("reads the log verbatim and counts by status", () => {
 		expect(doc.log).toEqual(["- 2026-06-15 14:02  cache client wired; eviction next"]);
 		expect(counts(doc)).toEqual({ done: 0, open: 1, active: 1 });
@@ -81,7 +91,7 @@ describe("parse", () => {
 describe("failure_modes vs subtask disambiguation", () => {
 	it("a column-0 checkbox right after failure_modes: is a SUBTASK", () => {
 		const doc = parse(
-			`# Plan: x\n\n## Goal: G\n<!-- id: g-1 -->\nstatus: open\ndone_when: z\nfailure_modes:\n- [ ] first subtask\n- [x] second subtask\n`,
+			`# Plan: x\n\n## Goal: [ ] G\n<!-- id: g-1 -->\ndone_when: z\nfailure_modes:\n- [ ] first subtask\n- [x] second subtask\n`,
 		);
 		const g = findGoal(doc, "g-1");
 		expect(g?.failure_modes).toEqual([]);
@@ -93,7 +103,7 @@ describe("failure_modes vs subtask disambiguation", () => {
 
 	it("an indented checkbox-shaped item inside failure_modes is a FAILURE MODE", () => {
 		const doc = parse(
-			`# Plan: x\n\n## Goal: G\n<!-- id: g-2 -->\nstatus: open\ndone_when: z\nfailure_modes:\n  - [ ] prose that looks like a checkbox\n- [ ] real subtask\n`,
+			`# Plan: x\n\n## Goal: [ ] G\n<!-- id: g-2 -->\ndone_when: z\nfailure_modes:\n  - [ ] prose that looks like a checkbox\n- [ ] real subtask\n`,
 		);
 		const g = findGoal(doc, "g-2");
 		expect(g?.failure_modes).toEqual(["[ ] prose that looks like a checkbox"]);
@@ -101,7 +111,7 @@ describe("failure_modes vs subtask disambiguation", () => {
 	});
 
 	it("a goal with no failure_modes keeps its subtasks", () => {
-		const doc = parse(`# Plan: x\n\n## Goal: G\n<!-- id: g-3 -->\nstatus: open\ndone_when: z\n- [ ] only subtask\n`);
+		const doc = parse(`# Plan: x\n\n## Goal: [ ] G\n<!-- id: g-3 -->\ndone_when: z\n- [ ] only subtask\n`);
 		const g = findGoal(doc, "g-3");
 		expect(g?.failure_modes).toEqual([]);
 		expect(g?.subtasks).toEqual([{ text: "only subtask", done: false }]);
@@ -122,6 +132,11 @@ describe("the two CompleteGoal writes (minimal diff)", () => {
 		expect(findGoal(parse(next), "document-the-api-1")?.status).toBe("active");
 	});
 
+	it("setGoalStatus writes the checkbox char into the header line", () => {
+		expect(setGoalStatus(SAMPLE, "cache-layer-1", "done")).toContain("## Goal: [x] Implement cache layer");
+		expect(setGoalStatus(SAMPLE, "document-the-api-1", "cancelled")).toContain("## Goal: [-] Document the API");
+	});
+
 	it("appendLog adds exactly one line under ## Log", () => {
 		const next = appendLog(SAMPLE, "2026-06-15 15:00  eviction done");
 		expect(lineDelta(SAMPLE, next)).toEqual({ added: 1, removed: 0 });
@@ -132,7 +147,7 @@ describe("the two CompleteGoal writes (minimal diff)", () => {
 	});
 
 	it("appendLog creates the section when absent", () => {
-		const noLog = "# Plan: x\n\n## Goal: y\n<!-- id: y-1 -->\nstatus: open\ndone_when: z\n";
+		const noLog = "# Plan: x\n\n## Goal: [ ] y\n<!-- id: y-1 -->\ndone_when: z\n";
 		expect(parse(appendLog(noLog, "first entry")).log).toEqual(["- first entry"]);
 	});
 });

@@ -9,7 +9,7 @@
  * judgement rather than guarding it.
  *
  * Flow:
- *   /plan <objective>  -> plan mode: agent explores, drafts goals into plan.md (planDrafting guides)
+ *   /plan <objective> -> plan mode: agent explores, drafts goals into plan.md (planDrafting guides)
  *   agent_end          -> review menu (Ready / Edit / $EDITOR / Cancel); Ready offers compaction
  *   execution          -> each turn, inject the plan summary (survives compaction) + a reminder;
  *                         agent works goals, ticks subtasks, appends ## Log, calls CompleteGoal
@@ -75,12 +75,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const mark: Record<Goal["status"], string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		const lines = [`Plan: ${doc.objective || "(untitled)"}`];
 		for (const g of doc.goals) {
-			if (g.status === "done") continue; // hide finished goals; they stay in the file
-			const open = g.subtasks.filter((s) => !s.done).length;
-			lines.push(`${mark[g.status]} ${g.subject}${open ? ` (${open} task${open === 1 ? "" : "s"})` : ""}`);
+			// Show every goal with its status glyph (✔ done, ▸ active, ◻ open, ✗ cancelled) so finished
+			// goals read as checked off rather than vanishing. Plans are small, so this stays readable.
+			const total = g.subtasks.length;
+			const done = g.subtasks.filter((s) => s.done).length;
+			lines.push(`${mark[g.status]} ${g.subject}${total ? ` (${done}/${total} tasks)` : ""}`);
 		}
-		const c = counts(doc);
-		if (c.done) lines.push(`(${c.done} done, hidden)`);
 		return lines;
 	}
 
@@ -203,7 +203,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const planFile = planPath(ctx);
 		const planContent = readPlan(ctx); // captured now: ctx is stale after newSession below
 		const parentSession = ctx.sessionManager.getSessionFile();
-		const startMsg = `Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`;
+		const startMsg = `Work the plan in ${planFile}. Pick an open goal, mark it active (set its header to [/]), work its subtasks, and when its done_when is met fill the goal's evidence: block then call CompleteGoal with the goal_id. Keep plan.md current as you go.`;
 		exitPlanMode(ctx);
 
 		if (fresh && savedCmdCtx) {
@@ -234,22 +234,25 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		name: "CompleteGoal",
 		label: "Complete goal",
 		description:
-			"Sign off a goal once its done_when is met. Runs the goal's verify command (if any) then a " +
-			"read-only subagent that inspects your evidence against the repo. On accept, the goal is marked " +
-			"done and logged; on reject, it stays open and you get what is missing. Point evidence at durable " +
-			"artifacts (saved logs, committed diffs, files), not claims.",
+			"Sign off a goal once its done_when is met. First fill the goal's evidence: block in plan.md " +
+			"(a '- ' list pointing at durable artifacts: saved logs, committed diffs, files, not claims), then " +
+			"call this with the goal_id. Runs the goal's verify command (if any) then a read-only subagent that " +
+			"inspects that evidence against the repo. On accept, the goal is marked done and logged; on reject, " +
+			"it stays open and you get what is missing.",
 		parameters: Type.Object({
 			goal_id: Type.String({ description: "The goal's <!-- id --> from plan.md" }),
-			evidence: Type.String({ description: "What shows the done_when is met, and where to verify it" }),
-			paths: Type.Optional(Type.Array(Type.String(), { description: "Durable artifacts the judge should inspect" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const content = readPlan(ctx);
 			const goal = findGoal(parse(content), params.goal_id);
 			if (!goal) return text(`No goal #${params.goal_id} in plan.md.`, true);
+			if (goal.evidence.length === 0) {
+				return text(`Goal #${goal.id} has no evidence: block. Add a "- " evidence list to the goal in plan.md (what shows done_when is met, and where to verify it), then call CompleteGoal.`, true);
+			}
 
 			// Decide the outcome (the I/O); recordSignOff applies it to the file (the pure write).
-			const outcome = await decideSignOff(goal, params.evidence, params.paths ?? [], state.judgeModel, ctx.cwd, signal);
+			// Evidence and the artifacts to inspect both come from the goal's evidence: block (single source of truth).
+			const outcome = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal);
 			const res = recordSignOff(content, goal.id, stamp(), outcome);
 			if (res.content !== content) writeFileSync(planPath(ctx), res.content);
 			updateWidget(ctx);
@@ -393,9 +396,12 @@ async function runJudge(
 		proc.on("error", (e) => resolve(`VERDICT: reject\nmissing: judge subprocess failed: ${e.message}`));
 	});
 
-	const verdictLine = output.split("\n").find((l) => /^\s*VERDICT\s*:/i.test(l)) ?? "";
+	// The subprocess emits ANSI/CSI control codes in -p mode; strip them so they don't leak into `missing`.
+	const clean = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+
+	const verdictLine = clean.split("\n").find((l) => /^\s*VERDICT\s*:/i.test(l)) ?? "";
 	const accept = /accept/i.test(verdictLine);
-	const missingMatch = output.match(/missing\s*:\s*([\s\S]*)$/i);
-	const missing = accept ? "" : (missingMatch?.[1].trim() || output.trim().slice(-500) || "judge gave no reason");
+	const missingMatch = clean.match(/missing\s*:\s*([\s\S]*)$/i);
+	const missing = accept ? "" : (missingMatch?.[1].trim() || clean.trim().slice(-500) || "judge gave no reason");
 	return { accept, missing };
 }
