@@ -1,8 +1,8 @@
 /**
- * pi-plan — all model-facing text, in flow order.
+ * pi-goals — all model-facing text, in flow order.
  *
  * Philosophy: the form guides a process; it does not police one. The agent can
- * edit plan.md freely. These prompts + the plan.md structure make the right path
+ * edit goals.md freely. These prompts + the goals.md structure make the right path
  * the easy path. The only step that is genuinely rigorous is the evidence judge
  * (6), and even that is reached by guiding the agent to call CompleteGoal, not by
  * trapping it. Bypasses stay visible in the git diff and the widget.
@@ -29,12 +29,12 @@
  *
  * System guidance for the plan-phase agent. Runs on the plan model (may differ
  * from the execution model; the choice is sticky — see oracle.json-style config).
- * This phase is read-only: explore, then draft goals into plan.md. No code yet.
+ * This phase is read-only: explore, then draft goals into goals.md. No code yet.
  * The field requirements here are the whole "elicitation" — get them agreed up
  * front, because the human reviews this output before any execution.
  * ──────────────────────────────────────────────────────────────────────── */
 export const planDrafting = `\
-You are in plan mode. Explore the repository read-only, then draft goals into plan.md.
+You are in plan mode. Explore the repository read-only, then draft goals into goals.md.
 Do not write or run code in this phase. Produce a plan the human will review and approve.
 
 Right-size it, don't force structure that isn't there:
@@ -47,7 +47,7 @@ Right-size it, don't force structure that isn't there:
 
 Write the whole file in this shape:
 
-# Plan: <the objective>
+# Goals: <the objective>
 
 ## Goal: [ ] <one short imperative line>
 <!-- id: <kebab-case-slug, unique> -->
@@ -71,7 +71,7 @@ Keep it lean:
 - done_when is ONE concrete, checkable condition, not a paragraph, no "if wrong" clause.
   The symptom of failure goes in failure_modes, not here.
 - done_when names a real artifact: a file, a test result, a committed diff, a program's output.
-  Never write it about plan.md's own checkbox or ## Log: CompleteGoal writes those when it accepts,
+  Never write it about goals.md's own checkbox or ## Log: CompleteGoal writes those when it accepts,
   so a done_when about them is circular and the sign-off can never pass.
 - failure_modes: 0-2 terse items, only the non-obvious ways a "done" could be wrong (a
   pre-mortem). If you add a verify command, one mode can be "verify passes on a gamed file".
@@ -95,13 +95,13 @@ export function planInjection(p: {
   counts: { done: number; open: number };
 }): string {
   if (!p.activeGoal) {
-    return `Plan (plan.md): ${p.objective}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its header to [/]) or run /plan.`;
+    return `Goals (goals.md): ${p.objective}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its header to [/]) or run /goals.`;
   }
   const subtasks = p.activeGoal.openSubtasks.length
     ? p.activeGoal.openSubtasks.map((s) => `  - [ ] ${s}`).join("\n")
     : "  (no open subtasks)";
   return `\
-Plan (plan.md): ${p.objective}
+Goals (goals.md): ${p.objective}
 Active goal: ${p.activeGoal.subject}
 done_when: ${p.activeGoal.done_when}
 Open subtasks:
@@ -115,15 +115,15 @@ Progress: ${p.counts.done} done, ${p.counts.open} open.`;
  *
  * The typed nudge. This is both the housekeeping and the autonomy engine — it is
  * what makes the process get followed without a hard gate. Fires after N
- * file-modifying turns since the last plan.md update while a goal is active.
+ * file-modifying turns since the last goals.md update while a goal is active.
  * Keep the wording stable so it doesn't thrash the cache.
  * ──────────────────────────────────────────────────────────────────────── */
 export const reminder = `\
 <system-reminder>
-Keep plan.md current as you work:
+Keep goals.md current as you work:
 - tasks: tick the subtasks you've finished; add any new ones you've discovered.
 - log: append ONE short line to ## Log (append, don't rewrite earlier lines).
-- goal: when the active goal's done_when is met, fill its evidence: block in plan.md (a "- " list
+- goal: when the active goal's done_when is met, fill its evidence: block in goals.md (a "- " list
   pointing at durable artifacts), then call CompleteGoal with the goal_id. Don't tick the goal's
   header [x] by hand; CompleteGoal reads the evidence, runs the check, and writes [x].
 - otherwise: keep working toward the active goal. Don't stop to ask unless you're genuinely
@@ -137,7 +137,7 @@ Keep plan.md current as you work:
  * continue. Does not mutate the system prompt, so the cache holds.
  * ──────────────────────────────────────────────────────────────────────── */
 export const continuation = `\
-Continue toward the active goal in plan.md. If it now meets its done_when, fill the goal's
+Continue toward the active goal in goals.md. If it now meets its done_when, fill the goal's
 evidence: block (durable artifacts: saved logs, committed diffs, files, not just claims) and then
 call CompleteGoal with the goal_id. If you're blocked, state what's blocking it.`;
 

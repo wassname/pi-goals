@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { appendLog, counts, findGoal, parse, recordSignOff, setGoalStatus } from "../src/plan-file.js";
 
-const SAMPLE = `# Plan: ship the cache layer
+const SAMPLE = `# Goals: ship the cache layer
 
 ## Goal: [/] Implement cache layer
 <!-- id: cache-layer-1 -->
@@ -91,7 +91,7 @@ describe("parse", () => {
 describe("failure_modes vs subtask disambiguation", () => {
 	it("a column-0 checkbox right after failure_modes: is a SUBTASK", () => {
 		const doc = parse(
-			`# Plan: x\n\n## Goal: [ ] G\n<!-- id: g-1 -->\ndone_when: z\nfailure_modes:\n- [ ] first subtask\n- [x] second subtask\n`,
+			`# Goals: x\n\n## Goal: [ ] G\n<!-- id: g-1 -->\ndone_when: z\nfailure_modes:\n- [ ] first subtask\n- [x] second subtask\n`,
 		);
 		const g = findGoal(doc, "g-1");
 		expect(g?.failure_modes).toEqual([]);
@@ -103,7 +103,7 @@ describe("failure_modes vs subtask disambiguation", () => {
 
 	it("an indented checkbox-shaped item inside failure_modes is a FAILURE MODE", () => {
 		const doc = parse(
-			`# Plan: x\n\n## Goal: [ ] G\n<!-- id: g-2 -->\ndone_when: z\nfailure_modes:\n  - [ ] prose that looks like a checkbox\n- [ ] real subtask\n`,
+			`# Goals: x\n\n## Goal: [ ] G\n<!-- id: g-2 -->\ndone_when: z\nfailure_modes:\n  - [ ] prose that looks like a checkbox\n- [ ] real subtask\n`,
 		);
 		const g = findGoal(doc, "g-2");
 		expect(g?.failure_modes).toEqual(["[ ] prose that looks like a checkbox"]);
@@ -111,7 +111,7 @@ describe("failure_modes vs subtask disambiguation", () => {
 	});
 
 	it("a goal with no failure_modes keeps its subtasks", () => {
-		const doc = parse(`# Plan: x\n\n## Goal: [ ] G\n<!-- id: g-3 -->\ndone_when: z\n- [ ] only subtask\n`);
+		const doc = parse(`# Goals: x\n\n## Goal: [ ] G\n<!-- id: g-3 -->\ndone_when: z\n- [ ] only subtask\n`);
 		const g = findGoal(doc, "g-3");
 		expect(g?.failure_modes).toEqual([]);
 		expect(g?.subtasks).toEqual([{ text: "only subtask", done: false }]);
@@ -147,7 +147,7 @@ describe("the two CompleteGoal writes (minimal diff)", () => {
 	});
 
 	it("appendLog creates the section when absent", () => {
-		const noLog = "# Plan: x\n\n## Goal: [ ] y\n<!-- id: y-1 -->\ndone_when: z\n";
+		const noLog = "# Goals: x\n\n## Goal: [ ] y\n<!-- id: y-1 -->\ndone_when: z\n";
 		expect(parse(appendLog(noLog, "first entry")).log).toEqual(["- first entry"]);
 	});
 });

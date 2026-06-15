@@ -1,14 +1,14 @@
-# pi-plan
+# pi-goals
 
 A [pi](https://github.com/badlogic/pi-mono) extension for plan-driven, goal-tracked work in one
-`plan.md`. Set up goals (with evidence and failure modes) in plan mode, work them, and sign a goal
+`goals.md`. Set up goals (with evidence and failure modes) in plan mode, work them, and sign a goal
 off only when a read-only subagent has checked the evidence.
 
 Successor to [pi-lgtm](https://github.com/wassname/pi-lgtm), kept deliberately small: about
 [burneikis/pi-plan](https://github.com/burneikis/pi-plan) plus the additions, goals with evidence,
 a sign-off check, a widget, and a reminder.
 
-The form guides; it does not gate. The agent edits `plan.md` with its normal Edit tool. The one
+The form guides; it does not gate. The agent edits `goals.md` with its normal Edit tool. The one
 blessed tool is `CompleteGoal`, which runs the sign-off check and records the result. The reminder,
 the injected plan summary, and git/widget visibility carry the process. It trusts the agent's
 judgement rather than guarding it.
@@ -16,39 +16,39 @@ judgement rather than guarding it.
 ## Install
 
 ```bash
-pi install npm:@wassname2/pi-plan
+pi install npm:@wassname2/pi-goals
 ```
 
 Or run without installing:
 
 ```bash
-pi -e npm:@wassname2/pi-plan
+pi -e npm:@wassname2/pi-goals
 ```
 
 ## Use
 
 ```
-/plan add CSV export to the report view
+/goals add CSV export to the report view
 ```
 
-1. Plan. The agent explores read-only and writes goals into `plan.md` (see format below).
+1. Plan. The agent explores read-only and writes goals into `goals.md` (see format below).
 2. Review. You get a menu: Ready, Edit (ask the agent to revise), Open in `$EDITOR`, or Cancel.
    On Ready you choose whether to keep the current context or start fresh and compacted.
 3. Work. Each turn the active goal is injected (so it survives compaction) and a reminder nudges
-   the agent to keep `plan.md` current and work autonomously. When a goal's `done_when` is met the
+   the agent to keep `goals.md` current and work autonomously. When a goal's `done_when` is met the
    agent calls `CompleteGoal`, which runs `verify` and a read-only judge and, on accept, marks it
    done and logs it.
 
-Other commands: `/plan` (print the goals), `/plan clear` (empty `plan.md`, history kept in git),
-`/plan judge <model-ref>` (use a specific model for the sign-off judge; default is your current
+Other commands: `/goals` (print the goals), `/goals clear` (empty `goals.md`, history kept in git),
+`/goals judge <model-ref>` (use a specific model for the sign-off judge; default is your current
 model).
 
-## plan.md format
+## goals.md format
 
 One file holds the objective, the goals, and a short append-only log.
 
 ```markdown
-# Plan: ship the cache layer
+# Goals: ship the cache layer
 
 ## Goal: [/] Implement cache layer
 <!-- id: cache-layer-1 -->
@@ -81,7 +81,7 @@ evidence:
 ## The sign-off check (`CompleteGoal`)
 
 `CompleteGoal(goal_id)` is the one blessed completion path. It reads the goal's `evidence:` block
-from plan.md (so the proof is git-tracked and human-reviewable before sign-off, not buried in a tool
+from goals.md (so the proof is git-tracked and human-reviewable before sign-off, not buried in a tool
 call):
 
 1. If the goal has a `verify:` command, it is run. A non-zero exit rejects immediately, with no model
@@ -94,7 +94,7 @@ call):
    the goal stays open and the agent is told what is missing.
 
 The judge defaults to your current model (guaranteed authorized and capable). Set a different one
-with `/plan judge <provider/model>` for an independent cross-family check.
+with `/goals judge <provider/model>` for an independent cross-family check.
 
 ## Prompts
 

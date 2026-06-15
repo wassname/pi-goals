@@ -1,5 +1,5 @@
 /**
- * plan-file.ts — read plan.md, and the two writes CompleteGoal needs. That is all.
+ * plan-file.ts — read goals.md, and the two writes CompleteGoal needs. That is all.
  *
  * Pure module, no pi deps, so it unit-tests without a runtime. The file is the canonical store and
  * the agent edits it with its normal Edit tool (create goals, tick subtasks, append log), guided by
@@ -14,7 +14,7 @@
  *
  * Format:
  *
- *   # Plan: <objective>
+ *   # Goals: <objective>
  *
  *   ## Goal: [ ] <subject>
  *   <!-- id: <slug> -->
@@ -87,7 +87,7 @@ export function parse(text: string): PlanDoc {
 	};
 
 	for (const line of lines) {
-		const objMatch = /^#\s+Plan:\s*(.*)$/.exec(line);
+		const objMatch = /^#\s+Goals:\s*(.*)$/.exec(line);
 		if (objMatch) {
 			objective = objMatch[1].trim();
 			continue;
@@ -201,7 +201,7 @@ export type SignOff =
 	| { kind: "rejected"; missing: string }
 	| { kind: "accepted" };
 
-/** Apply a sign-off outcome to plan.md text: accept flips the header checkbox to [x] + logs; reject only logs. Pure. */
+/** Apply a sign-off outcome to goals.md text: accept flips the header checkbox to [x] + logs; reject only logs. Pure. */
 export function recordSignOff(
 	text: string,
 	goalId: string,
@@ -209,7 +209,7 @@ export function recordSignOff(
 	outcome: SignOff,
 ): { content: string; message: string; isError: boolean } {
 	const goal = findGoal(parse(text), goalId);
-	if (!goal) return { content: text, message: `No goal #${goalId} in plan.md.`, isError: true };
+	if (!goal) return { content: text, message: `No goal #${goalId} in goals.md.`, isError: true };
 
 	if (outcome.kind === "verify_failed") {
 		const content = appendLog(text, `${when} reject #${goalId}: verify exit ${outcome.exitCode}`);
@@ -222,7 +222,7 @@ export function recordSignOff(
 	}
 	const flipped = setGoalStatus(text, goalId, "done");
 	const content = appendLog(flipped, `${when} signed off #${goalId}: ${goal.subject} (oracle accept)`);
-	return { content, message: `Signed off #${goalId}: ${goal.subject}. Marked done in plan.md.`, isError: false };
+	return { content, message: `Signed off #${goalId}: ${goal.subject}. Marked done in goals.md.`, isError: false };
 }
 
 /** Append one verbatim line to ## Log (creating the section if absent). The other CompleteGoal write. */

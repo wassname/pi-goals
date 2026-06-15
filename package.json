@@ -1,13 +1,13 @@
 {
-  "name": "@wassname2/pi-plan",
+  "name": "@wassname2/pi-goals",
   "version": "0.0.1",
-  "description": "One plan.md: set goals via plan mode, work them, sign off only when a read-only check passes. Successor to pi-lgtm.",
+  "description": "One goals.md: set goals in plan mode, work them, sign off only when a read-only check passes. Successor to pi-lgtm.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wassname/pi-plan.git"
+    "url": "https://github.com/wassname/pi-goals.git"
   },
   "keywords": [
     "pi-package",

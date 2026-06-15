@@ -1,15 +1,15 @@
 /**
- * pi-plan — plan mode that sets up goals with evidence, tracked in one plan.md, signed off by a
+ * pi-goals — plan mode that sets up goals with evidence, tracked in one goals.md, signed off by a
  * read-only subagent check. A successor to pi-lgtm, kept deliberately small (≈ burneikis/pi-plan
  * plus the additions: goals + failure_modes + subtasks, a sign-off check, a widget, a reminder).
  *
- * Philosophy (spec D3): the form guides, it does not gate. The agent edits plan.md with its normal
+ * Philosophy (spec D3): the form guides, it does not gate. The agent edits goals.md with its normal
  * Edit tool. The one blessed tool is CompleteGoal, which runs the sign-off check and records it. The
  * reminder + the injected plan + git/widget visibility carry the process; we trust the agent's
  * judgement rather than guarding it.
  *
  * Flow:
- *   /plan <objective> -> plan mode: agent explores, drafts goals into plan.md (planDrafting guides)
+ *   /goals <objective> -> plan mode: agent explores, drafts goals into goals.md (planDrafting guides)
  *   agent_end          -> review menu (Ready / Edit / $EDITOR / Cancel); Ready offers compaction
  *   execution          -> each turn, inject the plan summary (survives compaction) + a reminder;
  *                         agent works goals, ticks subtasks, appends ## Log, calls CompleteGoal
@@ -27,10 +27,10 @@ import { Type } from "@sinclair/typebox";
 import { counts, findGoal, type Goal, type PlanDoc, parse, recordSignOff, type SignOff } from "./plan-file.js";
 import { evidenceJudgeSystem, evidenceJudgeUser, planDrafting, planInjection, reminder } from "./prompts.js";
 
-const STATE = "pi-plan-state";
-const PLAN_CONTEXT = "pi-plan-context"; // injected plan-mode guidance, stripped from history later
-const STATUS_KEY = "pi-plan";
-const WIDGET_KEY = "pi-plan-widget";
+const STATE = "pi-goals-state";
+const PLAN_CONTEXT = "pi-goals-context"; // injected plan-mode guidance, stripped from history later
+const STATUS_KEY = "pi-goals";
+const WIDGET_KEY = "pi-goals-widget";
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
 
 interface PlanState {
@@ -42,12 +42,12 @@ interface PlanState {
 
 export default function piPlanExtension(pi: ExtensionAPI): void {
 	let state: PlanState = { isPlanMode: false, objective: null, judgeModel: null };
-	// Reminder cadence: fire when an active goal exists but plan.md was not touched since last turn.
+	// Reminder cadence: fire when an active goal exists but goals.md was not touched since last turn.
 	let lastInjectedPlan = "";
-	// newSession is only on the command-handler context; agent_end's ctx lacks it. Save it from /plan.
+	// newSession is only on the command-handler context; agent_end's ctx lacks it. Save it from /goals.
 	let savedCmdCtx: ExtensionCommandContext | null = null;
 
-	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, "plan.md");
+	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, "goals.md");
 	const readPlan = (ctx: ExtensionContext): string => (existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
 
 	function persist(): void {
@@ -57,7 +57,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	function updateWidget(ctx: ExtensionContext): void {
 		if (state.isPlanMode) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
-			ctx.ui.setWidget(WIDGET_KEY, ["pi-plan: drafting goals", "Write goals to plan.md, then review."]);
+			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals", "Write goals to goals.md, then review."]);
 			return;
 		}
 		const doc = parse(readPlan(ctx));
@@ -73,7 +73,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	function goalWidgetLines(doc: PlanDoc): string[] {
 		const mark: Record<Goal["status"], string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
-		const lines = [`Plan: ${doc.objective || "(untitled)"}`];
+		const lines = [`Goals: ${doc.objective || "(untitled)"}`];
 		for (const g of doc.goals) {
 			// Show every goal with its status glyph (✔ done, ▸ active, ◻ open, ✗ cancelled) so finished
 			// goals read as checked off rather than vanishing. Plans are small, so this stays readable.
@@ -86,8 +86,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	// --- plan mode: setup -------------------------------------------------------------------------
 
-	pi.registerCommand("plan", {
-		description: "Plan mode: set up goals (with evidence) in plan.md, then work them. /plan <objective>",
+	pi.registerCommand("goals", {
+		description: "Plan mode: set up goals (with evidence) in goals.md, then work them. /goals <objective>",
 		handler: async (args, ctx) => {
 			savedCmdCtx = ctx; // ctx here is an ExtensionCommandContext (has newSession); keep it for later
 			const arg = args.trim();
@@ -99,7 +99,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				setJudge(arg.slice("judge".length).trim(), ctx);
 				return;
 			}
-			// Bare `/plan` enters plan mode by prompting for the objective (the common expectation).
+			// Bare `/goals` enters plan mode by prompting for the objective (the common expectation).
 			// If the user cancels with no objective, fall back to showing the current plan.
 			let objective = arg;
 			if (!objective) {
@@ -128,24 +128,24 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	async function clearPlan(ctx: ExtensionContext): Promise<void> {
 		if (!existsSync(planPath(ctx))) {
-			ctx.ui.notify("No plan.md to clear.", "info");
+			ctx.ui.notify("No goals.md to clear.", "info");
 			return;
 		}
 		if (ctx.hasUI) {
-			const ok = await ctx.ui.select("Clear plan.md? (it stays in git history)", ["Cancel", "Clear plan.md"]);
-			if (ok !== "Clear plan.md") return;
+			const ok = await ctx.ui.select("Clear goals.md? (it stays in git history)", ["Cancel", "Clear goals.md"]);
+			if (ok !== "Clear goals.md") return;
 		}
 		writeFileSync(planPath(ctx), "");
 		state = { ...state, isPlanMode: false, objective: null };
 		persist();
 		updateWidget(ctx);
-		ctx.ui.notify("Cleared plan.md.", "info");
+		ctx.ui.notify("Cleared goals.md.", "info");
 	}
 
 	function showPlan(ctx: ExtensionContext): void {
 		const content = readPlan(ctx);
 		if (!content.trim()) {
-			ctx.ui.notify("No plan yet. Use /plan <objective> to start.", "info");
+			ctx.ui.notify("No goals yet. Use /goals <objective> to start.", "info");
 			return;
 		}
 		ctx.ui.notify(content, "info");
@@ -156,7 +156,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	async function reviewLoop(ctx: ExtensionContext): Promise<void> {
 		while (true) {
 			const doc = parse(readPlan(ctx));
-			const choice = await ctx.ui.select(`Plan: ${doc.goals.length} goal(s). What next?`, [
+			const choice = await ctx.ui.select(`Goals: ${doc.goals.length} goal(s). What next?`, [
 				"Ready — start working the plan",
 				"Edit — ask the agent to revise",
 				"Open in $EDITOR",
@@ -164,7 +164,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			]);
 			if (!choice || choice.startsWith("Cancel")) {
 				exitPlanMode(ctx);
-				ctx.ui.notify("Left plan mode. plan.md kept.", "info");
+				ctx.ui.notify("Left plan mode. goals.md kept.", "info");
 				return;
 			}
 			if (choice.startsWith("Ready")) return startExecution(ctx);
@@ -203,7 +203,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const planFile = planPath(ctx);
 		const planContent = readPlan(ctx); // captured now: ctx is stale after newSession below
 		const parentSession = ctx.sessionManager.getSessionFile();
-		const startMsg = `Work the plan in ${planFile}. Pick an open goal, mark it active (set its header to [/]), work its subtasks, and when its done_when is met fill the goal's evidence: block then call CompleteGoal with the goal_id. Keep plan.md current as you go.`;
+		const startMsg = `Work the goals in ${planFile}. Pick an open goal, mark it active (set its header to [/]), work its subtasks, and when its done_when is met fill the goal's evidence: block then call CompleteGoal with the goal_id. Keep goals.md current as you go.`;
 		exitPlanMode(ctx);
 
 		if (fresh && savedCmdCtx) {
@@ -223,7 +223,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			}
 			return;
 		}
-		if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
+		if (doc.objective) pi.setSessionName(`Goals: ${doc.objective}`);
 		ctx.ui.notify(planContent, "info");
 		pi.sendUserMessage(startMsg, { deliverAs: "followUp" });
 	}
@@ -234,20 +234,20 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		name: "CompleteGoal",
 		label: "Complete goal",
 		description:
-			"Sign off a goal once its done_when is met. First fill the goal's evidence: block in plan.md " +
+			"Sign off a goal once its done_when is met. First fill the goal's evidence: block in goals.md " +
 			"(a '- ' list pointing at durable artifacts: saved logs, committed diffs, files, not claims), then " +
 			"call this with the goal_id. Runs the goal's verify command (if any) then a read-only subagent that " +
 			"inspects that evidence against the repo. On accept, the goal is marked done and logged; on reject, " +
 			"it stays open and you get what is missing.",
 		parameters: Type.Object({
-			goal_id: Type.String({ description: "The goal's <!-- id --> from plan.md" }),
+			goal_id: Type.String({ description: "The goal's <!-- id --> from goals.md" }),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const content = readPlan(ctx);
 			const goal = findGoal(parse(content), params.goal_id);
-			if (!goal) return text(`No goal #${params.goal_id} in plan.md.`, true);
+			if (!goal) return text(`No goal #${params.goal_id} in goals.md.`, true);
 			if (goal.evidence.length === 0) {
-				return text(`Goal #${goal.id} has no evidence: block. Add a "- " evidence list to the goal in plan.md (what shows done_when is met, and where to verify it), then call CompleteGoal.`, true);
+				return text(`Goal #${goal.id} has no evidence: block. Add a "- " evidence list to the goal in goals.md (what shows done_when is met, and where to verify it), then call CompleteGoal.`, true);
 			}
 
 			// Decide the outcome (the I/O); recordSignOff applies it to the file (the pure write).
@@ -279,7 +279,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			lastLogLine: doc.log.at(-1) ?? null,
 			counts: { done: c.done, open: c.open + c.active },
 		});
-		// Reminder fires when there is an active goal but plan.md was untouched since the last turn.
+		// Reminder fires when there is an active goal but goals.md was untouched since the last turn.
 		const planNow = readPlan(ctx);
 		if (active && planNow === lastInjectedPlan) body += `\n\n${reminder}`;
 		lastInjectedPlan = planNow;
@@ -290,7 +290,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		if (!state.isPlanMode || !ctx.hasUI) return;
 		const doc = parse(readPlan(ctx));
 		if (doc.goals.length === 0) {
-			ctx.ui.notify("No goals found in plan.md yet — ask the agent to draft them.", "warning");
+			ctx.ui.notify("No goals found in goals.md yet — ask the agent to draft them.", "warning");
 			return;
 		}
 		await reviewLoop(ctx);
