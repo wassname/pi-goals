@@ -77,7 +77,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		for (const g of doc.goals) {
 			if (g.status === "done") continue; // hide finished goals; they stay in the file
 			const open = g.subtasks.filter((s) => !s.done).length;
-			lines.push(`${mark[g.status]} ${g.subject}${open ? ` (${open} todo)` : ""}`);
+			lines.push(`${mark[g.status]} ${g.subject}${open ? ` (${open} task${open === 1 ? "" : "s"})` : ""}`);
 		}
 		const c = counts(doc);
 		if (c.done) lines.push(`(${c.done} done, hidden)`);
@@ -201,17 +201,20 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		}
 		const doc = parse(readPlan(ctx));
 		const planFile = planPath(ctx);
+		const planContent = readPlan(ctx); // captured now: ctx is stale after newSession below
 		const parentSession = ctx.sessionManager.getSessionFile();
 		const startMsg = `Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`;
 		exitPlanMode(ctx);
 
 		if (fresh && savedCmdCtx) {
-			// After newSession, `ctx`/`pi` bound to the old session are stale — do post-swap work
+			// After newSession, `ctx`/`pi` bound to the old session are stale; do post-swap work
 			// through the ReplacedSessionContext passed to withSession (see runner.assertActive).
 			const result = await savedCmdCtx.newSession({
 				parentSession,
 				withSession: async (sessionCtx) => {
-					if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
+					// pi.* and the outer ctx are invalidated by newSession; use the fresh sessionCtx only.
+					// (No setSessionName here: it lives on pi/the outer ctx, both stale now. Cosmetic, skip it.)
+					sessionCtx.ui.notify(planContent, "info");
 					await sessionCtx.sendUserMessage(startMsg, { deliverAs: "followUp" });
 				},
 			});
@@ -221,6 +224,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
+		ctx.ui.notify(planContent, "info");
 		pi.sendUserMessage(startMsg, { deliverAs: "followUp" });
 	}
 
