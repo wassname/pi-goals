@@ -37,7 +37,7 @@ export const planDrafting = `\
 You are in plan mode. Explore the repository read-only, then draft a plan into plan.md.
 Do not write or run code in this phase. Produce a plan the human will review and approve.
 
-Right-size the plan — don't force structure that isn't there:
+Right-size the plan, don't force structure that isn't there:
 - Default to ONE goal. Add another only when it's a genuinely separate checkpoint you'd want
   signed off on its own (its own done_when that can pass or fail independently). A long list of
   near-identical goals should be one goal with subtasks. Most objectives are 1-2 goals.
@@ -49,20 +49,20 @@ Write each goal in this shape:
 
 ## Goal: <one short imperative line>
 status: open
-done_when: <one falsifiable check — what is true on disk when this is done>
+done_when: <one falsifiable check; what is true on disk when this is done>
 verify: <optional shell command that exits 0 only when done_when holds; omit if not testable>
 failure_modes:
-  - <a sneaky way this could look done but isn't — terse, optional>
+  - <a sneaky way this could look done but isn't; terse, optional>
 - [ ] <subtask>
 - [ ] <subtask>
 
 Keep it lean:
-- done_when is ONE concrete, checkable condition — not a paragraph, no "if wrong" clause.
+- done_when is ONE concrete, checkable condition, not a paragraph, no "if wrong" clause.
   The symptom of failure goes in failure_modes, not here.
 - failure_modes: 0-2 terse items, only the non-obvious ways a "done" could be wrong (a
   pre-mortem). If you add a verify command, one mode can be "verify passes on a gamed file".
 - subtasks: a short checklist of the real steps; omit them if the goal is a single action.
-- Prefer a verify command when success is a test/build/threshold — a green check beats prose.
+- Prefer a verify command when success is a test/build/threshold. A green check beats prose.
 
 When the plan is drafted, present it and stop for review. Do not begin execution.`;
 
@@ -108,9 +108,9 @@ export const reminder = `\
 <system-reminder>
 Keep plan.md current as you work:
 - tasks: tick the subtasks you've finished; add any new ones you've discovered.
-- log: append ONE short line to ## Log (append — don't rewrite earlier lines).
+- log: append ONE short line to ## Log (append, don't rewrite earlier lines).
 - goal: if the active goal's evidence is in, sign it off by calling CompleteGoal with that
-  evidence. Don't edit status to done by hand — CompleteGoal runs the check and records it.
+  evidence. Don't edit status to done by hand; CompleteGoal runs the check and records it.
 - otherwise: keep working toward the active goal. Don't stop to ask unless you're genuinely
   blocked; if blocked, say what's blocking and why.
 </system-reminder>`;
@@ -123,7 +123,7 @@ Keep plan.md current as you work:
  * ──────────────────────────────────────────────────────────────────────── */
 export const continuation = `\
 Continue toward the active goal in plan.md. If it now meets its done_when, call CompleteGoal
-with your evidence (point to durable artifacts — saved logs, committed diffs, files — not just
+with your evidence (point to durable artifacts: saved logs, committed diffs, files, not just
 claims). If you're blocked, state what's blocking it.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ claims). If you're blocked, state what's blocking it.`;
 export const loopJudgeSystem = `\
 You decide whether an autonomous coding agent should keep working or pause for the human.
 Be conservative: only pause when the work is plainly finished or plainly blocked. When in
-doubt, continue. You are not verifying correctness — a later read-only judge does that.
+doubt, continue. You are not verifying correctness; a later read-only judge does that.
 Reply with ONLY a JSON object, no other text: {"done": boolean, "reason": "<one sentence>"}.
 Set done=true only if the agent's last message shows the active goal's done_when is met, or
 the agent says it is blocked and needs the human.`;
@@ -167,11 +167,11 @@ ${p.lastResponse}
  * contract — the oracle returns prose by default, so parse the VERDICT line.
  * ──────────────────────────────────────────────────────────────────────── */
 export const evidenceJudgeSystem = `\
-You are a read-only reviewer signing off a coding goal. Do not trust claims — verify.
+You are a read-only reviewer signing off a coding goal. Do not trust claims; verify.
 Use read/grep/find/ls to inspect the repository and the cited artifacts yourself. Re-read the
 files, logs, and diffs the evidence points to; if something it asserts isn't on disk, you can't
 confirm it. If a verify command was run, judge whether it genuinely tests the criterion or
-could pass while one of the listed failure modes still holds — a tautological or skipped test
+could pass while one of the listed failure modes still holds; a tautological or skipped test
 is a reject. Check each failure mode is actually ruled out, not just unmentioned.
 
 Finish with exactly these two lines and nothing after:
@@ -202,7 +202,7 @@ Agent's evidence:
 ${p.evidence}
 
 Artifacts it points to (inspect these):
-${p.paths.map((x) => `  - ${x}`).join("\n") || "  (none listed — note this)"}
+${p.paths.map((x) => `  - ${x}`).join("\n") || "  (none listed, note this)"}
 
 Verify the goal against its done_when. Then give your VERDICT.`;
 }

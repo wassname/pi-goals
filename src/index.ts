@@ -202,17 +202,17 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const doc = parse(readPlan(ctx));
 		const planFile = planPath(ctx);
 		const parentSession = ctx.sessionManager.getSessionFile();
+		const startMsg = `Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`;
 		exitPlanMode(ctx);
-		if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
 
 		if (fresh && savedCmdCtx) {
+			// After newSession, `ctx`/`pi` bound to the old session are stale — do post-swap work
+			// through the ReplacedSessionContext passed to withSession (see runner.assertActive).
 			const result = await savedCmdCtx.newSession({
 				parentSession,
-				withSession: async () => {
-					pi.sendUserMessage(
-						`Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`,
-						{ deliverAs: "followUp" },
-					);
+				withSession: async (sessionCtx) => {
+					if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
+					await sessionCtx.sendUserMessage(startMsg, { deliverAs: "followUp" });
 				},
 			});
 			if (result.cancelled) {
@@ -220,10 +220,8 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			}
 			return;
 		}
-		pi.sendUserMessage(
-			`Work the plan in ${planFile}. Pick an open goal, set it active, work its subtasks, and when its done_when is met call CompleteGoal with the evidence. Keep plan.md current as you go.`,
-			{ deliverAs: "followUp" },
-		);
+		if (doc.objective) pi.setSessionName(`Plan: ${doc.objective}`);
+		pi.sendUserMessage(startMsg, { deliverAs: "followUp" });
 	}
 
 	// --- the one blessed tool: CompleteGoal -------------------------------------------------------
