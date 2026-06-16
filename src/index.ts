@@ -38,7 +38,15 @@ import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { counts, findGoal, type Goal, type PlanDoc, parse, recordSignOff, type SignOff } from "./plan-file.js";
-import { evidenceJudgeSystem, evidenceJudgeUser, planDrafting, planInjection, reminder } from "./prompts.js";
+import {
+	completeGoalDescription,
+	completeGoalParamDescription,
+	evidenceJudgeSystem,
+	evidenceJudgeUser,
+	planDrafting,
+	planInjection,
+	reminder,
+} from "./prompts.js";
 
 const STATE = "pi-goals-state";
 const PLAN_CONTEXT = "pi-goals-context"; // injected plan-mode guidance, stripped from history later
@@ -263,16 +271,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "CompleteGoal",
 		label: "Complete goal",
-		description:
-			"Sign off a goal once its discriminator is satisfied. First fill the goal's evidence: block in " +
-			"goals.md: a list where each item pairs a durable artifact with a short read of it (a quoted+linked " +
-			"log, a table plus how to read it, or a metric plus what it shows; quote the key lines and link the " +
-			"rest, not a pasted blob or a bare claim). Then call this with the goal's desc (the text after " +
-			"'goal:'). Runs the goal's verify command (if any) then a read-only subagent that inspects that " +
-			"evidence against the repo and the discriminator. On accept, the goal is marked done and logged; on " +
-			"reject, it stays open and you get what is missing. The subagent's reasoning is returned either way.",
+		description: completeGoalDescription,
 		parameters: Type.Object({
-			goal: Type.String({ description: "The goal's desc: the exact text after 'goal:' in its line." }),
+			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const content = readPlan(ctx);

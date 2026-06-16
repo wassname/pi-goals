@@ -4,21 +4,22 @@
  * Philosophy: the form guides a process; it does not police one. The agent can
  * edit goals.md freely. These prompts + the goals.md structure make the right path
  * the easy path. The only step that is genuinely rigorous is the evidence judge
- * (6), and even that is reached by guiding the agent to call CompleteGoal, not by
+ * (7), and even that is reached by guiding the agent to call CompleteGoal, not by
  * trapping it. Bypasses stay visible in the git diff and the widget.
  *
- * Flow:
+ * Flow (this file is ordered the way the agent meets each text, so it reads as one pass):
  *   SETUP (plan mode)     1. planDrafting        — drafts goals (read-only phase)
  *   EXEC, each turn start 2. planInjection       — "here is your plan, where you are"
  *   EXEC, periodic        3. reminder            — the typed nudge that drives upkeep + autonomy
  *   EXEC, loop continue   4. continuation        — keep going toward the active goal
  *   EXEC, after each turn 5. loopJudge           — continue / pause (cheap, foolable, ok)
- *   SIGN-OFF              6. evidenceJudge        — read-only verify (rigorous; the one real check)
+ *   SIGN-OFF, agent-side  6. completeGoalTool    — the CompleteGoal tool desc + param the agent reads
+ *   SIGN-OFF, judge-side  7. evidenceJudge       — read-only verify (rigorous; the one real check)
  *
- * Read top to bottom to see the whole process. 5 and 6 are kept adjacent on
- * purpose: the cheap-foolable vs must-not-be-fooled contrast is the design.
+ * Read top to bottom to see the whole process. 5 and 7 embody the design contrast:
+ * the cheap-foolable loop gate vs the must-not-be-fooled sign-off.
  *
- * WIRED in index.ts: 1 planDrafting, 2 planInjection, 3 reminder, 6 evidenceJudge.
+ * WIRED in index.ts: 1 planDrafting, 2 planInjection, 3 reminder, 6 completeGoalTool, 7 evidenceJudge.
  * NOT YET WIRED: 4 continuation and 5 loopJudge define the autonomous re-prompt loop, which is
  * intentionally not built in v1 (an until-done-style loop was judged too complex). They stay here so
  * the full intended flow is reviewable; wire them if/when the loop is added.
@@ -192,7 +193,29 @@ ${p.lastResponse}
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * 6. evidenceJudge  —  SIGN-OFF, the one rigorous check
+ * 6. completeGoalTool  —  SIGN-OFF, agent-side
+ *
+ * The description + param the agent reads on the one blessed tool, CompleteGoal.
+ * This is where the agent meets the sign-off: it fills evidence and calls the
+ * tool, which then runs verify + the judge (7). Kept here with the rest of the
+ * model-facing text so the whole process reads top to bottom.
+ * ──────────────────────────────────────────────────────────────────────── */
+export const completeGoalDescription =
+	"Sign off a goal once its discriminator is satisfied. First fill the goal's evidence: block in " +
+	"goals.md: a list where each item pairs a durable artifact with a short read of it (a quoted+linked " +
+	"log, a table plus how to read it, or a metric plus what it shows; quote the key lines and link the " +
+	"rest, not a pasted blob or a bare claim). The read must show the success POSITIVELY happened (the " +
+	"result is present, the count moved the right way, the metric beat noise), not just that a failure " +
+	"was avoided; ruling out the failure modes is necessary but not sufficient. Then call this with the " +
+	"goal's desc (the text after 'goal:'). Runs the goal's verify command (if any) then a read-only " +
+	"subagent that inspects that evidence against the repo and the discriminator. On accept, the goal is " +
+	"marked done and logged; on reject, it stays open and you get what is missing. The subagent's " +
+	"reasoning is returned either way.";
+
+export const completeGoalParamDescription = "The goal's desc: the exact text after 'goal:' in its line.";
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * 7. evidenceJudge  —  SIGN-OFF, judge-side; the one rigorous check
  *
  * Runs inside CompleteGoal, on a read-only pi subprocess (fresh context via
  * --no-session, so it never sees the working agent's transcript; override to a

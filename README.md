@@ -2,15 +2,14 @@
 
 Plan mode for agreeing on goals before any code gets written. Each goal names the subtle failure mode
 that could fake a "done" and the discriminator that tells real success from it, plus subtasks and the
-evidence that gets checked at sign-off. It all lives in one markdown file you can read and print. A
-widget keeps the goals in front of you through compaction, a reminder nudges the agent to keep the
-file current and work toward the goals on its own, and a goal is signed off only after a read-only
-subagent has checked its evidence.
+evidence checked at sign-off. It lives in one markdown file. A widget keeps the goals in front of you
+through compaction, a reminder nudges the agent to keep the file current, and a goal is signed off
+only after a read-only subagent checks its evidence.
 
-It guides rather than guards. Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/milestone)
-and [burneikis/pi-plan](https://github.com/burneikis/pi-plan), it leans on a form and a process to
-steer the agent and trust its judgement. [pi-lgtm](https://github.com/wassname/pi-lgtm) was my earlier
-attempt and got too complex; this one stays small and maintainable.
+Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/milestone) and
+[burneikis/pi-plan](https://github.com/burneikis/pi-plan), it guides rather than guards: a form and a
+process the agent follows. [pi-lgtm](https://github.com/wassname/pi-lgtm) was my earlier, more complex
+attempt.
 
 ## Install
 
@@ -46,14 +45,12 @@ model for the sign-off judge (the default is your current model).
 
 ## Example
 
-Start plan mode with an optional seed:
-
 ```
 /goals audit the papers dir metadata and clean up empty dirs
 ```
 
-The agent explores read-only, then drafts the goal with a subtle failure mode and the discriminator
-that beats it, and stops for review:
+The agent explores read-only, drafts the goal with a subtle failure mode and the discriminator that
+beats it, and stops for review:
 
 ```markdown
 ## Goals
@@ -69,8 +66,8 @@ that beats it, and stops for review:
     - <empty until sign-off>
 ```
 
-You choose Ready. The agent works the subtasks, then fills `evidence` (each item an artifact plus a
-short read of it) and calls `CompleteGoal`:
+You choose Ready. The agent works the subtasks, fills `evidence` (each item an artifact plus a short
+read of it), and calls `CompleteGoal`:
 
 ```markdown
   - evidence:
@@ -78,7 +75,7 @@ short read of it) and calls `CompleteGoal`:
     - > 48 files renamed; almost certain done, the silent-resolver failure mode is ruled out
 ```
 
-A fresh read-only subagent re-checks that evidence against the repo and the discriminator, then
+A fresh read-only subagent re-checks the evidence against the repo and the discriminator, then
 returns its verdict and reasoning:
 
 ```
@@ -91,8 +88,8 @@ VERDICT: accept
 
 ## The goals.md format
 
-One project-local file, `<cwd>/.pi/goals.md` (gitignored, like pi-tasks), holds the title, a context
-block, the goals, and a short append-only log. A fresh `/goals` draft replaces it.
+One project-local file, `<cwd>/.pi/goals.md` (gitignored), holds the title, a context block, the
+goals, and a short append-only log. A fresh `/goals` draft replaces it.
 
 ```markdown
 # ship the cache layer
@@ -123,29 +120,26 @@ Latency target came from the SLO review; keep the existing client API.
   `[/]` active, `[x]` done, `[-]` cancelled). Goals are matched by their text, so the number is just
   for you to reference.
 - The `discriminator` is the success test, written while planning: the positive observation that the
-  goal actually succeeded and that none of the `subtle failure mode`s could fake. It has to show
-  something happened (a count moved, a test exercised the path, a metric beat noise), not just that a
-  failure was avoided. `evidence` is the proof, filled at sign-off:
-  each item pairs a durable artifact (a quoted and linked log, a table, a metric) with a short read of
-  it, not a bare claim. `verify`, when present, is the deterministic first stage of the sign-off.
-- Subtasks are any checkbox without a `goal:` prefix, under `- tasks:` (`[/]` in progress, `[-]`
-  cancelled). The agent ticks them, appends to `## Log`, and sets a goal `[/]` when it starts it. Only
-  `CompleteGoal` writes `[x]`. Several goals can be active at once.
+  goal succeeded and that none of the `subtle failure mode`s could fake (a count moved, a test
+  exercised the path, a metric beat noise), not just that a failure was avoided. `evidence` is the
+  proof, filled at sign-off: each item pairs a durable artifact (a quoted and linked log, a table, a
+  metric) with a short read of it. `verify`, when present, is the deterministic first stage.
+- Subtasks are any checkbox without a `goal:` prefix, under `- tasks:`. The agent ticks them, appends
+  to `## Log`, and sets a goal `[/]` when it starts it; only `CompleteGoal` writes `[x]`. Several
+  goals can be active at once.
 
 ## Signing off a goal (`CompleteGoal`)
 
 `CompleteGoal(goal)` (matched by the goal's text) is the only tool that marks a goal done; everything
-else is the agent editing the file. It reads the goal's `evidence:` block from `.pi/goals.md`, so the
-proof stays in the file where you can review it, then:
+else is the agent editing the file. It reads the goal's `evidence:` block from `.pi/goals.md`, then:
 
-1. If the goal has a `verify:` command, it runs. A non-zero exit rejects right away, with no model
-   call.
+1. If the goal has a `verify:` command, it runs. A non-zero exit rejects right away, no model call.
 2. Otherwise a read-only `pi` subprocess (a fresh `--no-session` context, so it never sees the working
    agent's transcript) inspects the `evidence:` against the repo, the `discriminator`, and the
-   `subtle failure mode`, and returns a verdict. It re-derives from the cited artifacts rather than
-   trusting the claim, so list real artifacts, not assertions.
-3. On accept, the goal flips to `[x]` and a `## Log` line is written. On reject, the goal stays open
-   and the agent is told what is missing. Either way the judge's reasoning comes back in the result.
+   `subtle failure mode`. It re-derives from the cited artifacts rather than trusting the claim, so
+   list real artifacts, not assertions.
+3. On accept, the goal flips to `[x]` and a `## Log` line is written. On reject, it stays open and the
+   agent is told what is missing. Either way the judge's reasoning comes back in the result.
 
 The judge defaults to your current model (a fresh context, same weights). Point it at another with
 `/goals judge <provider/model>` for an independent cross-family check.
