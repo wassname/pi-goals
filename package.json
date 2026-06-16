@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.0.1",
-  "description": "One goals.md: set goals in plan mode, work them, sign off only when a read-only check passes. Successor to pi-lgtm.",
+  "description": "One .pi/goals.md: set goals in plan mode, work them, sign off only when a read-only check passes. Successor to pi-lgtm.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",

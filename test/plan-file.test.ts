@@ -1,27 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { appendLog, counts, findGoal, parse, recordSignOff, setGoalStatus } from "../src/plan-file.js";
 
-const SAMPLE = `# Goals: ship the cache layer
+const SAMPLE = `# papers audit
 
-## Goal: [/] Implement cache layer
-<!-- id: cache-layer-1 -->
-done_when: p95 < 50ms on bench-X. If wrong: timeouts in load-test.log
-verify: pytest tests/cache -q
-failure_modes:
-  - cache silently bypassed (hit-rate ~0, latency ok by luck)
-  - bench too small to exercise eviction
-- [x] wire cache client
-- [ ] eviction policy
-- [ ] load test
-evidence:
-  - load-test.log shows p95=41ms
-  - hit-rate 0.93 in load-test.log
+Clean up steering/ metadata and kill empty dirs. Keep it read-only until I approve.
 
-## Goal: [ ] Document the API
-<!-- id: document-the-api-1 -->
-done_when: every public fn has a docstring; else sphinx warns
-failure_modes:
-  - docstrings exist but are stale
+## Goals
+
+1. [/] goal: Implement cache layer
+  - discriminator: hit-rate > 0.8 in load-test.log (a bypass reads ~0)
+  - subtle failure mode: cache silently bypassed, latency ok by luck
+  - verify: pytest tests/cache -q
+  - tasks:
+    1. [x] wire cache client
+    2. [/] eviction policy
+    3. ~~[ ]~~ distributed cache, out of scope
+  - evidence:
+    - > load-test.log: p95=41ms
+    - > hit-rate 0.93 (not bypassed)
+2. [ ] goal: Document the API
+  - discriminator: every public fn has a docstring; sphinx warns on none
+  - subtle failure mode: docstrings exist but are stale
+
+# Future work / out of scope
+
+- distributed cache
 
 ## Log
 - 2026-06-15 14:02  cache client wired; eviction next
@@ -49,92 +52,74 @@ function lineDelta(a: string, b: string): { added: number; removed: number } {
 describe("parse", () => {
 	const doc = parse(SAMPLE);
 
-	it("reads the objective and both goals", () => {
-		expect(doc.objective).toBe("ship the cache layer");
-		expect(doc.goals.map((g) => g.id)).toEqual(["cache-layer-1", "document-the-api-1"]);
+	it("reads the title and both goals (matched by subject)", () => {
+		expect(doc.title).toBe("papers audit");
+		expect(doc.goals.map((g) => g.subject)).toEqual(["Implement cache layer", "Document the API"]);
 	});
 
-	it("reads goal fields, with status from the header checkbox", () => {
-		const g = findGoal(doc, "cache-layer-1");
-		expect(g?.subject).toBe("Implement cache layer");
-		expect(g?.status).toBe("active"); // from the [/] in the header
-		expect(g?.done_when).toBe("p95 < 50ms on bench-X. If wrong: timeouts in load-test.log");
+	it("reads goal status from the checkbox", () => {
+		expect(findGoal(doc, "Implement cache layer")?.status).toBe("active"); // [/]
+		expect(findGoal(doc, "Document the API")?.status).toBe("open"); // [ ]
+	});
+
+	it("reads discriminator, subtle failure mode, and verify as separate fields", () => {
+		const g = findGoal(doc, "Implement cache layer");
+		expect(g?.discriminator).toEqual(["hit-rate > 0.8 in load-test.log (a bypass reads ~0)"]);
+		expect(g?.failure_modes).toEqual(["cache silently bypassed, latency ok by luck"]);
 		expect(g?.verify).toBe("pytest tests/cache -q");
-		expect(findGoal(doc, "document-the-api-1")?.status).toBe("open"); // from [ ]
 	});
 
-	it("separates failure_modes from subtasks", () => {
-		const g = findGoal(doc, "cache-layer-1");
-		expect(g?.failure_modes).toHaveLength(2);
-		expect(g?.failure_modes[0]).toContain("cache silently bypassed");
+	it("reads subtasks with their checkbox state, strikethrough as cancelled", () => {
+		const g = findGoal(doc, "Implement cache layer");
 		expect(g?.subtasks).toEqual([
-			{ text: "wire cache client", done: true },
-			{ text: "eviction policy", done: false },
-			{ text: "load test", done: false },
+			{ text: "wire cache client", status: "done" },
+			{ text: "eviction policy", status: "active" },
+			{ text: "distributed cache, out of scope", status: "cancelled" },
 		]);
 	});
 
-	it("reads the evidence block, separate from failure_modes and subtasks", () => {
-		const g = findGoal(doc, "cache-layer-1");
-		expect(g?.evidence).toEqual(["load-test.log shows p95=41ms", "hit-rate 0.93 in load-test.log"]);
-		expect(g?.failure_modes).toHaveLength(2); // unchanged by the evidence block that follows the subtasks
-		const g2 = findGoal(doc, "document-the-api-1");
-		expect(g2?.evidence).toEqual([]); // a goal with no evidence block parses to []
+	it("reads the evidence block separate from the other lists", () => {
+		const g = findGoal(doc, "Implement cache layer");
+		expect(g?.evidence).toEqual(["> load-test.log: p95=41ms", "> hit-rate 0.93 (not bypassed)"]);
+		expect(findGoal(doc, "Document the API")?.evidence).toEqual([]); // a goal with no evidence parses to []
+	});
+
+	it("keeps a multi-line evidence item together (quote + interpretation)", () => {
+		const doc2 = parse(
+			`# x\n\n## Goals\n\n1. [ ] goal: G\n  - discriminator: report has non-zero counts\n  - evidence:\n    - > report.txt: counts 52 -> 4\n      remaining 4 = index + 3 notes\n      almost certain the discriminator passes\n    - > second item, single line\n`,
+		);
+		expect(findGoal(doc2, "G")?.evidence).toEqual([
+			"> report.txt: counts 52 -> 4\nremaining 4 = index + 3 notes\nalmost certain the discriminator passes",
+			"> second item, single line",
+		]);
 	});
 
 	it("reads the log verbatim and counts by status", () => {
 		expect(doc.log).toEqual(["- 2026-06-15 14:02  cache client wired; eviction next"]);
 		expect(counts(doc)).toEqual({ done: 0, open: 1, active: 1 });
 	});
-});
 
-describe("failure_modes vs subtask disambiguation", () => {
-	it("a column-0 checkbox right after failure_modes: is a SUBTASK", () => {
-		const doc = parse(
-			`# Goals: x\n\n## Goal: [ ] G\n<!-- id: g-1 -->\ndone_when: z\nfailure_modes:\n- [ ] first subtask\n- [x] second subtask\n`,
-		);
-		const g = findGoal(doc, "g-1");
-		expect(g?.failure_modes).toEqual([]);
-		expect(g?.subtasks).toEqual([
-			{ text: "first subtask", done: false },
-			{ text: "second subtask", done: true },
-		]);
-	});
-
-	it("an indented checkbox-shaped item inside failure_modes is a FAILURE MODE", () => {
-		const doc = parse(
-			`# Goals: x\n\n## Goal: [ ] G\n<!-- id: g-2 -->\ndone_when: z\nfailure_modes:\n  - [ ] prose that looks like a checkbox\n- [ ] real subtask\n`,
-		);
-		const g = findGoal(doc, "g-2");
-		expect(g?.failure_modes).toEqual(["[ ] prose that looks like a checkbox"]);
-		expect(g?.subtasks).toEqual([{ text: "real subtask", done: false }]);
-	});
-
-	it("a goal with no failure_modes keeps its subtasks", () => {
-		const doc = parse(`# Goals: x\n\n## Goal: [ ] G\n<!-- id: g-3 -->\ndone_when: z\n- [ ] only subtask\n`);
-		const g = findGoal(doc, "g-3");
-		expect(g?.failure_modes).toEqual([]);
-		expect(g?.subtasks).toEqual([{ text: "only subtask", done: false }]);
+	it("ignores the Future work section, does not read it as goals or log", () => {
+		expect(doc.goals).toHaveLength(2);
+		expect(doc.log).toHaveLength(1);
 	});
 });
 
 describe("the two CompleteGoal writes (minimal diff)", () => {
 	it("setGoalStatus replaces exactly one line, scoped to the right goal", () => {
-		const next = setGoalStatus(SAMPLE, "cache-layer-1", "done");
+		const next = setGoalStatus(SAMPLE, "Implement cache layer", "done");
 		expect(lineDelta(SAMPLE, next)).toEqual({ added: 1, removed: 1 });
-		expect(findGoal(parse(next), "cache-layer-1")?.status).toBe("done");
-		expect(findGoal(parse(next), "document-the-api-1")?.status).toBe("open"); // untouched
+		expect(findGoal(parse(next), "Implement cache layer")?.status).toBe("done");
+		expect(findGoal(parse(next), "Document the API")?.status).toBe("open"); // untouched
 	});
 
-	it("setGoalStatus targets the second goal without touching the first", () => {
-		const next = setGoalStatus(SAMPLE, "document-the-api-1", "active");
-		expect(findGoal(parse(next), "cache-layer-1")?.status).toBe("active");
-		expect(findGoal(parse(next), "document-the-api-1")?.status).toBe("active");
+	it("setGoalStatus keeps the number and goal: prefix, flips only the checkbox", () => {
+		expect(setGoalStatus(SAMPLE, "Implement cache layer", "done")).toContain("1. [x] goal: Implement cache layer");
+		expect(setGoalStatus(SAMPLE, "Document the API", "cancelled")).toContain("2. [-] goal: Document the API");
 	});
 
-	it("setGoalStatus writes the checkbox char into the header line", () => {
-		expect(setGoalStatus(SAMPLE, "cache-layer-1", "done")).toContain("## Goal: [x] Implement cache layer");
-		expect(setGoalStatus(SAMPLE, "document-the-api-1", "cancelled")).toContain("## Goal: [-] Document the API");
+	it("setGoalStatus throws on an unknown subject", () => {
+		expect(() => setGoalStatus(SAMPLE, "no such goal", "done")).toThrow();
 	});
 
 	it("appendLog adds exactly one line under ## Log", () => {
@@ -147,7 +132,7 @@ describe("the two CompleteGoal writes (minimal diff)", () => {
 	});
 
 	it("appendLog creates the section when absent", () => {
-		const noLog = "# Goals: x\n\n## Goal: [ ] y\n<!-- id: y-1 -->\ndone_when: z\n";
+		const noLog = "# x\n\n## Goals\n\n1. [ ] goal: y\n  - discriminator: z\n";
 		expect(parse(appendLog(noLog, "first entry")).log).toEqual(["- first entry"]);
 	});
 });
@@ -156,30 +141,30 @@ describe("recordSignOff (CompleteGoal's pure record logic)", () => {
 	const WHEN = "2026-06-15 16:00";
 
 	it("accept flips status:done and logs a sign-off line", () => {
-		const r = recordSignOff(SAMPLE, "cache-layer-1", WHEN, { kind: "accepted" });
+		const r = recordSignOff(SAMPLE, "Implement cache layer", WHEN, { kind: "accepted" });
 		expect(r.isError).toBe(false);
 		const doc = parse(r.content);
-		expect(findGoal(doc, "cache-layer-1")?.status).toBe("done");
-		expect(doc.log.at(-1)).toBe(`- ${WHEN} signed off #cache-layer-1: Implement cache layer (oracle accept)`);
+		expect(findGoal(doc, "Implement cache layer")?.status).toBe("done");
+		expect(doc.log.at(-1)).toBe(`- ${WHEN} signed off "Implement cache layer" (judge accept)`);
 	});
 
 	it("verify_failed only logs a reject line, status stays active", () => {
-		const r = recordSignOff(SAMPLE, "cache-layer-1", WHEN, { kind: "verify_failed", exitCode: 1, outputTail: "boom" });
+		const r = recordSignOff(SAMPLE, "Implement cache layer", WHEN, { kind: "verify_failed", exitCode: 1, outputTail: "boom" });
 		expect(r.isError).toBe(true);
 		const doc = parse(r.content);
-		expect(findGoal(doc, "cache-layer-1")?.status).toBe("active"); // NOT marked done
-		expect(doc.log.at(-1)).toBe(`- ${WHEN} reject #cache-layer-1: verify exit 1`);
+		expect(findGoal(doc, "Implement cache layer")?.status).toBe("active"); // NOT marked done
+		expect(doc.log.at(-1)).toBe(`- ${WHEN} reject "Implement cache layer": verify exit 1`);
 	});
 
 	it("rejected logs the (one-lined) missing reason, status stays", () => {
-		const r = recordSignOff(SAMPLE, "cache-layer-1", WHEN, { kind: "rejected", missing: "no\nsaved\nbench log" });
+		const r = recordSignOff(SAMPLE, "Implement cache layer", WHEN, { kind: "rejected", missing: "no\nsaved\nbench log" });
 		expect(r.isError).toBe(true);
-		expect(findGoal(parse(r.content), "cache-layer-1")?.status).toBe("active");
-		expect(parse(r.content).log.at(-1)).toBe(`- ${WHEN} reject #cache-layer-1: no saved bench log`);
+		expect(findGoal(parse(r.content), "Implement cache layer")?.status).toBe("active");
+		expect(parse(r.content).log.at(-1)).toBe(`- ${WHEN} reject "Implement cache layer": no saved bench log`);
 	});
 
 	it("unknown goal returns an error and does not touch the file", () => {
-		const r = recordSignOff(SAMPLE, "nope-1", WHEN, { kind: "accepted" });
+		const r = recordSignOff(SAMPLE, "nope", WHEN, { kind: "accepted" });
 		expect(r.isError).toBe(true);
 		expect(r.content).toBe(SAMPLE);
 	});

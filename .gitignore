@@ -1,5 +1,6 @@
 node_modules/
 dist/
 *.log
+.pi/
 docs/reviews/raw.jsonl
 docs/reviews/err.txt

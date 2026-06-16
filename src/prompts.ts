@@ -8,7 +8,7 @@
  * trapping it. Bypasses stay visible in the git diff and the widget.
  *
  * Flow:
- *   SETUP (plan mode)     1. planDrafting        — strong/sticky model drafts goals
+ *   SETUP (plan mode)     1. planDrafting        — drafts goals (read-only phase)
  *   EXEC, each turn start 2. planInjection       — "here is your plan, where you are"
  *   EXEC, periodic        3. reminder            — the typed nudge that drives upkeep + autonomy
  *   EXEC, loop continue   4. continuation        — keep going toward the active goal
@@ -22,61 +22,82 @@
  * NOT YET WIRED: 4 continuation and 5 loopJudge define the autonomous re-prompt loop, which is
  * intentionally not built in v1 (an until-done-style loop was judged too complex). They stay here so
  * the full intended flow is reviewable; wire them if/when the loop is added.
+ *
+ * The goal's test is the DISCRIMINATOR: the concrete observation that tells real success from the
+ * named subtle failure mode. It replaces a vague "done_when". Evidence is empty at planning and
+ * filled at sign-off (you don't always know the exact artifacts up front; the judge checks them then).
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
  * 1. planDrafting  —  SETUP, plan mode
  *
- * System guidance for the plan-phase agent. Runs on the plan model (may differ
- * from the execution model; the choice is sticky — see oracle.json-style config).
- * This phase is read-only: explore, then draft goals into goals.md. No code yet.
- * The field requirements here are the whole "elicitation" — get them agreed up
- * front, because the human reviews this output before any execution.
+ * System guidance for the plan-phase agent. This phase is read-only (edit/write
+ * and mutating bash are blocked by a tool hook): explore, then draft goals into
+ * goals.md. The fields here are the whole "elicitation"; the human reviews this
+ * output before any execution.
  * ──────────────────────────────────────────────────────────────────────── */
 export const planDrafting = `\
-You are in plan mode. Explore the repository read-only, then draft goals into goals.md.
-Do not write or run code in this phase. Produce a plan the human will review and approve.
+You are in plan mode. The objective may arrive through conversation, not as one up-front command.
+Explore the repository read-only first, then ask: resolve discoverable facts by looking them up, and
+only ask the human when the answer is a genuine intent or preference choice that exploration can't
+settle. Don't write goals that branch on something you could just check. Do not write or run code in
+this phase (edit and write are blocked, and so is mutating bash). If the ask is itself read-only
+(e.g. research, a search, a report), explore enough to scope it, but leave the actual deliverable for
+after the human approves the plan. When the objective is clear, draft goals into goals.md and stop
+for review. Produce a plan the human will review and approve.
 
 Right-size it, don't force structure that isn't there:
-- Default to ONE goal. Add another only when it's a genuinely separate checkpoint you'd want
-  signed off on its own (its own done_when that can pass or fail independently). A long list of
-  near-identical goals should be one goal with subtasks. Most objectives are 1-2 goals.
-- Subtasks are the steps inside a goal. Add them when a goal has 3+ distinct steps; skip them for
-  a single-action goal. Don't pad with trivial steps.
-- Don't invent phases to look thorough. When in doubt, merge.
+- Default to ONE goal. Add another only when it's a genuinely separate checkpoint you'd want signed
+  off on its own (it can pass or fail independently). Most objectives are 1-2 goals.
+- Subtasks are the steps inside a goal. Add them when a goal has 3+ distinct steps; skip them for a
+  single-action goal. Don't pad with trivial steps.
+- Don't invent goals to look thorough. When in doubt, merge.
 
-Write the whole file in this shape:
+Write the whole file in this shape (markdown checkboxes, made to be skim-reviewed):
 
-# Goals: <the objective>
+# <short plan title>
 
-## Goal: [ ] <one short imperative line>
-<!-- id: <kebab-case-slug, unique> -->
-done_when: <one falsifiable check; what is true on disk when this is done>
-verify: <optional shell command that exits 0 only when done_when holds; omit if not testable>
-- [ ] <subtask>
-- [ ] <subtask>
+<context: restate the user's ask, their stated preferences, and any decisions you've agreed on>
 
-failure_modes:
-  - <a sneaky way this could look done but isn't; terse, optional>
-evidence:
-  - <leave empty now; fill at sign-off with proof the done_when is met (durable artifacts)>
+## Goals
 
-Keep it lean:
-- The goal's state is the checkbox in its header: [ ] open, [/] active, [x] done, [-] cancelled.
-  Leave it [ ] at planning. Every goal needs its <!-- id --> line; CompleteGoal finds goals by it.
-- The subtask checklist comes right under the goal; failure_modes and the (empty) evidence block
-  sit at the end, after a blank line. Don't let the dash-lists run together.
-- evidence stays empty at planning. You fill it when the goal is actually done, just before calling
-  CompleteGoal, with a "- " list pointing at real artifacts (files, saved logs, committed diffs).
-- done_when is ONE concrete, checkable condition, not a paragraph, no "if wrong" clause.
-  The symptom of failure goes in failure_modes, not here.
-- done_when names a real artifact: a file, a test result, a committed diff, a program's output.
-  Never write it about goals.md's own checkbox or ## Log: CompleteGoal writes those when it accepts,
-  so a done_when about them is circular and the sign-off can never pass.
-- failure_modes: 0-2 terse items, only the non-obvious ways a "done" could be wrong (a
-  pre-mortem). If you add a verify command, one mode can be "verify passes on a gamed file".
-- subtasks: a short checklist of the real steps; omit them if the goal is a single action.
-- Prefer a verify command when success is a test/build/threshold. A green check beats prose.
+1. [ ] goal: <one short imperative line>
+  - subtle failure mode: <a way this could look done but isn't>
+  - discriminator: <the concrete observation that tells real success from that failure>
+  - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not testable>
+  - tasks:
+    1. [ ] <subtask>
+    2. [ ] <subtask>
+  - evidence:
+    - <leave empty now; filled at sign-off>
+2. [ ] goal: <...>
+
+# Future work / out of scope
+
+- <anything deliberately not in these goals>
+
+## Log
+
+Keep it lean and legible:
+- A goal is a checkbox line beginning "goal:"; its state is the checkbox ([ ] open, [/] active, [x]
+  done, [-] cancelled). Leave goals [ ] at planning. The number is just for the human to reference.
+- subtle failure mode + discriminator are the heart of this. List the ways a "done" could look
+  achieved but not be (empty/zero-count output, a silently-errored step, a gamed test, a flat/no-op
+  result that dodged every trap and still showed nothing; these are examples, find the ones that fit).
+- The discriminator is the POSITIVE observation that the goal actually succeeded AND that none of
+  those failure modes could have produced. It must show success happened -- the count moved the right
+  way, the test really exercised the path, the metric beat noise -- not merely that a failure was
+  ruled out: avoiding every failure mode is necessary, not sufficient. Name the success signal first,
+  then check it isn't something a failure mode could fake. Keep it terse.
+- The discriminator is the success test, written now, in place of a vague "done": make it a concrete,
+  checkable observation about a real artifact (a file, a test result, a committed diff, a metric), not
+  about goals.md's own checkbox.
+- subtasks: any checkbox WITHOUT a "goal:" prefix, under "- tasks:". Use [/] for in progress and [-]
+  for cancelled/impossible.
+- verify: prefer one when the discriminator is a test, build, threshold, or metric: a green check or
+  a printed number beats prose. Omit it otherwise.
+- evidence stays empty at planning. You don't always know the exact artifacts up front, and that's
+  fine: you fill evidence at sign-off, and a fresh read-only judge checks it then.
 
 When the goals are drafted, present them and stop for review. Do not begin execution.`;
 
@@ -85,25 +106,26 @@ When the goals are drafted, present them and stop for review. Do not begin execu
  *
  * A late user-role message, NOT a system-prompt mutation (keeps the prefix cache
  * valid). Built from the parsed plan. MUST be byte-identical when nothing changed:
- * fixed field order, no volatile timestamps in the body. Pass only the active
- * goal + its open subtasks + the last log line — not the whole file.
+ * fixed field order, no volatile timestamps. Pass only the active goal + its open
+ * subtasks + the last log line, not the whole file.
  * ──────────────────────────────────────────────────────────────────────── */
 export function planInjection(p: {
-  objective: string;
-  activeGoal: { subject: string; done_when: string; openSubtasks: string[] } | null;
+  title: string;
+  activeGoal: { subject: string; discriminator: string[]; openSubtasks: string[] } | null;
   lastLogLine: string | null;
   counts: { done: number; open: number };
 }): string {
   if (!p.activeGoal) {
-    return `Goals (goals.md): ${p.objective}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its header to [/]) or run /goals.`;
+    return `Goals (goals.md): ${p.title}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its checkbox to [/]) or run /goals.`;
   }
   const subtasks = p.activeGoal.openSubtasks.length
     ? p.activeGoal.openSubtasks.map((s) => `  - [ ] ${s}`).join("\n")
     : "  (no open subtasks)";
+  const disc = p.activeGoal.discriminator.length ? p.activeGoal.discriminator.join("; ") : "(none set)";
   return `\
-Goals (goals.md): ${p.objective}
+Goals (goals.md): ${p.title}
 Active goal: ${p.activeGoal.subject}
-done_when: ${p.activeGoal.done_when}
+discriminator (the success test): ${disc}
 Open subtasks:
 ${subtasks}
 Last log: ${p.lastLogLine ?? "(none yet)"}
@@ -114,20 +136,20 @@ Progress: ${p.counts.done} done, ${p.counts.open} open.`;
  * 3. reminder  —  EXEC, periodic system-reminder
  *
  * The typed nudge. This is both the housekeeping and the autonomy engine — it is
- * what makes the process get followed without a hard gate. Fires after N
- * file-modifying turns since the last goals.md update while a goal is active.
- * Keep the wording stable so it doesn't thrash the cache.
+ * what makes the process get followed without a hard gate. Fires after a turn that
+ * left goals.md untouched while a goal is active. Keep the wording stable so it
+ * doesn't thrash the cache.
  * ──────────────────────────────────────────────────────────────────────── */
 export const reminder = `\
 <system-reminder>
 Keep goals.md current as you work:
-- tasks: tick the subtasks you've finished; add any new ones you've discovered.
+- tasks: tick the subtasks you've finished ([/] for in progress); add any you've discovered.
 - log: append ONE short line to ## Log (append, don't rewrite earlier lines).
-- goal: when the active goal's done_when is met, fill its evidence: block in goals.md (a "- " list
-  pointing at durable artifacts), then call CompleteGoal with the goal_id. Don't tick the goal's
-  header [x] by hand; CompleteGoal reads the evidence, runs the check, and writes [x].
-- otherwise: keep working toward the active goal. Don't stop to ask unless you're genuinely
-  blocked; if blocked, say what's blocking and why.
+- goal: when the active goal's discriminator is satisfied, fill its evidence: block in goals.md (a
+  list pointing at durable artifacts), then call CompleteGoal with the goal's desc. Don't tick the
+  goal [x] by hand; CompleteGoal reads the evidence, runs the check, and writes [x].
+- otherwise: keep working toward the active goal. Don't stop to ask unless you're genuinely blocked;
+  if blocked, say what's blocking it.
 </system-reminder>`;
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -137,9 +159,9 @@ Keep goals.md current as you work:
  * continue. Does not mutate the system prompt, so the cache holds.
  * ──────────────────────────────────────────────────────────────────────── */
 export const continuation = `\
-Continue toward the active goal in goals.md. If it now meets its done_when, fill the goal's
-evidence: block (durable artifacts: saved logs, committed diffs, files, not just claims) and then
-call CompleteGoal with the goal_id. If you're blocked, state what's blocking it.`;
+Continue toward the active goal in goals.md. If its discriminator is now satisfied, fill the goal's
+evidence: block (durable artifacts, e.g. saved logs, committed diffs, files, not just claims) and
+then call CompleteGoal with the goal's desc. If you're blocked, state what's blocking it.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * 5. loopJudge  —  EXEC, runs after each turn to decide continue / pause
@@ -154,12 +176,12 @@ You decide whether an autonomous coding agent should keep working or pause for t
 Be conservative: only pause when the work is plainly finished or plainly blocked. When in
 doubt, continue. You are not verifying correctness; a later read-only judge does that.
 Reply with ONLY a JSON object, no other text: {"done": boolean, "reason": "<one sentence>"}.
-Set done=true only if the agent's last message shows the active goal's done_when is met, or
-the agent says it is blocked and needs the human.`;
+Set done=true only if the agent's last message shows the active goal's discriminator is satisfied,
+or the agent says it is blocked and needs the human.`;
 
-export function loopJudgeUser(p: { activeGoalDoneWhen: string; lastResponse: string }): string {
+export function loopJudgeUser(p: { discriminator: string; lastResponse: string }): string {
   return `\
-Active goal done_when: ${p.activeGoalDoneWhen}
+Active goal discriminator (the success test): ${p.discriminator}
 
 Agent's last message:
 """
@@ -172,22 +194,26 @@ ${p.lastResponse}
 /* ─────────────────────────────────────────────────────────────────────────
  * 6. evidenceJudge  —  SIGN-OFF, the one rigorous check
  *
- * Runs inside CompleteGoal, on the read-only oracle subprocess (fresh context,
- * strongest reasoning on the chosen provider; override to a different vendor for
- * high-stakes goals). It re-derives from the repo rather than trusting the
- * agent's transcription, and it judges whether a verify command actually tests
- * the criterion or could pass while a named failure mode holds (gaming).
+ * Runs inside CompleteGoal, on a read-only pi subprocess (fresh context via
+ * --no-session, so it never sees the working agent's transcript; override to a
+ * different vendor for an independent cross-family check). It re-derives from the
+ * repo rather than trusting the agent's transcription, and judges whether the
+ * evidence satisfies the discriminator and rules out the named failure mode.
  *
  * The transport gives it read/grep/find/ls. The prompt below imposes the verdict
- * contract — the oracle returns prose by default, so parse the VERDICT line.
+ * contract — the subprocess returns prose by default, so parse the VERDICT line.
  * ──────────────────────────────────────────────────────────────────────── */
 export const evidenceJudgeSystem = `\
 You are a read-only reviewer signing off a coding goal. Do not trust claims; verify.
 Use read/grep/find/ls to inspect the repository and the cited artifacts yourself. Re-read the
 files, logs, and diffs the evidence points to; if something it asserts isn't on disk, you can't
-confirm it. If a verify command was run, judge whether it genuinely tests the criterion or
-could pass while one of the listed failure modes still holds; a tautological or skipped test
-is a reject. Check each failure mode is actually ruled out, not just unmentioned.
+confirm it. Judge whether the evidence shows the goal POSITIVELY succeeded -- the discriminator's
+success signal is actually present, not just that the failure modes were dodged. Avoiding every
+failure mode is necessary but not sufficient: a run can rule out each trap and still have produced
+nothing, so reject "no problems found" that lacks the positive result. Then check the named subtle
+failure modes are genuinely ruled out, not just unmentioned. If a verify command was run,
+judge whether it really tests the discriminator or could pass while the failure mode still holds; a
+tautological or skipped test is a reject.
 
 Finish with exactly these two lines and nothing after:
 VERDICT: accept | reject
@@ -195,10 +221,10 @@ missing: <empty if accept; otherwise a short list of what's needed before this c
 
 export function evidenceJudgeUser(p: {
   subject: string;
-  done_when: string;
+  discriminator: string[];
+  failure_modes: string[];
   verify: string | null;
   verifyResult: { command: string; exitCode: number; outputTail: string } | null;
-  failure_modes: string[];
   evidence: string;
   paths: string[];
 }): string {
@@ -207,9 +233,10 @@ export function evidenceJudgeUser(p: {
     : "verify command: none (no deterministic check for this goal)";
   return `\
 Goal: ${p.subject}
-done_when: ${p.done_when}
-failure_modes:
-${p.failure_modes.map((f) => `  - ${f}`).join("\n")}
+discriminator (must be satisfied):
+${p.discriminator.map((d) => `  - ${d}`).join("\n") || "  (none stated, note this)"}
+subtle failure modes (must be ruled out):
+${p.failure_modes.map((f) => `  - ${f}`).join("\n") || "  (none stated)"}
 
 ${verifyBlock}
 
@@ -219,5 +246,5 @@ ${p.evidence}
 Artifacts it points to (inspect these):
 ${p.paths.map((x) => `  - ${x}`).join("\n") || "  (none listed, note this)"}
 
-Verify the goal against its done_when. Then give your VERDICT.`;
+Verify the evidence satisfies the discriminator and rules out the failure modes. Then give your VERDICT.`;
 }

@@ -1,7 +1,9 @@
 /**
- * pi-goals — plan mode that sets up goals with evidence, tracked in one goals.md, signed off by a
+ * pi-goals — plan mode that sets up goals with evidence, tracked in one .pi/goals.md, signed off by a
  * read-only subagent check. A successor to pi-lgtm, kept deliberately small (≈ burneikis/pi-plan
- * plus the additions: goals + failure_modes + subtasks, a sign-off check, a widget, a reminder).
+ * plus the additions: goals + a discriminator + a subtle failure mode + subtasks, a sign-off check,
+ * a widget, a reminder). A goal's success test is its discriminator: the observation that tells real
+ * success from the named failure mode.
  *
  * Philosophy (spec D3): the form guides, it does not gate. The agent edits goals.md with its normal
  * Edit tool. The one blessed tool is CompleteGoal, which runs the sign-off check and records it. The
@@ -9,19 +11,30 @@
  * judgement rather than guarding it.
  *
  * Flow:
- *   /goals <objective> -> plan mode: agent explores, drafts goals into goals.md (planDrafting guides)
+ *   /goals [objective] -> plan mode (conversational): objective is an optional seed; agent explores
+ *                         read-only, asks, then drafts goals into .pi/goals.md (planDrafting guides)
  *   agent_end          -> review menu (Ready / Edit / $EDITOR / Cancel); Ready offers compaction
  *   execution          -> each turn, inject the plan summary (survives compaction) + a reminder;
  *                         agent works goals, ticks subtasks, appends ## Log, calls CompleteGoal
  *   CompleteGoal       -> optional deterministic verify, then a read-only oracle judge -> accept
  *                         flips status:done + logs; reject returns what's missing
  *
- * All model-facing text lives in prompts.tsx, in flow order.
+ * The plan file lives at <cwd>/.pi/goals.md (project-local, gitignored, like pi-tasks), not in the
+ * repo. A fresh /goals draft just replaces it (the "overwrite" staleness rule).
+ *
+ * Plan mode is read-only: the tool_call hook blocks edit/write (except goals.md itself) and mutating
+ * bash while drafting, so code isn't written before the goals are agreed. Read-only bash exploration
+ * stays open (blocklist, not allowlist).
+ *
+ * Not built (FIXME): no plan-vs-exec model switch on accept (plan-model stickiness); noted at its
+ * call site below.
+ *
+ * All model-facing text lives in prompts.ts, in flow order.
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { counts, findGoal, type Goal, type PlanDoc, parse, recordSignOff, type SignOff } from "./plan-file.js";
@@ -32,6 +45,29 @@ const PLAN_CONTEXT = "pi-goals-context"; // injected plan-mode guidance, strippe
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
+// File mutators blocked while drafting goals (read-only plan mode, like narumiruna/pi-plan-mode), so
+// code isn't written before goals are agreed. The one allowed write is goals.md itself (the
+// deliverable). A read-only task (a pure search) can still be explored in plan mode by nature.
+const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
+// bash is dual-use, so block it only when the command looks mutating; read-only exploration (cat, rg,
+// git log, running a script to inspect) stays open. Blocklist, not allowlist: keep exploration
+// frictionless and just stop the obvious mutators. List adapted from narumiruna/pi-plan-mode; the
+// redirect rule catches `> file` / `>> file` / `>| file` but not fd-dups like `2>&1` or `>&2`.
+const MUTATING_BASH_PATTERNS: RegExp[] = [
+	/\b(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|chgrp|ln|tee|truncate|dd)\b/i,
+	/>\s*[^&\s]/, // redirect to a file (write/append/clobber), excludes 2>&1 and >&2
+	/\bnpm\s+(install|uninstall|update|ci|link|publish|version)\b/i,
+	/\byarn\s+(add|remove|install|publish|upgrade)\b/i,
+	/\bpnpm\s+(add|remove|install|publish|update)\b/i,
+	/\bbun\s+(add|remove|install|update|publish)\b/i,
+	/\bpip\s+(install|uninstall)\b/i,
+	/\buv\s+(add|remove|sync|lock|pip\s+install)\b/i,
+	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|stash|cherry-pick|revert|tag|init|clone)\b/i,
+	/\b(sudo|su|kill|pkill|killall|reboot|shutdown)\b/i,
+	/\bsystemctl\s+(start|stop|restart|enable|disable)\b/i,
+	/\b(vim?|nano|emacs|code|subl)\b/i,
+];
+const PLAN_REL = ".pi/goals.md"; // project-local, gitignored (pi-tasks convention); shown in the widget
 
 interface PlanState {
 	isPlanMode: boolean;
@@ -47,8 +83,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	// newSession is only on the command-handler context; agent_end's ctx lacks it. Save it from /goals.
 	let savedCmdCtx: ExtensionCommandContext | null = null;
 
-	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, "goals.md");
+	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, ".pi", "goals.md");
 	const readPlan = (ctx: ExtensionContext): string => (existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
+	// Our programmatic writes (clear, CompleteGoal). The agent creates/edits the file with its own Edit
+	// tool; this just makes sure .pi/ exists for our writes.
+	const writePlan = (ctx: ExtensionContext, content: string): void => {
+		mkdirSync(join(ctx.cwd, ".pi"), { recursive: true });
+		writeFileSync(planPath(ctx), content);
+	};
 
 	function persist(): void {
 		pi.appendEntry<PlanState>(STATE, state);
@@ -57,7 +99,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	function updateWidget(ctx: ExtensionContext): void {
 		if (state.isPlanMode) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
-			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals", "Write goals to goals.md, then review."]);
+			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals", `Write goals to ${PLAN_REL}, then review.`]);
 			return;
 		}
 		const doc = parse(readPlan(ctx));
@@ -68,17 +110,17 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		}
 		const c = counts(doc);
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${c.done}/${doc.goals.length} goals`));
-		ctx.ui.setWidget(WIDGET_KEY, goalWidgetLines(doc));
+		ctx.ui.setWidget(WIDGET_KEY, [...goalWidgetLines(doc), ctx.ui.theme.fg("muted", PLAN_REL)]);
 	}
 
 	function goalWidgetLines(doc: PlanDoc): string[] {
 		const mark: Record<Goal["status"], string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
-		const lines = [`Goals: ${doc.objective || "(untitled)"}`];
+		const lines = [`Goals: ${doc.title || "(untitled)"}`];
 		for (const g of doc.goals) {
 			// Show every goal with its status glyph (✔ done, ▸ active, ◻ open, ✗ cancelled) so finished
 			// goals read as checked off rather than vanishing. Plans are small, so this stays readable.
 			const total = g.subtasks.length;
-			const done = g.subtasks.filter((s) => s.done).length;
+			const done = g.subtasks.filter((s) => s.status === "done").length;
 			lines.push(`${mark[g.status]} ${g.subject}${total ? ` (${done}/${total} tasks)` : ""}`);
 		}
 		return lines;
@@ -99,24 +141,18 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 				setJudge(arg.slice("judge".length).trim(), ctx);
 				return;
 			}
-			// Bare `/goals` enters plan mode by prompting for the objective (the common expectation).
-			// If the user cancels with no objective, fall back to showing the current plan.
-			let objective = arg;
-			if (!objective) {
-				objective = (ctx.hasUI ? await ctx.ui.input("Plan mode — what's the objective?", "Describe what you want to plan") : undefined)?.trim() ?? "";
-				if (!objective) {
-					showPlan(ctx);
-					return;
-				}
-			}
-
+			// Conversational entry (like narumiruna/pi-plan-mode): /goals enters plan mode and starts a
+			// dialogue. The objective is an optional seed, not a required arg, so there's no awkward
+			// "type your objective" prompt; the agent explores read-only and asks before drafting. A
+			// fresh draft just replaces .pi/goals.md (the "overwrite" staleness rule).
+			const objective = arg || null;
 			state = { ...state, isPlanMode: true, objective };
 			persist();
 			updateWidget(ctx);
-			pi.sendUserMessage(
-				`Enter plan mode for this objective: ${objective}\n\nExplore read-only, then write the plan to ${planPath(ctx)}.`,
-				{ deliverAs: "followUp" },
-			);
+			const seed = objective
+				? `We're in plan mode. Objective: ${objective}\n\nExplore the repo read-only and ask me anything unclear. When the objective is nailed down, draft (or replace) the goals in ${planPath(ctx)}, then stop for review.`
+				: `We're in plan mode. Tell me what you want to plan. Explore read-only and ask questions as needed; when the objective is clear, draft the goals in ${planPath(ctx)} and stop for review.`;
+			pi.sendUserMessage(seed, { deliverAs: "followUp" });
 		},
 	});
 
@@ -132,23 +168,14 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (ctx.hasUI) {
-			const ok = await ctx.ui.select("Clear goals.md? (it stays in git history)", ["Cancel", "Clear goals.md"]);
+			const ok = await ctx.ui.select(`Clear ${PLAN_REL}?`, ["Cancel", "Clear goals.md"]);
 			if (ok !== "Clear goals.md") return;
 		}
-		writeFileSync(planPath(ctx), "");
+		writePlan(ctx, "");
 		state = { ...state, isPlanMode: false, objective: null };
 		persist();
 		updateWidget(ctx);
-		ctx.ui.notify("Cleared goals.md.", "info");
-	}
-
-	function showPlan(ctx: ExtensionContext): void {
-		const content = readPlan(ctx);
-		if (!content.trim()) {
-			ctx.ui.notify("No goals yet. Use /goals <objective> to start.", "info");
-			return;
-		}
-		ctx.ui.notify(content, "info");
+		ctx.ui.notify(`Cleared ${PLAN_REL}.`, "info");
 	}
 
 	// --- review loop (after the agent drafts the plan) --------------------------------------------
@@ -190,6 +217,9 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 	}
 
 	async function startExecution(ctx: ExtensionContext): Promise<void> {
+		// FIXME(model-switch): the plan phase should be able to run on a sticky plan model and execution
+		// on a different one (see README "Not yet included"). newSession can't switch the model yet; wire
+		// this when pi exposes a model override on newSession.
 		// Offer a clean execution context (D13). newSession lives only on the saved command context.
 		let fresh = false;
 		if (ctx.hasUI && savedCmdCtx) {
@@ -203,7 +233,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const planFile = planPath(ctx);
 		const planContent = readPlan(ctx); // captured now: ctx is stale after newSession below
 		const parentSession = ctx.sessionManager.getSessionFile();
-		const startMsg = `Work the goals in ${planFile}. Pick an open goal, mark it active (set its header to [/]), work its subtasks, and when its done_when is met fill the goal's evidence: block then call CompleteGoal with the goal_id. Keep goals.md current as you go.`;
+		const startMsg = `Work the goals in ${planFile}. Pick an open goal, mark it active (set its checkbox to [/]), work its subtasks, and when its discriminator is satisfied fill the goal's evidence: block then call CompleteGoal with the goal's desc. Keep goals.md current as you go.`;
 		exitPlanMode(ctx);
 
 		if (fresh && savedCmdCtx) {
@@ -223,7 +253,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 			}
 			return;
 		}
-		if (doc.objective) pi.setSessionName(`Goals: ${doc.objective}`);
+		if (doc.title) pi.setSessionName(`Goals: ${doc.title}`);
 		ctx.ui.notify(planContent, "info");
 		pi.sendUserMessage(startMsg, { deliverAs: "followUp" });
 	}
@@ -234,29 +264,33 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		name: "CompleteGoal",
 		label: "Complete goal",
 		description:
-			"Sign off a goal once its done_when is met. First fill the goal's evidence: block in goals.md " +
-			"(a '- ' list pointing at durable artifacts: saved logs, committed diffs, files, not claims), then " +
-			"call this with the goal_id. Runs the goal's verify command (if any) then a read-only subagent that " +
-			"inspects that evidence against the repo. On accept, the goal is marked done and logged; on reject, " +
-			"it stays open and you get what is missing.",
+			"Sign off a goal once its discriminator is satisfied. First fill the goal's evidence: block in " +
+			"goals.md: a list where each item pairs a durable artifact with a short read of it (a quoted+linked " +
+			"log, a table plus how to read it, or a metric plus what it shows; quote the key lines and link the " +
+			"rest, not a pasted blob or a bare claim). Then call this with the goal's desc (the text after " +
+			"'goal:'). Runs the goal's verify command (if any) then a read-only subagent that inspects that " +
+			"evidence against the repo and the discriminator. On accept, the goal is marked done and logged; on " +
+			"reject, it stays open and you get what is missing. The subagent's reasoning is returned either way.",
 		parameters: Type.Object({
-			goal_id: Type.String({ description: "The goal's <!-- id --> from goals.md" }),
+			goal: Type.String({ description: "The goal's desc: the exact text after 'goal:' in its line." }),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const content = readPlan(ctx);
-			const goal = findGoal(parse(content), params.goal_id);
-			if (!goal) return text(`No goal #${params.goal_id} in goals.md.`, true);
+			const goal = findGoal(parse(content), params.goal);
+			if (!goal) return text(`No goal "${params.goal}" in goals.md. Use the exact text after "goal:".`, true);
 			if (goal.evidence.length === 0) {
-				return text(`Goal #${goal.id} has no evidence: block. Add a "- " evidence list to the goal in goals.md (what shows done_when is met, and where to verify it), then call CompleteGoal.`, true);
+				return text(`Goal "${goal.subject}" has no evidence yet. Add an evidence: list to the goal in goals.md (artifacts + a short read showing the discriminator is satisfied), then call CompleteGoal.`, true);
 			}
 
 			// Decide the outcome (the I/O); recordSignOff applies it to the file (the pure write).
 			// Evidence and the artifacts to inspect both come from the goal's evidence: block (single source of truth).
-			const outcome = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal);
-			const res = recordSignOff(content, goal.id, stamp(), outcome);
-			if (res.content !== content) writeFileSync(planPath(ctx), res.content);
+			const { outcome, reasoning } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal);
+			const res = recordSignOff(content, goal.subject, stamp(), outcome);
+			if (res.content !== content) writePlan(ctx, res.content);
 			updateWidget(ctx);
-			return text(res.message, res.isError);
+			// Surface the sign-off judge's actual reasoning, not just the verdict, so it's visible (was a gap).
+			const detail = reasoning ? `\n\n--- sign-off judge ---\n${reasoning}` : "";
+			return text(res.message + detail, res.isError);
 		},
 	});
 
@@ -264,6 +298,7 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (state.isPlanMode) {
+			// Read-only is enforced in the tool_call hook below (blocks edit/write while planning).
 			return { message: { customType: PLAN_CONTEXT, content: `${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`, display: false } };
 		}
 		const doc = parse(readPlan(ctx));
@@ -272,9 +307,13 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		const active = doc.goals.find((g) => g.status === "active") ?? doc.goals.find((g) => g.status === "open") ?? null;
 		const c = counts(doc);
 		let body = planInjection({
-			objective: doc.objective,
+			title: doc.title,
 			activeGoal: active
-				? { subject: active.subject, done_when: active.done_when, openSubtasks: active.subtasks.filter((s) => !s.done).map((s) => s.text) }
+				? {
+						subject: active.subject,
+						discriminator: active.discriminator,
+						openSubtasks: active.subtasks.filter((s) => s.status !== "done" && s.status !== "cancelled").map((s) => s.text),
+					}
 				: null,
 			lastLogLine: doc.log.at(-1) ?? null,
 			counts: { done: c.done, open: c.open + c.active },
@@ -284,6 +323,25 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 		if (active && planNow === lastInjectedPlan) body += `\n\n${reminder}`;
 		lastInjectedPlan = planNow;
 		return { message: { customType: PLAN_CONTEXT, content: body, display: false } };
+	});
+
+	// Enforce read-only planning: block file mutators while in plan mode so code isn't written before
+	// the goals are agreed. The agent draws back to read/grep/find/ls and read-only bash to explore.
+	pi.on("tool_call", async (event, ctx) => {
+		if (!state.isPlanMode) return;
+		// edit/write: blocked, except writing goals.md itself (the deliverable of plan mode).
+		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
+			const target = (event.input as { path?: string }).path;
+			if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
+			return { block: true, reason: `Plan mode is read-only: agree the goals in ${PLAN_REL} and choose Ready before writing code (${event.toolName} is blocked while planning; only ${PLAN_REL} may be written).` };
+		}
+		// bash: blocked only when the command looks mutating; read-only exploration stays open.
+		if (event.toolName === "bash") {
+			const command = (event.input as { command?: string }).command ?? "";
+			if (MUTATING_BASH_PATTERNS.some((re) => re.test(command))) {
+				return { block: true, reason: `Plan mode is read-only: this bash command looks like it mutates state, so it's blocked while planning. Explore read-only, agree the goals in ${PLAN_REL}, then choose Ready.\nCommand: ${command}` };
+			}
+		}
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
@@ -327,7 +385,8 @@ function stamp(): string {
 	return new Date().toISOString().slice(0, 16).replace("T", " ");
 }
 
-/** Decide a sign-off: deterministic verify first (cheap; skip the model call if it fails), then the judge. */
+/** Decide a sign-off: deterministic verify first (cheap; skip the model call if it fails), then the judge.
+ *  Returns the outcome plus the judge's (or verify's) reasoning so CompleteGoal can show WHY. */
 async function decideSignOff(
 	goal: Goal,
 	evidence: string,
@@ -335,16 +394,20 @@ async function decideSignOff(
 	judgeModel: string | null,
 	cwd: string,
 	signal: AbortSignal | undefined,
-): Promise<SignOff> {
+): Promise<{ outcome: SignOff; reasoning: string }> {
 	let verifyResult: { command: string; exitCode: number; outputTail: string } | null = null;
 	if (goal.verify) {
 		verifyResult = runVerify(goal.verify, cwd, signal);
 		if (verifyResult.exitCode !== 0) {
-			return { kind: "verify_failed", exitCode: verifyResult.exitCode, outputTail: verifyResult.outputTail };
+			return {
+				outcome: { kind: "verify_failed", exitCode: verifyResult.exitCode, outputTail: verifyResult.outputTail },
+				reasoning: `verify \`${goal.verify}\` exited ${verifyResult.exitCode}:\n${verifyResult.outputTail}`,
+			};
 		}
 	}
 	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal);
-	return verdict.accept ? { kind: "accepted" } : { kind: "rejected", missing: verdict.missing };
+	const outcome: SignOff = verdict.accept ? { kind: "accepted" } : { kind: "rejected", missing: verdict.missing };
+	return { outcome, reasoning: verdict.reasoning };
 }
 
 /** Run the goal's verify command. It is agent-authored and trusted (single-user machine, guide-not-guard). */
@@ -372,13 +435,13 @@ async function runJudge(
 	judgeModel: string | null,
 	cwd: string,
 	signal: AbortSignal | undefined,
-): Promise<{ accept: boolean; missing: string }> {
+): Promise<{ accept: boolean; missing: string; reasoning: string }> {
 	const task = evidenceJudgeUser({
 		subject: goal.subject,
-		done_when: goal.done_when,
+		discriminator: goal.discriminator,
+		failure_modes: goal.failure_modes,
 		verify: goal.verify ?? null,
 		verifyResult,
-		failure_modes: goal.failure_modes,
 		evidence,
 		paths,
 	});
@@ -403,5 +466,9 @@ async function runJudge(
 	const accept = /accept/i.test(verdictLine);
 	const missingMatch = clean.match(/missing\s*:\s*([\s\S]*)$/i);
 	const missing = accept ? "" : (missingMatch?.[1].trim() || clean.trim().slice(-500) || "judge gave no reason");
-	return { accept, missing };
+	// The judge's own words (inspection + verdict), so CompleteGoal can show them. The verdict is at the
+	// end, so keep the tail when it's long.
+	const trimmed = clean.trim();
+	const reasoning = trimmed.length > 1800 ? `...\n${trimmed.slice(-1800)}` : trimmed;
+	return { accept, missing, reasoning };
 }

@@ -1,17 +1,16 @@
 # pi-goals
 
-A [pi](https://github.com/badlogic/pi-mono) extension for plan-driven, goal-tracked work in one
-`goals.md`. Set up goals (with evidence and failure modes) in plan mode, work them, and sign a goal
-off only when a read-only subagent has checked the evidence.
+Plan mode for agreeing on goals before any code gets written. Each goal names the subtle failure mode
+that could fake a "done" and the discriminator that tells real success from it, plus subtasks and the
+evidence that gets checked at sign-off. It all lives in one markdown file you can read and print. A
+widget keeps the goals in front of you through compaction, a reminder nudges the agent to keep the
+file current and work toward the goals on its own, and a goal is signed off only after a read-only
+subagent has checked its evidence.
 
-Successor to [pi-lgtm](https://github.com/wassname/pi-lgtm), kept deliberately small: about
-[burneikis/pi-plan](https://github.com/burneikis/pi-plan) plus the additions, goals with evidence,
-a sign-off check, a widget, and a reminder.
-
-The form guides; it does not gate. The agent edits `goals.md` with its normal Edit tool. The one
-blessed tool is `CompleteGoal`, which runs the sign-off check and records the result. The reminder,
-the injected plan summary, and git/widget visibility carry the process. It trusts the agent's
-judgement rather than guarding it.
+It guides rather than guards. Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/milestone)
+and [burneikis/pi-plan](https://github.com/burneikis/pi-plan), it leans on a form and a process to
+steer the agent and trust its judgement. [pi-lgtm](https://github.com/wassname/pi-lgtm) was my earlier
+attempt and got too complex; this one stays small and maintainable.
 
 ## Install
 
@@ -19,7 +18,7 @@ judgement rather than guarding it.
 pi install npm:@wassname2/pi-goals
 ```
 
-Or run without installing:
+Or run it without installing:
 
 ```bash
 pi -e npm:@wassname2/pi-goals
@@ -28,78 +27,133 @@ pi -e npm:@wassname2/pi-goals
 ## Use
 
 ```
-/goals add CSV export to the report view
+/goals CSV export for the report view
 ```
 
-1. Plan. The agent explores read-only and writes goals into `goals.md` (see format below).
-2. Review. You get a menu: Ready, Edit (ask the agent to revise), Open in `$EDITOR`, or Cancel.
-   On Ready you choose whether to keep the current context or start fresh and compacted.
-3. Work. Each turn the active goal is injected (so it survives compaction) and a reminder nudges
-   the agent to keep `goals.md` current and work autonomously. When a goal's `done_when` is met the
-   agent calls `CompleteGoal`, which runs `verify` and a read-only judge and, on accept, marks it
-   done and logs it.
+`/goals` enters plan mode and starts a conversation; the description is an optional seed, so plain
+`/goals` works too. From there:
 
-Other commands: `/goals` (print the goals), `/goals clear` (empty `goals.md`, history kept in git),
-`/goals judge <model-ref>` (use a specific model for the sign-off judge; default is your current
-model).
+1. Plan. The agent explores read-only, asks about anything unclear, and writes the goals into
+   `.pi/goals.md`.
+2. Review. You get a menu: Ready, Edit (ask the agent to revise), Open in `$EDITOR`, or Cancel. On
+   Ready you choose whether to keep the current context or start fresh and compacted.
+3. Work. Each turn the active goal is injected so it survives compaction, and a reminder nudges the
+   agent to keep `goals.md` current and keep going. When a goal's discriminator is satisfied the agent
+   calls `CompleteGoal`, which runs `verify` and a read-only judge, then marks the goal done and logs it.
 
-## goals.md format
+Other commands: `/goals clear` empties `.pi/goals.md`; `/goals judge <model-ref>` picks a specific
+model for the sign-off judge (the default is your current model).
 
-One file holds the objective, the goals, and a short append-only log.
+## Example
+
+Start plan mode with an optional seed:
+
+```
+/goals audit the papers dir metadata and clean up empty dirs
+```
+
+The agent explores read-only, then drafts the goal with a subtle failure mode and the discriminator
+that beats it, and stops for review:
 
 ```markdown
-# Goals: ship the cache layer
+## Goals
 
-## Goal: [/] Implement cache layer
-<!-- id: cache-layer-1 -->
-done_when: p95 < 50ms on bench-X
-verify: pytest tests/cache -q && python bench/p95.py --max-ms 50
-- [x] wire cache client
-- [ ] eviction policy
+1. [ ] goal: Audit steering/ metadata and remove empty dirs
+  - subtle failure mode: report written but counts are zero (resolver errored silently)
+  - discriminator: report shows the XXXX count before/after AND a non-zero rename count
+  - tasks:
+    1. [ ] dry-run the metadata resolve
+    2. [ ] remove the empty _artifacts dirs
+    3. [ ] write the report
+  - evidence:
+    - <empty until sign-off>
+```
 
-failure_modes:
-  - cache silently bypassed (hit-rate ~0, latency ok by luck)
-  - bench too small to exercise eviction
-evidence:
-  - load-test.log p95=41ms; bench/p95.py exited 0
-  - cache hit-rate 0.93 in load-test.log (not bypassed)
+You choose Ready. The agent works the subtasks, then fills `evidence` (each item an artifact plus a
+short read of it) and calls `CompleteGoal`:
+
+```markdown
+  - evidence:
+    - > scripts/metadata_report.txt: XXXX 52 -> 4, 146 empty _artifacts removed
+    - > 48 files renamed; almost certain done, the silent-resolver failure mode is ruled out
+```
+
+A fresh read-only subagent re-checks that evidence against the repo and the discriminator, then
+returns its verdict and reasoning:
+
+```
+Signed off "Audit steering/ metadata and remove empty dirs". Marked done in goals.md.
+
+--- sign-off judge ---
+metadata_report.txt present; counts 52 -> 4 confirmed; rename log shows 48 renamed (not zero).
+VERDICT: accept
+```
+
+## The goals.md format
+
+One project-local file, `<cwd>/.pi/goals.md` (gitignored, like pi-tasks), holds the title, a context
+block, the goals, and a short append-only log. A fresh `/goals` draft replaces it.
+
+```markdown
+# ship the cache layer
+
+Latency target came from the SLO review; keep the existing client API.
+
+## Goals
+
+1. [/] goal: Implement cache layer
+  - subtle failure mode: cache silently bypassed, latency ok by luck
+  - discriminator: hit-rate > 0.8 in load-test.log (a bypass reads ~0)
+  - verify: pytest tests/cache -q && python bench/p95.py --max-ms 50
+  - tasks:
+    1. [x] wire cache client
+    2. [/] eviction policy
+  - evidence:
+    - > load-test.log: p95=41ms, hit-rate 0.93 (not bypassed)
+
+# Future work / out of scope
+
+- distributed cache
 
 ## Log
 - 2026-06-15 14:02  cache client wired; eviction next
 ```
 
-- A goal is a `## Goal:` header whose checkbox carries its state (`[ ]` open, `[/]` active, `[x]`
-  done, `[-]` cancelled), then an `<!-- id -->`, one falsifiable `done_when:`, an optional `verify:`
-  shell command, `- [ ]` subtasks, an optional short `failure_modes:` pre-mortem list, and an
-  `evidence:` list.
-- `done_when` is the test, written at planning. `evidence` is the proof, a `- ` list the agent fills
-  at completion pointing at durable artifacts; `CompleteGoal` reads it from the file. `failure_modes`
-  is the pre-mortem. `verify`, when present, is the deterministic first stage of the sign-off.
-- The agent ticks subtasks, appends to `## Log`, and sets the header checkbox (`[/]` when it starts
-  a goal) as it works. Only `CompleteGoal` writes `[x]`. Multiple goals may be active.
+- A goal is a numbered checkbox line beginning `goal:`; the checkbox carries its state (`[ ]` open,
+  `[/]` active, `[x]` done, `[-]` cancelled). Goals are matched by their text, so the number is just
+  for you to reference.
+- The `discriminator` is the success test, written while planning: the positive observation that the
+  goal actually succeeded and that none of the `subtle failure mode`s could fake. It has to show
+  something happened (a count moved, a test exercised the path, a metric beat noise), not just that a
+  failure was avoided. `evidence` is the proof, filled at sign-off:
+  each item pairs a durable artifact (a quoted and linked log, a table, a metric) with a short read of
+  it, not a bare claim. `verify`, when present, is the deterministic first stage of the sign-off.
+- Subtasks are any checkbox without a `goal:` prefix, under `- tasks:` (`[/]` in progress, `[-]`
+  cancelled). The agent ticks them, appends to `## Log`, and sets a goal `[/]` when it starts it. Only
+  `CompleteGoal` writes `[x]`. Several goals can be active at once.
 
-## The sign-off check (`CompleteGoal`)
+## Signing off a goal (`CompleteGoal`)
 
-`CompleteGoal(goal_id)` is the one blessed completion path. It reads the goal's `evidence:` block
-from goals.md (so the proof is git-tracked and human-reviewable before sign-off, not buried in a tool
-call):
+`CompleteGoal(goal)` (matched by the goal's text) is the only tool that marks a goal done; everything
+else is the agent editing the file. It reads the goal's `evidence:` block from `.pi/goals.md`, so the
+proof stays in the file where you can review it, then:
 
-1. If the goal has a `verify:` command, it is run. A non-zero exit rejects immediately, with no model
+1. If the goal has a `verify:` command, it runs. A non-zero exit rejects right away, with no model
    call.
-2. Otherwise a read-only `pi` subprocess (the judge) inspects the `evidence:` items against the repo
-   and the named failure modes and returns a verdict. It re-derives from the artifacts the evidence
-   points at rather than trusting the claim, so the `evidence:` list should name durable artifacts
-   (saved logs, committed diffs, files).
-3. On accept, the goal's header checkbox flips to `[x]` and a `## Log` line is written. On reject,
-   the goal stays open and the agent is told what is missing.
+2. Otherwise a read-only `pi` subprocess (a fresh `--no-session` context, so it never sees the working
+   agent's transcript) inspects the `evidence:` against the repo, the `discriminator`, and the
+   `subtle failure mode`, and returns a verdict. It re-derives from the cited artifacts rather than
+   trusting the claim, so list real artifacts, not assertions.
+3. On accept, the goal flips to `[x]` and a `## Log` line is written. On reject, the goal stays open
+   and the agent is told what is missing. Either way the judge's reasoning comes back in the result.
 
-The judge defaults to your current model (guaranteed authorized and capable). Set a different one
-with `/goals judge <provider/model>` for an independent cross-family check.
+The judge defaults to your current model (a fresh context, same weights). Point it at another with
+`/goals judge <provider/model>` for an independent cross-family check.
 
 ## Prompts
 
-All model-facing text lives in [`src/prompts.ts`](src/prompts.ts), in flow order, so the process is
-easy to review end to end.
+All model-facing text lives in [`src/prompts.ts`](src/prompts.ts), in flow order, so you can read the
+whole process top to bottom.
 
 ## Develop
 
@@ -112,8 +166,9 @@ npm run lint
 
 ## Not (yet) included
 
-No autonomous re-prompt loop (an until-done-style loop judge). Autonomy comes from the reminder, not
-a harness. Plan-phase model stickiness is a documented next step.
+- No autonomous re-prompt loop. The reminder nudges the agent within a turn, but the turn still ends
+  and hands back to you; nothing auto-re-prompts until the goals are done.
+- The plan and execution phases can't yet run on different, sticky models.
 
 ## License
 
