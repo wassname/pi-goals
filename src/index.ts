@@ -461,6 +461,10 @@ async function runJudge(
 	// user sees "Working" indefinitely with no way to know what's happening. Add a setTimeout that
 	// resolves with a reject verdict after, say, 120s, and surface progress (e.g. stderr lines) so
 	// the user can tell the judge is still alive. See also: no progress indication in TUI while judging.
+	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
+	// the working dir), leaving a stale pi-plan/ directory. The judge should run in a temp dir or
+	// inside the existing repo checkout so it doesn't pollute the user's workspace with side-effect
+	// clones that then fail the next sign-off (the judge found its own clone and rejected the goal).
 	const JUDGE_TIMEOUT_MS = 120_000;
 	const output = await new Promise<string>((resolve) => {
 		let settled = false;
