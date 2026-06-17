@@ -36,6 +36,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { counts, findGoal, type Goal, type PlanDoc, parse, recordSignOff, type SignOff } from "./plan-file.js";
 import {
@@ -52,7 +54,11 @@ const STATE = "pi-goals-state";
 const PLAN_CONTEXT = "pi-goals-context"; // injected plan-mode guidance, stripped from history later
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
-const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
+// Tools the sign-off judge gets: read-only inspection + bash (for git log, cat, running scripts to
+// inspect). File mutators (edit, write) are blocked so the judge cannot modify anything.
+// Names match pi's internal tool registry (grep→ffgrep, find→fffind, etc.).
+const JUDGE_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const JUDGE_BLOCKED_TOOLS = ["edit", "write"];
 // File mutators blocked while drafting goals (read-only plan mode, like narumiruna/pi-plan-mode), so
 // code isn't written before goals are agreed. The one allowed write is goals.md itself (the
 // deliverable). A read-only task (a pure search) can still be explored in plan mode by nature.
@@ -270,18 +276,12 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "CompleteGoal",
-		// FIXME(label): "Complete goal" is ambiguous in the TUI — the user sees it running with no
-		// hint that it spawns a read-only subagent. Change to "Subagent goal signoff" or similar so the
-		// running tool reads as an action, not just a checkbox flip.
-		// FIXME(progress): while the judge runs (potentially 10-120s), the user only sees "Working". Surface
-		// judge progress — e.g. set the tool label to "Subagent goal signoff (judging...)" via onUpdate,
-		// or emit a status notification so the user knows what's happening and can tell a hang from slowness.
-		label: "Complete goal",
+		label: "Goal signoff",
 		description: completeGoalDescription,
 		parameters: Type.Object({
 			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
-		async execute(_id, params, signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, onUpdate, ctx) {
 			const content = readPlan(ctx);
 			const goal = findGoal(parse(content), params.goal);
 			if (!goal) return text(`No goal "${params.goal}" in goals.md. Use the exact text after "goal:".`, true);
@@ -289,15 +289,68 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				return text(`Goal "${goal.subject}" has no evidence yet. Add an evidence: list to the goal in goals.md (artifacts + a short read showing the discriminator is satisfied), then call CompleteGoal.`, true);
 			}
 
-			// Decide the outcome (the I/O); recordSignOff applies it to the file (the pure write).
-			// Evidence and the artifacts to inspect both come from the goal's evidence: block (single source of truth).
-			const { outcome, reasoning } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal);
+			const handleUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => {
+				onUpdate?.(partial);
+			};
+
+			const { outcome, reasoning, durationMs } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal, handleUpdate);
 			const res = recordSignOff(content, goal.subject, stamp(), outcome);
 			if (res.content !== content) writePlan(ctx, res.content);
 			updateWidget(ctx);
-			// Surface the sign-off judge's actual reasoning, not just the verdict, so it's visible (was a gap).
 			const detail = reasoning ? `\n\n--- sign-off judge ---\n${reasoning}` : "";
-			return text(res.message + detail, res.isError);
+			const outcomeLabel = outcome.kind === "accepted" ? "accepted" : outcome.kind === "verify_failed" ? "verify_failed" : "rejected";
+			const details: SignOffDetails = {
+				goal: goal.subject,
+				outcome: outcomeLabel,
+				durationMs,
+				verifyCommand: goal.verify ?? undefined,
+				verifyExitCode: outcome.kind === "verify_failed" ? outcome.exitCode : undefined,
+				judgeModel: state.judgeModel ?? undefined,
+				reasoning,
+				isError: res.isError,
+			};
+			return textWithDetails(res.message + detail, details, res.isError);
+		},
+
+		renderCall(args, theme) {
+			const goalText = args.goal.length > 80 ? `${args.goal.slice(0, 80)}...` : args.goal;
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("goal signoff "))}${theme.fg("dim", goalText)}`,
+				0, 0,
+			);
+		},
+
+		renderResult(result, { expanded }, theme) {
+			const details = result.details as SignOffDetails | undefined;
+			const body = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
+			if (!details || details.outcome === "running") return new Text(body, 0, 0);
+
+			const icon = details.outcome === "accepted" ? theme.fg("success", "✔") : theme.fg("error", "✗");
+			const outcomeText = details.outcome === "accepted" ? "accepted" : details.outcome === "verify_failed" ? `verify failed (exit ${details.verifyExitCode})` : "rejected";
+			const header = `${icon} ${theme.fg("toolTitle", theme.bold("goal signoff "))}${theme.fg("accent", outcomeText)}`;
+			const duration = details.durationMs < 1000 ? `${details.durationMs}ms` : `${(details.durationMs / 1000).toFixed(1)}s`;
+			const sub = [details.judgeModel, duration].filter(Boolean).join(" · ");
+
+			if (!expanded) {
+				let text = header;
+				if (sub) text += `\n${theme.fg("dim", sub)}`;
+				text += `\n\n${theme.fg("toolOutput", body.slice(0, 500))}`;
+				if (body.length > 500) text += theme.fg("dim", "...");
+				text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+				return new Text(text, 0, 0);
+			}
+
+			const container = new Container();
+			container.addChild(new Text(header, 0, 0));
+			if (sub) container.addChild(new Text(theme.fg("dim", sub), 0, 0));
+			if (details.verifyCommand) {
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(theme.fg("muted", `verify: ${details.verifyCommand}`), 0, 0));
+			}
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.fg("muted", "Judge"), 0, 0));
+			container.addChild(new Markdown(body.trim(), 0, 0, getMarkdownTheme()));
+			return container;
 		},
 	});
 
@@ -384,8 +437,25 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 // --- helpers (module scope; pure enough to keep out of the closure) -------------------------------
 
+/** Structured details returned by CompleteGoal so renderCall/renderResult can show metadata. */
+interface SignOffDetails {
+	goal: string;
+	outcome: "accepted" | "rejected" | "verify_failed" | "running";
+	phase?: string; // "verifying" | "spawning" | "judging" — while running
+	durationMs: number;
+	verifyCommand?: string;
+	verifyExitCode?: number;
+	judgeModel?: string;
+	reasoning: string;
+	isError?: boolean;
+}
+
 function text(s: string, isError = false) {
 	return { content: [{ type: "text" as const, text: s }], details: { isError }, isError };
+}
+
+function textWithDetails(s: string, details: SignOffDetails, isError = false) {
+	return { content: [{ type: "text" as const, text: s }], details, isError };
 }
 
 function stamp(): string {
@@ -401,20 +471,30 @@ async function decideSignOff(
 	judgeModel: string | null,
 	cwd: string,
 	signal: AbortSignal | undefined,
-): Promise<{ outcome: SignOff; reasoning: string }> {
+	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
+): Promise<{ outcome: SignOff; reasoning: string; durationMs: number }> {
+	const startedAt = Date.now();
+	const emit = (phase: string, text: string) => {
+		onUpdate?.({
+			content: [{ type: "text" as const, text }],
+			details: { goal: goal.subject, outcome: "running", phase, durationMs: Date.now() - startedAt, verifyCommand: goal.verify ?? undefined, judgeModel: judgeModel ?? undefined, reasoning: "" },
+		});
+	};
 	let verifyResult: { command: string; exitCode: number; outputTail: string } | null = null;
 	if (goal.verify) {
+		emit("verifying", `Running verify: ${goal.verify}`);
 		verifyResult = runVerify(goal.verify, cwd, signal);
 		if (verifyResult.exitCode !== 0) {
 			return {
 				outcome: { kind: "verify_failed", exitCode: verifyResult.exitCode, outputTail: verifyResult.outputTail },
 				reasoning: `verify \`${goal.verify}\` exited ${verifyResult.exitCode}:\n${verifyResult.outputTail}`,
+				durationMs: Date.now() - startedAt,
 			};
 		}
 	}
-	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal);
+	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal, onUpdate);
 	const outcome: SignOff = verdict.accept ? { kind: "accepted" } : { kind: "rejected", missing: verdict.missing };
-	return { outcome, reasoning: verdict.reasoning };
+	return { outcome, reasoning: verdict.reasoning, durationMs: verdict.durationMs };
 }
 
 /** Run the goal's verify command. It is agent-authored and trusted (single-user machine, guide-not-guard). */
@@ -442,7 +522,15 @@ async function runJudge(
 	judgeModel: string | null,
 	cwd: string,
 	signal: AbortSignal | undefined,
-): Promise<{ accept: boolean; missing: string; reasoning: string }> {
+	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
+): Promise<{ accept: boolean; missing: string; reasoning: string; durationMs: number }> {
+	const startedAt = Date.now();
+	const emit = (phase: string, text: string) => {
+		onUpdate?.({
+			content: [{ type: "text" as const, text }],
+			details: { goal: goal.subject, outcome: "running", phase, durationMs: Date.now() - startedAt, verifyCommand: goal.verify ?? undefined, judgeModel: judgeModel ?? undefined, reasoning: "" },
+		});
+	};
 	const task = evidenceJudgeUser({
 		subject: goal.subject,
 		discriminator: goal.discriminator,
@@ -452,19 +540,15 @@ async function runJudge(
 		evidence,
 		paths,
 	});
-	const args = ["-p", "--no-session", "--tools", READ_ONLY_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
+	const args = ["-p", "--no-session", "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
 	if (judgeModel) args.push("--model", judgeModel);
 	args.push(task);
 
+	emit("spawning", `Spawning read-only judge for: ${goal.subject}`);
 	const inv = getPiInvocation(args);
-	// FIXME(hang): no timeout — if the judge subprocess stalls, this promise never resolves and the
-	// user sees "Working" indefinitely with no way to know what's happening. Add a setTimeout that
-	// resolves with a reject verdict after, say, 120s, and surface progress (e.g. stderr lines) so
-	// the user can tell the judge is still alive. See also: no progress indication in TUI while judging.
 	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
-	// the working dir), leaving a stale pi-plan/ directory. The judge should run in a temp dir or
-	// inside the existing repo checkout so it doesn't pollute the user's workspace with side-effect
-	// clones that then fail the next sign-off (the judge found its own clone and rejected the goal).
+	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
+	// existing repo checkout so it doesn't pollute the user's workspace.
 	const JUDGE_TIMEOUT_MS = 120_000;
 	const output = await new Promise<string>((resolve) => {
 		let settled = false;
@@ -472,7 +556,7 @@ async function runJudge(
 			if (!settled) {
 				settled = true;
 				proc.kill();
-				resolve(`VERDICT: reject\nmissing: judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s — the subagent did not return a verdict`);
+				resolve(`VERDICT: reject\nmissing: judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s`);
 			}
 		}, JUDGE_TIMEOUT_MS);
 		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
@@ -506,5 +590,5 @@ async function runJudge(
 	// end, so keep the tail when it's long.
 	const trimmed = clean.trim();
 	const reasoning = trimmed.length > 1800 ? `...\n${trimmed.slice(-1800)}` : trimmed;
-	return { accept, missing, reasoning };
+	return { accept, missing, reasoning, durationMs: Date.now() - startedAt };
 }
