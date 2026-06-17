@@ -1,4 +1,4 @@
-Code review against spec `docs/spec/2026-06-15_pi-plan.md`.
+Code review against spec `docs/spec/2026-06-15_pi-goals.md`.
 
 ---
 

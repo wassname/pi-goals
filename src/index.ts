@@ -84,7 +84,7 @@ interface PlanState {
 	judgeModel: string | null;
 }
 
-export default function piPlanExtension(pi: ExtensionAPI): void {
+export default function piGoalsExtension(pi: ExtensionAPI): void {
 	let state: PlanState = { isPlanMode: false, objective: null, judgeModel: null };
 	// Reminder cadence: fire when an active goal exists but goals.md was not touched since last turn.
 	let lastInjectedPlan = "";
@@ -270,6 +270,12 @@ export default function piPlanExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "CompleteGoal",
+		// FIXME(label): "Complete goal" is ambiguous in the TUI — the user sees it running with no
+		// hint that it spawns a read-only subagent. Change to "Subagent goal signoff" or similar so the
+		// running tool reads as an action, not just a checkbox flip.
+		// FIXME(progress): while the judge runs (potentially 10-120s), the user only sees "Working". Surface
+		// judge progress — e.g. set the tool label to "Subagent goal signoff (judging...)" via onUpdate,
+		// or emit a status notification so the user knows what's happening and can tell a hang from slowness.
 		label: "Complete goal",
 		description: completeGoalDescription,
 		parameters: Type.Object({
@@ -451,13 +457,38 @@ async function runJudge(
 	args.push(task);
 
 	const inv = getPiInvocation(args);
+	// FIXME(hang): no timeout — if the judge subprocess stalls, this promise never resolves and the
+	// user sees "Working" indefinitely with no way to know what's happening. Add a setTimeout that
+	// resolves with a reject verdict after, say, 120s, and surface progress (e.g. stderr lines) so
+	// the user can tell the judge is still alive. See also: no progress indication in TUI while judging.
+	const JUDGE_TIMEOUT_MS = 120_000;
 	const output = await new Promise<string>((resolve) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				proc.kill();
+				resolve(`VERDICT: reject\nmissing: judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s — the subagent did not return a verdict`);
+			}
+		}, JUDGE_TIMEOUT_MS);
 		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
 		let out = "";
 		proc.stdout.on("data", (d) => (out += d));
 		proc.stderr.on("data", (d) => (out += d));
-		proc.on("close", () => resolve(out));
-		proc.on("error", (e) => resolve(`VERDICT: reject\nmissing: judge subprocess failed: ${e.message}`));
+		proc.on("close", () => {
+			if (!settled) {
+				settled = true;
+				clearTimeout(timer);
+				resolve(out);
+			}
+		});
+		proc.on("error", (e) => {
+			if (!settled) {
+				settled = true;
+				clearTimeout(timer);
+				resolve(`VERDICT: reject\nmissing: judge subprocess failed: ${e.message}`);
+			}
+		});
 	});
 
 	// The subprocess emits ANSI/CSI control codes in -p mode; strip them so they don't leak into `missing`.
