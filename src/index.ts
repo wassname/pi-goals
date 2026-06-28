@@ -59,6 +59,7 @@ const WIDGET_KEY = "pi-goals-widget";
 // Names match pi's internal tool registry (grep→ffgrep, find→fffind, etc.).
 const JUDGE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 const JUDGE_BLOCKED_TOOLS = ["edit", "write"];
+const JUDGE_TIMEOUT_MS = 600_000;
 // File mutators blocked while drafting goals (read-only plan mode, like narumiruna/pi-plan-mode), so
 // code isn't written before goals are agreed. The one allowed write is goals.md itself (the
 // deliverable). A read-only task (a pure search) can still be explored in plan mode by nature.
@@ -86,7 +87,7 @@ const PLAN_REL = ".pi/goals.md"; // project-local, gitignored (pi-tasks conventi
 interface PlanState {
 	isPlanMode: boolean;
 	objective: string | null;
-	/** Optional model ref for the sign-off judge; unset => the subprocess uses pi's default model. */
+	/** Optional model ref for the sign-off judge; unset => use the current session model. */
 	judgeModel: string | null;
 }
 
@@ -173,7 +174,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	function setJudge(ref: string, ctx: ExtensionContext): void {
 		state = { ...state, judgeModel: ref || null };
 		persist();
-		ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the default model", "info");
+		ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the current session model", "info");
 	}
 
 	async function clearPlan(ctx: ExtensionContext): Promise<void> {
@@ -293,7 +294,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				onUpdate?.(partial);
 			};
 
-			const { outcome, reasoning, durationMs } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal, handleUpdate);
+			const judgeModel = state.judgeModel ?? currentSessionModelRef(ctx);
+			const { outcome, reasoning, durationMs } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, judgeModel, ctx.cwd, signal, handleUpdate);
 			const res = recordSignOff(content, goal.subject, stamp(), outcome);
 			if (res.content !== content) writePlan(ctx, res.content);
 			updateWidget(ctx);
@@ -309,7 +311,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				durationMs,
 				verifyCommand: goal.verify ?? undefined,
 				verifyExitCode: outcome.kind === "verify_failed" ? outcome.exitCode : undefined,
-				judgeModel: state.judgeModel ?? "pi default model",
+				judgeModel: judgeModel ?? "no explicit judge model",
 				reasoning,
 				isError: res.isError,
 			};
@@ -471,6 +473,10 @@ function stamp(): string {
 	return new Date().toISOString().slice(0, 16).replace("T", " ");
 }
 
+function currentSessionModelRef(ctx: ExtensionContext): string | null {
+	return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+}
+
 /** Decide a sign-off: deterministic verify first (cheap; skip the model call if it fails), then the judge.
  *  Returns the outcome plus the judge's (or verify's) reasoning so CompleteGoal can show WHY. */
 async function decideSignOff(
@@ -500,6 +506,14 @@ async function decideSignOff(
 				durationMs: Date.now() - startedAt,
 			};
 		}
+	}
+	if (!judgeModel) {
+		const reason = "no explicit judge model available; set /goals judge <provider/model>";
+		return {
+			outcome: { kind: "accepted_inconclusive", reason },
+			reasoning: `VERDICT: inconclusive\nreason: ${reason}`,
+			durationMs: Date.now() - startedAt,
+		};
 	}
 	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal, onUpdate);
 	const outcome: SignOff =
@@ -550,7 +564,7 @@ async function runJudge(
 	evidence: string,
 	paths: string[],
 	verifyResult: { command: string; exitCode: number; outputTail: string } | null,
-	judgeModel: string | null,
+	judgeModel: string,
 	cwd: string,
 	signal: AbortSignal | undefined,
 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
@@ -571,8 +585,7 @@ async function runJudge(
 		evidence,
 		paths,
 	});
-	const args = ["--mode", "json", "-p", "--no-session", "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
-	if (judgeModel) args.push("--model", judgeModel);
+	const args = ["--mode", "json", "-p", "--no-session", "--model", judgeModel, "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
 	args.push(task);
 
 	emit("spawning", `Spawning read-only judge for: ${goal.subject}`);
@@ -580,7 +593,6 @@ async function runJudge(
 	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
 	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
 	// existing repo checkout so it doesn't pollute the user's workspace.
-	const JUDGE_TIMEOUT_MS = 120_000;
 	const judge = await new Promise<{ output: string; error?: string; aborted?: boolean }>((resolve) => {
 		let settled = false;
 		let stdoutBuffer = "";
@@ -589,7 +601,14 @@ async function runJudge(
 		let stderr = "";
 		let lastStopReason: string | undefined;
 		let lastErrorMessage: string | undefined;
+		let lastProgressAt = 0;
 		const partialOutput = (): string => [finalOutput, currentText, stderr.trim()].filter(Boolean).join("\n\n").trim();
+		const emitProgress = (text: string, force = false) => {
+			const now = Date.now();
+			if (!force && now - lastProgressAt < 750) return;
+			lastProgressAt = now;
+			emit("judging", text);
+		};
 		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
 		if (!proc.stdout || !proc.stderr) throw new Error("judge subprocess stdio must be piped");
 		const timer = setTimeout(() => {
@@ -611,10 +630,12 @@ async function runJudge(
 
 			if (event.type === "message_start" && event.message?.role === "assistant") {
 				currentText = "";
+				emitProgress("Judge is reading evidence...", true);
 				return;
 			}
 			if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
 				currentText += event.assistantMessageEvent.delta ?? "";
+				emitProgress(currentText || "Judge is reading evidence...");
 				return;
 			}
 			if (event.type === "message_end" && event.message?.role === "assistant") {
@@ -623,6 +644,7 @@ async function runJudge(
 				currentText = "";
 				lastStopReason = typeof event.message.stopReason === "string" ? event.message.stopReason : undefined;
 				lastErrorMessage = typeof event.message.errorMessage === "string" ? event.message.errorMessage : undefined;
+				emitProgress(finalOutput || "Judge finished without text.", true);
 			}
 		};
 
@@ -634,6 +656,7 @@ async function runJudge(
 		});
 		proc.stderr.on("data", (data) => {
 			stderr += data.toString();
+			emitProgress(partialOutput() || "Judge subprocess wrote stderr.");
 		});
 		proc.on("close", (code) => {
 			if (!settled) {

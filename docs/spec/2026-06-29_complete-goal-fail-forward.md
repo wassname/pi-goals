@@ -12,6 +12,7 @@ Out: broader autonomous loop work, plan-mode UX, model auto-selection.
 - R2: If `verify:` passes and the judge accepts, mark the goal done as before. Done means: log records normal judge accept. VERIFY: unit test for accepted sign-off still passes.
 - R3: If any `verify:` command passes but the judge times out or subprocess/model transport fails, mark the goal done with an explicit inconclusive-judge log. Goals without `verify:` use the same fail-forward rule once evidence exists. VERIFY: a unit test records accepted status and a log line containing `judge inconclusive`.
 - R4: Judge transport should parse `pi --mode json` message events instead of raw `-p` terminal output. Done means: code captures final assistant text and provider stop errors distinctly. VERIFY: `npm run typecheck` and tests pass.
+- R5: The judge should behave like oracle where it matters: explicit model, live streamed progress, and a timeout large enough for a cold reasoning turn. Done means: unset `/goals judge` resolves to the current session model when visible; if no model is visible, no implicit Pi default is used and sign-off is `judge inconclusive`. `message_update` emits throttled progress, and timeout is 600s. VERIFY: `npm run typecheck` and fresh-eyes diff review.
 
 ## Tasks
 - [x] T1 (R3): Add an accepted-with-warning sign-off outcome.
@@ -32,6 +33,12 @@ Out: broader autonomous loop work, plan-mode UX, model auto-selection.
   - likely_fail: README still says all rejects keep goal open
   - sneaky_fail: docs imply subagent evidence was accepted when it timed out
   - UAT: [README.md](/home/wassname/.pi/agent/git/github.com/wassname/pi-plan/README.md)
+- [x] T4 (R5): Copy oracle's reliability shape for model/progress.
+  - verify: `npm run typecheck`
+  - success: `CompleteGoal` passes the current session model to the judge when no override is set, never spawns without `--model`, and streamed judge deltas are surfaced through `onUpdate`
+  - likely_fail: judge still runs without `--model`
+  - sneaky_fail: user sees no progress for several minutes and kills a working judge
+  - UAT: [src/index.ts](/home/wassname/.pi/agent/git/github.com/wassname/pi-plan/src/index.ts)
 
 ## Context
 Observed result from downstream use:
@@ -54,6 +61,7 @@ Interpretation: latest surfaced output proves the internal judge timed out. It d
 - 2026-06-29  unset `/goals judge` spawns the judge without `--model`, so Pi resolves its configured default model; do not describe this as the current session model.
 - 2026-06-29  timeout/transport failure now maps to `accepted_inconclusive`, preserving partial output in reasoning when available.
 - 2026-06-29  fresh-eyes review found loose `/accept/i` verdict parsing and caller-abort fail-forward risk; fixed exact verdict parsing and made caller abort reject.
+- 2026-06-29  oracle comparison suggests the important reliability pieces are explicit model selection, JSON streaming, live partial output, and no short wrapper timeout; updated CompleteGoal to use the current session model when visible, never spawn without `--model`, stream throttled progress, and wait 600s.
 
 ## TODO
 - Consider making `CompleteGoal` expose `verifyExitCode: 0` and `judgeOutcome` separately in details.

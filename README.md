@@ -144,8 +144,10 @@ else is the agent editing the file. It reads the goal's `evidence:` block from `
    inconclusive` log line and any partial judge output in the result. Either way the judge's
    reasoning comes back in the result.
 
-The judge defaults to Pi's default model unless `/goals judge <provider/model>` is set. Point it at
-another model for an independent cross-family check.
+The judge defaults to the current session model and streams partial output while it runs. If the
+current model is not visible to the extension, `CompleteGoal` does not fall back to Pi's implicit
+default; it signs off as `judge inconclusive` and tells you to set `/goals judge <provider/model>`.
+Point it at another model for an independent cross-family check.
 
 ## Prompts
 
