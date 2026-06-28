@@ -134,15 +134,18 @@ Latency target came from the SLO review; keep the existing client API.
 else is the agent editing the file. It reads the goal's `evidence:` block from `.pi/goals.md`, then:
 
 1. If the goal has a `verify:` command, it runs. A non-zero exit rejects right away, no model call.
-2. Otherwise a read-only `pi` subprocess (a fresh `--no-session` context, so it never sees the working
+2. Then a read-only `pi` subprocess (a fresh `--no-session` context, so it never sees the working
    agent's transcript) inspects the `evidence:` against the repo, the `discriminator`, and the
    `subtle failure mode`. It re-derives from the cited artifacts rather than trusting the claim, so
    list real artifacts, not assertions.
-3. On accept, the goal flips to `[x]` and a `## Log` line is written. On reject, it stays open and the
-   agent is told what is missing. Either way the judge's reasoning comes back in the result.
+3. On accept, the goal flips to `[x]` and a `## Log` line is written. On judge reject, it stays open
+   and the agent is told what is missing. If the judge subprocess times out or its transport/model
+   fails after any `verify:` command has passed, the goal still flips to `[x]` with a `judge
+   inconclusive` log line and any partial judge output in the result. Either way the judge's
+   reasoning comes back in the result.
 
-The judge defaults to your current model (a fresh context, same weights). Point it at another with
-`/goals judge <provider/model>` for an independent cross-family check.
+The judge defaults to Pi's default model unless `/goals judge <provider/model>` is set. Point it at
+another model for an independent cross-family check.
 
 ## Prompts
 

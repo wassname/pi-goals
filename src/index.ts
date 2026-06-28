@@ -298,14 +298,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (res.content !== content) writePlan(ctx, res.content);
 			updateWidget(ctx);
 			const detail = reasoning ? `\n\n--- sign-off judge ---\n${reasoning}` : "";
-			const outcomeLabel = outcome.kind === "accepted" ? "accepted" : outcome.kind === "verify_failed" ? "verify_failed" : "rejected";
+			const outcomeLabel =
+				outcome.kind === "accepted" ? "accepted" :
+				outcome.kind === "accepted_inconclusive" ? "accepted_inconclusive" :
+				outcome.kind === "verify_failed" ? "verify_failed" :
+				"rejected";
 			const details: SignOffDetails = {
 				goal: goal.subject,
 				outcome: outcomeLabel,
 				durationMs,
 				verifyCommand: goal.verify ?? undefined,
 				verifyExitCode: outcome.kind === "verify_failed" ? outcome.exitCode : undefined,
-				judgeModel: state.judgeModel ?? undefined,
+				judgeModel: state.judgeModel ?? "pi default model",
 				reasoning,
 				isError: res.isError,
 			};
@@ -325,8 +329,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
 			if (!details || details.outcome === "running") return new Text(body, 0, 0);
 
-			const icon = details.outcome === "accepted" ? theme.fg("success", "✔") : theme.fg("error", "✗");
-			const outcomeText = details.outcome === "accepted" ? "accepted" : details.outcome === "verify_failed" ? `verify failed (exit ${details.verifyExitCode})` : "rejected";
+			const accepted = details.outcome === "accepted" || details.outcome === "accepted_inconclusive";
+			const icon = accepted ? theme.fg("success", "✔") : theme.fg("error", "✗");
+			const outcomeText =
+				details.outcome === "accepted" ? "accepted" :
+				details.outcome === "accepted_inconclusive" ? "accepted (judge inconclusive)" :
+				details.outcome === "verify_failed" ? `verify failed (exit ${details.verifyExitCode})` :
+				"rejected";
 			const header = `${icon} ${theme.fg("toolTitle", theme.bold("goal signoff "))}${theme.fg("accent", outcomeText)}`;
 			const duration = details.durationMs < 1000 ? `${details.durationMs}ms` : `${(details.durationMs / 1000).toFixed(1)}s`;
 			const sub = [details.judgeModel, duration].filter(Boolean).join(" · ");
@@ -440,7 +449,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 /** Structured details returned by CompleteGoal so renderCall/renderResult can show metadata. */
 interface SignOffDetails {
 	goal: string;
-	outcome: "accepted" | "rejected" | "verify_failed" | "running";
+	outcome: "accepted" | "accepted_inconclusive" | "rejected" | "verify_failed" | "running";
 	phase?: string; // "verifying" | "spawning" | "judging" — while running
 	durationMs: number;
 	verifyCommand?: string;
@@ -493,7 +502,12 @@ async function decideSignOff(
 		}
 	}
 	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal, onUpdate);
-	const outcome: SignOff = verdict.accept ? { kind: "accepted" } : { kind: "rejected", missing: verdict.missing };
+	const outcome: SignOff =
+		verdict.kind === "accepted"
+			? { kind: "accepted" }
+			: verdict.kind === "inconclusive"
+				? { kind: "accepted_inconclusive", reason: verdict.reason }
+				: { kind: "rejected", missing: verdict.missing };
 	return { outcome, reasoning: verdict.reasoning, durationMs: verdict.durationMs };
 }
 
@@ -513,6 +527,23 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+function extractTextFromContent(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
+			const text = (part as { text?: string }).text;
+			if (typeof text === "string" && text.trim()) parts.push(text);
+		}
+	}
+	return parts.join("\n\n").trim();
+}
+
+type JudgeResult =
+	| { kind: "accepted"; reasoning: string; durationMs: number }
+	| { kind: "rejected"; missing: string; reasoning: string; durationMs: number }
+	| { kind: "inconclusive"; reason: string; reasoning: string; durationMs: number };
+
 /** Stage 2: a read-only pi subprocess inspects the evidence against the repo and returns a verdict. */
 async function runJudge(
 	goal: Goal,
@@ -523,7 +554,7 @@ async function runJudge(
 	cwd: string,
 	signal: AbortSignal | undefined,
 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
-): Promise<{ accept: boolean; missing: string; reasoning: string; durationMs: number }> {
+): Promise<JudgeResult> {
 	const startedAt = Date.now();
 	const emit = (phase: string, text: string) => {
 		onUpdate?.({
@@ -540,7 +571,7 @@ async function runJudge(
 		evidence,
 		paths,
 	});
-	const args = ["-p", "--no-session", "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
+	const args = ["--mode", "json", "-p", "--no-session", "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
 	if (judgeModel) args.push("--model", judgeModel);
 	args.push(task);
 
@@ -550,45 +581,123 @@ async function runJudge(
 	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
 	// existing repo checkout so it doesn't pollute the user's workspace.
 	const JUDGE_TIMEOUT_MS = 120_000;
-	const output = await new Promise<string>((resolve) => {
+	const judge = await new Promise<{ output: string; error?: string; aborted?: boolean }>((resolve) => {
 		let settled = false;
+		let stdoutBuffer = "";
+		let finalOutput = "";
+		let currentText = "";
+		let stderr = "";
+		let lastStopReason: string | undefined;
+		let lastErrorMessage: string | undefined;
+		const partialOutput = (): string => [finalOutput, currentText, stderr.trim()].filter(Boolean).join("\n\n").trim();
+		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
+		if (!proc.stdout || !proc.stderr) throw new Error("judge subprocess stdio must be piped");
 		const timer = setTimeout(() => {
 			if (!settled) {
 				settled = true;
 				proc.kill();
-				resolve(`VERDICT: reject\nmissing: judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s`);
+				resolve({ output: partialOutput(), error: `judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s` });
 			}
 		}, JUDGE_TIMEOUT_MS);
-		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
-		let out = "";
-		proc.stdout.on("data", (d) => (out += d));
-		proc.stderr.on("data", (d) => (out += d));
-		proc.on("close", () => {
+
+		const processLine = (line: string) => {
+			if (!line.trim()) return;
+			let event: any;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				return;
+			}
+
+			if (event.type === "message_start" && event.message?.role === "assistant") {
+				currentText = "";
+				return;
+			}
+			if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+				currentText += event.assistantMessageEvent.delta ?? "";
+				return;
+			}
+			if (event.type === "message_end" && event.message?.role === "assistant") {
+				const text = extractTextFromContent(event.message.content) || currentText;
+				if (text) finalOutput = text;
+				currentText = "";
+				lastStopReason = typeof event.message.stopReason === "string" ? event.message.stopReason : undefined;
+				lastErrorMessage = typeof event.message.errorMessage === "string" ? event.message.errorMessage : undefined;
+			}
+		};
+
+		proc.stdout.on("data", (data) => {
+			stdoutBuffer += data.toString();
+			const lines = stdoutBuffer.split("\n");
+			stdoutBuffer = lines.pop() || "";
+			for (const line of lines) processLine(line);
+		});
+		proc.stderr.on("data", (data) => {
+			stderr += data.toString();
+		});
+		proc.on("close", (code) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(out);
+				if (stdoutBuffer.trim()) processLine(stdoutBuffer);
+				if (lastStopReason === "error" || lastStopReason === "aborted") {
+					resolve({ output: finalOutput, error: lastErrorMessage || `judge model ${lastStopReason}`, aborted: signal?.aborted });
+					return;
+				}
+				if ((code ?? 0) !== 0) {
+					resolve({ output: finalOutput, error: stderr.trim() || finalOutput || `judge subprocess exited ${code ?? 1}` });
+					return;
+				}
+				resolve({ output: finalOutput });
 			}
 		});
 		proc.on("error", (e) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(`VERDICT: reject\nmissing: judge subprocess failed: ${e.message}`);
+				resolve({ output: "", error: `judge subprocess failed: ${e.message}`, aborted: signal?.aborted });
 			}
 		});
 	});
 
-	// The subprocess emits ANSI/CSI control codes in -p mode; strip them so they don't leak into `missing`.
-	const clean = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+	if (judge.error) {
+		const partial = judge.output.trim();
+		if (judge.aborted) {
+			return {
+				kind: "rejected",
+				missing: judge.error,
+				reasoning: `VERDICT: reject\nmissing: ${judge.error}`,
+				durationMs: Date.now() - startedAt,
+			};
+		}
+		return {
+			kind: "inconclusive",
+			reason: judge.error,
+			reasoning: partial
+				? `VERDICT: inconclusive\nreason: ${judge.error}\n\npartial judge output:\n${partial}`
+				: `VERDICT: inconclusive\nreason: ${judge.error}`,
+			durationMs: Date.now() - startedAt,
+		};
+	}
 
+	const clean = judge.output.trim();
 	const verdictLine = clean.split("\n").find((l) => /^\s*VERDICT\s*:/i.test(l)) ?? "";
-	const accept = /accept/i.test(verdictLine);
+	const verdictMatch = /^\s*VERDICT\s*:\s*(accept|reject)\s*$/i.exec(verdictLine);
+	if (!verdictMatch) {
+		return {
+			kind: "inconclusive",
+			reason: clean ? "judge returned no exact VERDICT line" : "judge finished without returning any text",
+			reasoning: clean || "VERDICT: inconclusive\nreason: judge finished without returning any text",
+			durationMs: Date.now() - startedAt,
+		};
+	}
 	const missingMatch = clean.match(/missing\s*:\s*([\s\S]*)$/i);
-	const missing = accept ? "" : (missingMatch?.[1].trim() || clean.trim().slice(-500) || "judge gave no reason");
 	// The judge's own words (inspection + verdict), so CompleteGoal can show them. The verdict is at the
 	// end, so keep the tail when it's long.
 	const trimmed = clean.trim();
 	const reasoning = trimmed.length > 1800 ? `...\n${trimmed.slice(-1800)}` : trimmed;
-	return { accept, missing, reasoning, durationMs: Date.now() - startedAt };
+	if (verdictMatch[1].toLowerCase() === "accept") return { kind: "accepted", reasoning, durationMs: Date.now() - startedAt };
+
+	const missing = missingMatch?.[1].trim() || clean.slice(-500) || "judge gave no reason";
+	return { kind: "rejected", missing, reasoning, durationMs: Date.now() - startedAt };
 }

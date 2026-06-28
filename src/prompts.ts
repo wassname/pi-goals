@@ -211,8 +211,10 @@ export const completeGoalDescription =
 	"was avoided; ruling out the failure modes is necessary but not sufficient. Then call this with the " +
 	"goal's desc (the text after 'goal:'). Runs the goal's verify command (if any) then a read-only " +
 	"subagent that inspects that evidence against the repo and the discriminator. On accept, the goal is " +
-	"marked done and logged; on reject, it stays open and you get what is missing. The subagent's " +
-	"reasoning is returned either way.";
+	"marked done and logged; on judge reject, it stays open and you get what is missing. If the " +
+	"subagent times out or its transport/model fails after any verify command has passed, the goal is " +
+	"marked done with a judge-inconclusive log line. The subagent's reasoning or partial output is " +
+	"returned either way.";
 
 export const completeGoalParamDescription = "The goal's desc: the exact text after 'goal:' in its line.";
 

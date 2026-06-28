@@ -235,7 +235,8 @@ export function setGoalStatus(text: string, subject: string, status: GoalStatus)
 export type SignOff =
 	| { kind: "verify_failed"; exitCode: number; outputTail: string }
 	| { kind: "rejected"; missing: string }
-	| { kind: "accepted" };
+	| { kind: "accepted" }
+	| { kind: "accepted_inconclusive"; reason: string };
 
 /** Apply a sign-off outcome to goals.md text: accept flips the goal checkbox to [x] + logs; reject only logs. Pure. */
 export function recordSignOff(
@@ -257,6 +258,15 @@ export function recordSignOff(
 		return { content, message: `Sign-off rejected. Missing:\n${outcome.missing}`, isError: true };
 	}
 	const flipped = setGoalStatus(text, subject, "done");
+	if (outcome.kind === "accepted_inconclusive") {
+		const oneLine = outcome.reason.replace(/\s+/g, " ").trim().slice(0, 200);
+		const content = appendLog(flipped, `${when} signed off "${subject}" (judge inconclusive: ${oneLine})`);
+		return {
+			content,
+			message: `Signed off "${subject}". Marked done in goals.md.\nJudge inconclusive: ${outcome.reason}`,
+			isError: false,
+		};
+	}
 	const content = appendLog(flipped, `${when} signed off "${subject}" (judge accept)`);
 	return { content, message: `Signed off "${subject}". Marked done in goals.md.`, isError: false };
 }
