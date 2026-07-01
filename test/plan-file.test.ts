@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendLog, counts, findGoal, parse, recordSignOff, setGoalStatus } from "../src/plan-file.js";
+import { appendLog, counts, findGoal, parse, pruneCompleted, recordSignOff, setGoalStatus } from "../src/plan-file.js";
 
 const SAMPLE = `# papers audit
 
@@ -167,5 +167,42 @@ describe("recordSignOff (CompleteGoal's pure record logic)", () => {
 		const r = recordSignOff(SAMPLE, "nope", WHEN, { kind: "accepted" });
 		expect(r.isError).toBe(true);
 		expect(r.content).toBe(SAMPLE);
+	});
+});
+
+describe("pruneCompleted (drop finished goals, keep the rest)", () => {
+	// SAMPLE has one active + one open goal; add a done and a cancelled one to prune.
+	const WITH_FINISHED = `# papers audit
+
+Context line kept.
+
+## Goals
+
+1. [x] goal: Old finished thing
+  - discriminator: shipped
+  - tasks:
+    1. [x] did it
+  - evidence:
+    - > done.log
+2. [/] goal: Implement cache layer
+  - discriminator: hit-rate > 0.8
+3. [-] goal: Abandoned idea
+  - discriminator: n/a
+4. [ ] goal: Document the API
+  - discriminator: docstrings
+
+## Log
+- 2026-06-15 14:02  note
+`;
+
+	it("removes done and cancelled goals, keeps active/open + title + log", () => {
+		const out = parse(pruneCompleted(WITH_FINISHED));
+		expect(out.goals.map((g) => g.subject)).toEqual(["Implement cache layer", "Document the API"]);
+		expect(out.title).toBe("papers audit");
+		expect(out.log.at(-1)).toBe("- 2026-06-15 14:02  note");
+	});
+
+	it("is a no-op when nothing is finished", () => {
+		expect(pruneCompleted(SAMPLE)).toBe(SAMPLE);
 	});
 });

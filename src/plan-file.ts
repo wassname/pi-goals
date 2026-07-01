@@ -229,6 +229,43 @@ export function setGoalStatus(text: string, subject: string, status: GoalStatus)
 }
 
 /**
+ * Drop done+cancelled goal blocks (their header line through the last of their subtask/section lines)
+ * from goals.md, keeping the title, context, active/open goals, and the ## Log. Pure. Lets the human
+ * prune old finished goals so the widget/file stay short across sessions, without losing the log trail.
+ */
+export function pruneCompleted(text: string): string {
+	const lines = text.split("\n");
+	const out: string[] = [];
+	let inGoals = false;
+	let dropping = false;
+	for (const line of lines) {
+		if (GOALS_HEADER.test(line)) {
+			inGoals = true;
+			dropping = false;
+			out.push(line);
+			continue;
+		}
+		if (ANY_HEADER.test(line)) {
+			// Any other header (## Log, "# Future work") ends the goals section.
+			inGoals = false;
+			dropping = false;
+			out.push(line);
+			continue;
+		}
+		if (inGoals) {
+			const m = GOAL_ITEM.exec(line);
+			if (m) {
+				const status = CHAR_TO_STATUS[m[1].toLowerCase()] ?? "open";
+				dropping = status === "done" || status === "cancelled";
+			}
+			if (dropping) continue; // skip the goal line and everything under it until the next goal/header
+		}
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
+/**
  * The outcome of a sign-off attempt, decided by CompleteGoal (which runs verify + the judge). Kept
  * separate from the I/O so the record logic below is pure and testable.
  */

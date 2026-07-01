@@ -39,7 +39,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { counts, findGoal, type Goal, type PlanDoc, parse, recordSignOff, type SignOff } from "./plan-file.js";
+import { counts, findGoal, type Goal, type PlanDoc, parse, pruneCompleted, recordSignOff, type SignOff } from "./plan-file.js";
 import {
 	completeGoalDescription,
 	completeGoalParamDescription,
@@ -124,12 +124,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 		const c = counts(doc);
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${c.done}/${doc.goals.length} goals`));
-		ctx.ui.setWidget(WIDGET_KEY, [...goalWidgetLines(doc), ctx.ui.theme.fg("muted", PLAN_REL)]);
+		ctx.ui.setWidget(WIDGET_KEY, goalWidgetLines(doc, ctx));
 	}
 
-	function goalWidgetLines(doc: PlanDoc): string[] {
+	function goalWidgetLines(doc: PlanDoc, ctx: ExtensionContext): string[] {
 		const mark: Record<Goal["status"], string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
-		const lines = [`Goals: ${doc.title || "(untitled)"}`];
+		// Header doubles as the file path (clickable) so we don't spend a second line on a "Goals:" label
+		// plus a footer path -- one line carries both. Title trails the path when set.
+		const header = ctx.ui.theme.fg("muted", doc.title ? `${PLAN_REL}: ${doc.title}` : PLAN_REL);
+		const lines = [header];
 		for (const g of doc.goals) {
 			// Show every goal with its status glyph (✔ done, ▸ active, ◻ open, ✗ cancelled) so finished
 			// goals read as checked off rather than vanishing. Plans are small, so this stays readable.
@@ -143,7 +146,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- plan mode: setup -------------------------------------------------------------------------
 
 	pi.registerCommand("goals", {
-		description: "Plan mode: set up goals (with evidence) in goals.md, then work them. /goals <objective>",
+		description: "Plan mode: set up goals (with evidence) in goals.md, then work them. /goals <objective> | /goals clear",
 		handler: async (args, ctx) => {
 			savedCmdCtx = ctx; // ctx here is an ExtensionCommandContext (has newSession); keep it for later
 			const arg = args.trim();
@@ -182,8 +185,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (ctx.hasUI) {
-			const ok = await ctx.ui.select(`Clear ${PLAN_REL}?`, ["Cancel", "Clear goals.md"]);
-			if (ok !== "Clear goals.md") return;
+			const choice = await ctx.ui.select(`Clear ${PLAN_REL}?`, [
+				"Cancel",
+				"Prune completed goals (keep active/open + log)",
+				"Clear everything",
+			]);
+			if (!choice || choice.startsWith("Cancel")) return;
+			if (choice.startsWith("Prune")) {
+				writePlan(ctx, pruneCompleted(readPlan(ctx)));
+				updateWidget(ctx);
+				ctx.ui.notify(`Pruned completed goals from ${PLAN_REL}.`, "info");
+				return;
+			}
 		}
 		writePlan(ctx, "");
 		state = { ...state, isPlanMode: false, objective: null };
