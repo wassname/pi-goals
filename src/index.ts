@@ -133,12 +133,20 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		// plus a footer path -- one line carries both. Title trails the path when set.
 		const header = ctx.ui.theme.fg("muted", doc.title ? `${PLAN_REL}: ${doc.title}` : PLAN_REL);
 		const lines = [header];
-		for (const g of doc.goals) {
-			// Show every goal with its status glyph (✔ done, ▸ active, ◻ open, ✗ cancelled) so finished
-			// goals read as checked off rather than vanishing. Plans are small, so this stays readable.
+		// Show the live work (active + open) in full, in file order; finished goals (done/cancelled) get
+		// cropped to one muted summary line so completed goals don't push the current work off screen as
+		// they pile up across sessions. Full history still lives in goals.md / the ## Log.
+		const live = doc.goals.filter((g) => g.status === "active" || g.status === "open");
+		for (const g of live) {
 			const total = g.subtasks.length;
 			const done = g.subtasks.filter((s) => s.status === "done").length;
 			lines.push(`${mark[g.status]} ${g.subject}${total ? ` (${done}/${total} tasks)` : ""}`);
+		}
+		const doneN = doc.goals.filter((g) => g.status === "done").length;
+		const cancN = doc.goals.filter((g) => g.status === "cancelled").length;
+		if (doneN || cancN) {
+			const parts = [doneN ? `✔ ${doneN} done` : "", cancN ? `✗ ${cancN} cancelled` : ""].filter(Boolean);
+			lines.push(ctx.ui.theme.fg("muted", parts.join("  ")));
 		}
 		return lines;
 	}
