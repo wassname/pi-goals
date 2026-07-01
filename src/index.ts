@@ -59,6 +59,7 @@ const WIDGET_KEY = "pi-goals-widget";
 // Names match pi's internal tool registry (grep→ffgrep, find→fffind, etc.).
 const JUDGE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 const JUDGE_BLOCKED_TOOLS = ["edit", "write"];
+const JUDGE_TIMEOUT_MS = 600_000;
 // File mutators blocked while drafting goals (read-only plan mode, like narumiruna/pi-plan-mode), so
 // code isn't written before goals are agreed. The one allowed write is goals.md itself (the
 // deliverable). A read-only task (a pure search) can still be explored in plan mode by nature.
@@ -86,7 +87,7 @@ const PLAN_REL = ".pi/goals.md"; // project-local, gitignored (pi-tasks conventi
 interface PlanState {
 	isPlanMode: boolean;
 	objective: string | null;
-	/** Optional model ref for the sign-off judge; unset => the subprocess uses pi's default model. */
+	/** Optional model ref for the sign-off judge; unset => use the current session model. */
 	judgeModel: string | null;
 }
 
@@ -184,7 +185,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	function setJudge(ref: string, ctx: ExtensionContext): void {
 		state = { ...state, judgeModel: ref || null };
 		persist();
-		ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the default model", "info");
+		ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the current session model", "info");
 	}
 
 	async function clearPlan(ctx: ExtensionContext): Promise<void> {
@@ -314,19 +315,24 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				onUpdate?.(partial);
 			};
 
-			const { outcome, reasoning, durationMs } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, state.judgeModel, ctx.cwd, signal, handleUpdate);
+			const judgeModel = state.judgeModel ?? currentSessionModelRef(ctx);
+			const { outcome, reasoning, durationMs } = await decideSignOff(goal, goal.evidence.join("\n"), goal.evidence, judgeModel, ctx.cwd, signal, handleUpdate);
 			const res = recordSignOff(content, goal.subject, stamp(), outcome);
 			if (res.content !== content) writePlan(ctx, res.content);
 			updateWidget(ctx);
 			const detail = reasoning ? `\n\n--- sign-off judge ---\n${reasoning}` : "";
-			const outcomeLabel = outcome.kind === "accepted" ? "accepted" : outcome.kind === "verify_failed" ? "verify_failed" : "rejected";
+			const outcomeLabel =
+				outcome.kind === "accepted" ? "accepted" :
+				outcome.kind === "accepted_inconclusive" ? "accepted_inconclusive" :
+				outcome.kind === "verify_failed" ? "verify_failed" :
+				"rejected";
 			const details: SignOffDetails = {
 				goal: goal.subject,
 				outcome: outcomeLabel,
 				durationMs,
 				verifyCommand: goal.verify ?? undefined,
 				verifyExitCode: outcome.kind === "verify_failed" ? outcome.exitCode : undefined,
-				judgeModel: state.judgeModel ?? undefined,
+				judgeModel: judgeModel ?? "no explicit judge model",
 				reasoning,
 				isError: res.isError,
 			};
@@ -346,8 +352,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
 			if (!details || details.outcome === "running") return new Text(body, 0, 0);
 
-			const icon = details.outcome === "accepted" ? theme.fg("success", "✔") : theme.fg("error", "✗");
-			const outcomeText = details.outcome === "accepted" ? "accepted" : details.outcome === "verify_failed" ? `verify failed (exit ${details.verifyExitCode})` : "rejected";
+			const accepted = details.outcome === "accepted" || details.outcome === "accepted_inconclusive";
+			const icon = accepted ? theme.fg("success", "✔") : theme.fg("error", "✗");
+			const outcomeText =
+				details.outcome === "accepted" ? "accepted" :
+				details.outcome === "accepted_inconclusive" ? "accepted (judge inconclusive)" :
+				details.outcome === "verify_failed" ? `verify failed (exit ${details.verifyExitCode})` :
+				"rejected";
 			const header = `${icon} ${theme.fg("toolTitle", theme.bold("goal signoff "))}${theme.fg("accent", outcomeText)}`;
 			const duration = details.durationMs < 1000 ? `${details.durationMs}ms` : `${(details.durationMs / 1000).toFixed(1)}s`;
 			const sub = [details.judgeModel, duration].filter(Boolean).join(" · ");
@@ -461,7 +472,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 /** Structured details returned by CompleteGoal so renderCall/renderResult can show metadata. */
 interface SignOffDetails {
 	goal: string;
-	outcome: "accepted" | "rejected" | "verify_failed" | "running";
+	outcome: "accepted" | "accepted_inconclusive" | "rejected" | "verify_failed" | "running";
 	phase?: string; // "verifying" | "spawning" | "judging" — while running
 	durationMs: number;
 	verifyCommand?: string;
@@ -481,6 +492,10 @@ function textWithDetails(s: string, details: SignOffDetails, isError = false) {
 
 function stamp(): string {
 	return new Date().toISOString().slice(0, 16).replace("T", " ");
+}
+
+function currentSessionModelRef(ctx: ExtensionContext): string | null {
+	return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
 }
 
 /** Decide a sign-off: deterministic verify first (cheap; skip the model call if it fails), then the judge.
@@ -513,8 +528,21 @@ async function decideSignOff(
 			};
 		}
 	}
+	if (!judgeModel) {
+		const reason = "no explicit judge model available; set /goals judge <provider/model>";
+		return {
+			outcome: { kind: "accepted_inconclusive", reason },
+			reasoning: `VERDICT: inconclusive\nreason: ${reason}`,
+			durationMs: Date.now() - startedAt,
+		};
+	}
 	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal, onUpdate);
-	const outcome: SignOff = verdict.accept ? { kind: "accepted" } : { kind: "rejected", missing: verdict.missing };
+	const outcome: SignOff =
+		verdict.kind === "accepted"
+			? { kind: "accepted" }
+			: verdict.kind === "inconclusive"
+				? { kind: "accepted_inconclusive", reason: verdict.reason }
+				: { kind: "rejected", missing: verdict.missing };
 	return { outcome, reasoning: verdict.reasoning, durationMs: verdict.durationMs };
 }
 
@@ -534,17 +562,34 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+function extractTextFromContent(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
+			const text = (part as { text?: string }).text;
+			if (typeof text === "string" && text.trim()) parts.push(text);
+		}
+	}
+	return parts.join("\n\n").trim();
+}
+
+type JudgeResult =
+	| { kind: "accepted"; reasoning: string; durationMs: number }
+	| { kind: "rejected"; missing: string; reasoning: string; durationMs: number }
+	| { kind: "inconclusive"; reason: string; reasoning: string; durationMs: number };
+
 /** Stage 2: a read-only pi subprocess inspects the evidence against the repo and returns a verdict. */
 async function runJudge(
 	goal: Goal,
 	evidence: string,
 	paths: string[],
 	verifyResult: { command: string; exitCode: number; outputTail: string } | null,
-	judgeModel: string | null,
+	judgeModel: string,
 	cwd: string,
 	signal: AbortSignal | undefined,
 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
-): Promise<{ accept: boolean; missing: string; reasoning: string; durationMs: number }> {
+): Promise<JudgeResult> {
 	const startedAt = Date.now();
 	const emit = (phase: string, text: string) => {
 		onUpdate?.({
@@ -561,8 +606,7 @@ async function runJudge(
 		evidence,
 		paths,
 	});
-	const args = ["-p", "--no-session", "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
-	if (judgeModel) args.push("--model", judgeModel);
+	const args = ["--mode", "json", "-p", "--no-session", "--model", judgeModel, "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
 	args.push(task);
 
 	emit("spawning", `Spawning read-only judge for: ${goal.subject}`);
@@ -570,46 +614,134 @@ async function runJudge(
 	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
 	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
 	// existing repo checkout so it doesn't pollute the user's workspace.
-	const JUDGE_TIMEOUT_MS = 120_000;
-	const output = await new Promise<string>((resolve) => {
+	const judge = await new Promise<{ output: string; error?: string; aborted?: boolean }>((resolve) => {
 		let settled = false;
+		let stdoutBuffer = "";
+		let finalOutput = "";
+		let currentText = "";
+		let stderr = "";
+		let lastStopReason: string | undefined;
+		let lastErrorMessage: string | undefined;
+		let lastProgressAt = 0;
+		const partialOutput = (): string => [finalOutput, currentText, stderr.trim()].filter(Boolean).join("\n\n").trim();
+		const emitProgress = (text: string, force = false) => {
+			const now = Date.now();
+			if (!force && now - lastProgressAt < 750) return;
+			lastProgressAt = now;
+			emit("judging", text);
+		};
+		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
+		if (!proc.stdout || !proc.stderr) throw new Error("judge subprocess stdio must be piped");
 		const timer = setTimeout(() => {
 			if (!settled) {
 				settled = true;
 				proc.kill();
-				resolve(`VERDICT: reject\nmissing: judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s`);
+				resolve({ output: partialOutput(), error: `judge timed out after ${JUDGE_TIMEOUT_MS / 1000}s` });
 			}
 		}, JUDGE_TIMEOUT_MS);
-		const proc = spawn(inv.command, inv.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], signal });
-		let out = "";
-		proc.stdout.on("data", (d) => (out += d));
-		proc.stderr.on("data", (d) => (out += d));
-		proc.on("close", () => {
+
+		const processLine = (line: string) => {
+			if (!line.trim()) return;
+			let event: any;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				return;
+			}
+
+			if (event.type === "message_start" && event.message?.role === "assistant") {
+				currentText = "";
+				emitProgress("Judge is reading evidence...", true);
+				return;
+			}
+			if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+				currentText += event.assistantMessageEvent.delta ?? "";
+				emitProgress(currentText || "Judge is reading evidence...");
+				return;
+			}
+			if (event.type === "message_end" && event.message?.role === "assistant") {
+				const text = extractTextFromContent(event.message.content) || currentText;
+				if (text) finalOutput = text;
+				currentText = "";
+				lastStopReason = typeof event.message.stopReason === "string" ? event.message.stopReason : undefined;
+				lastErrorMessage = typeof event.message.errorMessage === "string" ? event.message.errorMessage : undefined;
+				emitProgress(finalOutput || "Judge finished without text.", true);
+			}
+		};
+
+		proc.stdout.on("data", (data) => {
+			stdoutBuffer += data.toString();
+			const lines = stdoutBuffer.split("\n");
+			stdoutBuffer = lines.pop() || "";
+			for (const line of lines) processLine(line);
+		});
+		proc.stderr.on("data", (data) => {
+			stderr += data.toString();
+			emitProgress(partialOutput() || "Judge subprocess wrote stderr.");
+		});
+		proc.on("close", (code) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(out);
+				if (stdoutBuffer.trim()) processLine(stdoutBuffer);
+				if (lastStopReason === "error" || lastStopReason === "aborted") {
+					resolve({ output: finalOutput, error: lastErrorMessage || `judge model ${lastStopReason}`, aborted: signal?.aborted });
+					return;
+				}
+				if ((code ?? 0) !== 0) {
+					resolve({ output: finalOutput, error: stderr.trim() || finalOutput || `judge subprocess exited ${code ?? 1}` });
+					return;
+				}
+				resolve({ output: finalOutput });
 			}
 		});
 		proc.on("error", (e) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(`VERDICT: reject\nmissing: judge subprocess failed: ${e.message}`);
+				resolve({ output: "", error: `judge subprocess failed: ${e.message}`, aborted: signal?.aborted });
 			}
 		});
 	});
 
-	// The subprocess emits ANSI/CSI control codes in -p mode; strip them so they don't leak into `missing`.
-	const clean = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+	if (judge.error) {
+		const partial = judge.output.trim();
+		if (judge.aborted) {
+			return {
+				kind: "rejected",
+				missing: judge.error,
+				reasoning: `VERDICT: reject\nmissing: ${judge.error}`,
+				durationMs: Date.now() - startedAt,
+			};
+		}
+		return {
+			kind: "inconclusive",
+			reason: judge.error,
+			reasoning: partial
+				? `VERDICT: inconclusive\nreason: ${judge.error}\n\npartial judge output:\n${partial}`
+				: `VERDICT: inconclusive\nreason: ${judge.error}`,
+			durationMs: Date.now() - startedAt,
+		};
+	}
 
+	const clean = judge.output.trim();
 	const verdictLine = clean.split("\n").find((l) => /^\s*VERDICT\s*:/i.test(l)) ?? "";
-	const accept = /accept/i.test(verdictLine);
+	const verdictMatch = /^\s*VERDICT\s*:\s*(accept|reject)\s*$/i.exec(verdictLine);
+	if (!verdictMatch) {
+		return {
+			kind: "inconclusive",
+			reason: clean ? "judge returned no exact VERDICT line" : "judge finished without returning any text",
+			reasoning: clean || "VERDICT: inconclusive\nreason: judge finished without returning any text",
+			durationMs: Date.now() - startedAt,
+		};
+	}
 	const missingMatch = clean.match(/missing\s*:\s*([\s\S]*)$/i);
-	const missing = accept ? "" : (missingMatch?.[1].trim() || clean.trim().slice(-500) || "judge gave no reason");
 	// The judge's own words (inspection + verdict), so CompleteGoal can show them. The verdict is at the
 	// end, so keep the tail when it's long.
 	const trimmed = clean.trim();
 	const reasoning = trimmed.length > 1800 ? `...\n${trimmed.slice(-1800)}` : trimmed;
-	return { accept, missing, reasoning, durationMs: Date.now() - startedAt };
+	if (verdictMatch[1].toLowerCase() === "accept") return { kind: "accepted", reasoning, durationMs: Date.now() - startedAt };
+
+	const missing = missingMatch?.[1].trim() || clean.slice(-500) || "judge gave no reason";
+	return { kind: "rejected", missing, reasoning, durationMs: Date.now() - startedAt };
 }

@@ -148,6 +148,18 @@ describe("recordSignOff (CompleteGoal's pure record logic)", () => {
 		expect(doc.log.at(-1)).toBe(`- ${WHEN} signed off "Implement cache layer" (judge accept)`);
 	});
 
+	it("accepted_inconclusive still marks done and logs the judge failure", () => {
+		const r = recordSignOff(SAMPLE, "Implement cache layer", WHEN, {
+			kind: "accepted_inconclusive",
+			reason: "judge timed out after 120s",
+		});
+		expect(r.isError).toBe(false);
+		const doc = parse(r.content);
+		expect(findGoal(doc, "Implement cache layer")?.status).toBe("done");
+		expect(doc.log.at(-1)).toBe(`- ${WHEN} signed off "Implement cache layer" (judge inconclusive: judge timed out after 120s)`);
+		expect(r.message).toContain("Judge inconclusive: judge timed out after 120s");
+	});
+
 	it("verify_failed only logs a reject line, status stays active", () => {
 		const r = recordSignOff(SAMPLE, "Implement cache layer", WHEN, { kind: "verify_failed", exitCode: 1, outputTail: "boom" });
 		expect(r.isError).toBe(true);
