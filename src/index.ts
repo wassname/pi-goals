@@ -27,7 +27,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -194,6 +194,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		// v1 wrote .pi/goals.md; v2 reads .pi/plan.md. Rename so old goals aren't silently invisible
+		// (dogfood finding). Claude: one-time migration, delete once v1 files are gone from the wild.
+		const v1Path = join(ctx.cwd, ".pi", "goals.md");
+		if (existsSync(v1Path) && !existsSync(planPath(ctx))) {
+			renameSync(v1Path, planPath(ctx));
+			ctx.ui.notify(`Renamed .pi/goals.md -> ${PLAN_REL} (v2 filename).`, "info");
+		}
 		const last = ctx.sessionManager
 			.getEntries()
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
