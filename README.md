@@ -96,6 +96,8 @@ committing before sign-off is for durable evidence, not for the judge's visibili
 - accept: a sign-off line is appended to `## Log` and the goal is ticked `[x]` in the same write
   (exact goal-line match only; on wording drift the result asks the agent to tick it). The
   tool-written log line is the audit trail; a hand-tick without one shows in the diff.
+- every run saves the judge's full transcript to `.pi/judge/<stamp>.md`, referenced from the log
+  line, so "did the judge really re-run verify?" stays answerable after the fact.
 - reject: the goal stays open and the agent gets the missing list.
 - judge ran but failed/errored/timed out, or returned no VERDICT line: accepted inconclusive,
   logged as such. There is no pre-emptive "no model" path -- a null judgeModel just omits

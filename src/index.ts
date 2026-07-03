@@ -228,11 +228,21 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			// decideSignOff runs the judge and derives the outcome + the one log line. judgeModel is never
 			// checked pre-emptively: null just means pi's configured default runs (buildJudgeArgs omits
 			// --model), so accepted_inconclusive always means "the judge ran but failed", never "no model".
-			const outcome = await decideSignOff(
-				{ goal: params.goal, plan, judgeModel },
-				signal,
-				(task) => runJudge(task, judgeModel, ctx.cwd, signal),
-			);
+			let judgeRaw: JudgeResult | null = null;
+			const outcome = await decideSignOff({ goal: params.goal, plan, judgeModel }, signal, async (task) => {
+				judgeRaw = await runJudge(task, judgeModel, ctx.cwd, signal);
+				return judgeRaw;
+			});
+			// Persist the judge's full transcript so "did the judge really re-run verify?" is answerable
+			// after the fact (dogfood finding: with only the one log line, an accept is unauditable).
+			let transcriptNote = "";
+			if (judgeRaw !== null) {
+				const raw: JudgeResult = judgeRaw;
+				mkdirSync(join(ctx.cwd, ".pi", "judge"), { recursive: true });
+				const rel = `.pi/judge/${stamp().replace(/[: ]/g, "-")}.md`;
+				writeFileSync(join(ctx.cwd, rel), `goal: ${params.goal}\nmodel: ${judgeModel ?? "pi default"}\nerror: ${raw.error ?? "none"}\n\n${raw.output}\n`);
+				transcriptNote = ` (${rel})`;
+			}
 			if (outcome.logEntry) {
 				// Sign-off write: tick the goal [x] (exact-subject match; dogfood showed agent bookkeeping
 				// is the drift point) and append the audit log line, one write. On wording drift the tick
@@ -246,7 +256,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 						? `\n\nGoal ticked [x] in ${PLAN_REL}.`
 						: `\n\nNo exact goal line matched your wording -- tick it [x] in ${PLAN_REL} yourself.`;
 				}
-				writePlan(ctx, appendLog(updated, `${stamp()} ${outcome.logEntry}`));
+				writePlan(ctx, appendLog(updated, `${stamp()} ${outcome.logEntry}${transcriptNote}`));
 				updateWidget(ctx);
 				return result(outcome.resultText + tickNote, outcome.isError);
 			}
