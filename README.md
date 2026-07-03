@@ -19,14 +19,11 @@ Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages
 
 ## Install
 
-```bash
-pi install npm:@wassname2/pi-goals
-```
-
-Or run it without installing:
+Not yet published to npm; run from a checkout:
 
 ```bash
-pi -e npm:@wassname2/pi-goals
+git clone https://github.com/wassname/pi-plan && cd pi-plan && npm install
+pi -e ./src/index.ts
 ```
 
 ## Use
@@ -76,7 +73,8 @@ Latency target came from the SLO review; keep the existing client API.
 ```
 
 - A goal is a checkbox line beginning `goal:` (`[ ]` open, `[/]` active, `[x]` done, `[-]`
-  cancelled). That one line pattern is the only thing the extension itself reads, for the widget.
+  cancelled). That one line pattern is the only thing the extension itself reads (widget counts,
+  reminder cadence, the Ready prompt); everything else in the file is prose to the extension.
 - The `discriminator` is the success test, written while planning: the positive observation that the
   goal succeeded and that none of the `subtle failure mode`s could fake. `evidence` is the proof,
   filled at sign-off: each item pairs a durable artifact with a short read of it. Prefer committed
@@ -110,7 +108,7 @@ All model-facing text lives in [`src/prompts.ts`](src/prompts.ts), in flow order
 
 ```bash
 pi -e ./src/index.ts        # load locally
-npm test                    # vitest: judge argv invariants + appendLog
+npm test                    # vitest: judge argv invariants, appendLog, decideSignOff fail-forward
 npm run typecheck
 npm run lint
 ```
