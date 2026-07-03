@@ -48,6 +48,8 @@ pi -e npm:@wassname2/pi-goals
 Other commands: `/goals clear` empties the plan file; `/goals judge <model-ref>` picks a specific
 model for the sign-off judge (default: your current session model, else pi's default).
 
+Coming from v1: a leftover `.pi/goals.md` is renamed to `.pi/plan.md` on session start.
+
 ## The plan.md format (a convention, not a schema)
 
 ```markdown
