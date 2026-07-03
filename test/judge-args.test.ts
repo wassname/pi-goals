@@ -23,7 +23,9 @@ describe("buildJudgeArgs", () => {
 			expect(args).toContain("--no-session");
 			expect(args).toContain("--no-extensions"); // a broken global extension must not take down sign-offs
 			expect(args).toContain("--tools");
-			expect(args.some((a) => a.startsWith("read,bash,grep,find,ls"))).toBe(true);
+			expect(args.some((a) => a.startsWith("read,grep,find,ls"))).toBe(true);
+			// no bash: the judge must never be able to execute (or re-run a 10-hour verify) or mutate
+			expect(args.some((a) => a.includes("bash"))).toBe(false);
 			expect(args).toContain("--exclude-tools");
 			expect(args.some((a) => a.includes("edit") && a.includes("write"))).toBe(true);
 		}

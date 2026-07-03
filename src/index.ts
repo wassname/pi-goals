@@ -9,12 +9,13 @@
  *   1. memory  — inject plan.md verbatim every turn (survives compaction; byte-identical when
  *                unchanged so the KV cache holds; stale copies stripped by the context hook)
  *   2. format  — a skeleton convention taught in planDrafting (prompts.ts), not validated
- *   3. eyes    — CompleteGoal spawns a read-only pi subprocess (--no-session) that gets the whole
- *                plan file plus the claimed goal, finds the goal itself (tolerates wording drift),
- *                runs the goal's verify command itself, and returns VERDICT: accept|reject
+ *   3. eyes    — CompleteGoal spawns a strictly read-only pi subprocess (--no-session, no bash)
+ *                that gets the whole plan file plus the claimed goal, finds the goal itself
+ *                (tolerates wording drift), checks the evidence (including the agent's saved
+ *                verify output) against the repo, and returns VERDICT: accept|reject
  *
  * The judge subsumes what v1 did in code: goal matching (no findGoal), evidence validation (a
- * placeholder gets rejected in words), verify execution, and format reading. The extension's only
+ * placeholder gets rejected in words), and format reading. The extension's only
  * writes are the sign-off: append a log line to ## Log (the audit trail) and tick the goal [x] when
  * an exact goal line matches (on drift the agent ticks, and the result says so). A hand-tick
  * without a matching tool-written log line is visible in the diff either way.
@@ -39,9 +40,10 @@ const PLAN_CONTEXT = "pi-goals-context"; // injected plan/guidance, stale copies
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
 const PLAN_REL = ".pi/plan.md";
-// Judge toolset: read-only inspection plus bash (git log, cat, running the goal's verify command).
-// edit/write are excluded so the judge cannot modify anything. Names match pi's tool registry.
-const JUDGE_TOOLS = ["read", "bash", "grep", "find", "ls"];
+// Judge toolset: strictly read-only, NO bash -- the judge can never execute or mutate anything, and
+// in particular never re-runs a verify command (which may be a 10-hour training job). The agent runs
+// verify itself and saves the output as evidence; the judge reads it. Names match pi's tool registry.
+const JUDGE_TOOLS = ["read", "grep", "find", "ls"];
 const JUDGE_BLOCKED_TOOLS = ["edit", "write"];
 const JUDGE_TIMEOUT_MS = 600_000;
 // Plan mode is read-only by convention AND a light gate: edit/write are blocked (except plan.md,

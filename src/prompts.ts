@@ -46,7 +46,8 @@ directly by the human and a judge model, so clarity beats conformance; small dev
 1. [ ] goal: <one short imperative line>
   - subtle failure mode: <a way this could look done but isn't>
   - discriminator: <the concrete observation that tells real success from that failure>
-  - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not testable>
+  - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not
+    testable. YOU run it at sign-off time and save its output as evidence; the judge only reads>
   - tasks:
     1. [ ] <subtask>
   - evidence: (empty until sign-off)
@@ -95,12 +96,14 @@ export const completeGoalDescription =
 	"plan file: each item pairs a durable artifact with a short read of it (a quoted+linked log, a " +
 	"table plus how to read it, a metric plus what it shows -- not a bare claim). Quote verbatim from " +
 	"output you actually observed; never reconstruct numbers from memory. If you couldn't see an " +
-	"output, rerun it or write that you couldn't -- an honest gap beats a plausible fabrication. The " +
-	"read must show success POSITIVELY happened, not just that failures were avoided. Then call this with the goal's " +
-	"text (the line after 'goal:'; small wording drift is fine). A fresh read-only judge inspects the " +
-	"LIVE WORKING TREE (uncommitted changes included; committing first is for durability, not " +
-	"visibility), runs the goal's verify command if it names one, and returns accept or reject with " +
-	"what's missing. On accept (or if the judge itself failed), a sign-off line is appended to ## Log " +
+	"output, rerun it or write that you couldn't -- an honest gap beats a plausible fabrication. If " +
+	"the goal names a verify: command, run it yourself first and save its output to a file cited in " +
+	"the evidence: the judge cannot execute anything and will reject a claimed pass with no saved " +
+	"output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
+	"Then call this with the goal's text (the line after 'goal:'; small wording drift is fine). A " +
+	"fresh strictly-read-only judge inspects the LIVE WORKING TREE (uncommitted changes included; " +
+	"committing first is for durability, not visibility) and returns accept or reject with what's " +
+	"missing. On accept (or if the judge itself failed), a sign-off line is appended to ## Log " +
 	"and the goal is ticked [x] for you; the result says if you must tick it yourself. On reject the " +
 	"goal stays open.";
 
@@ -113,17 +116,25 @@ export const completeGoalParamDescription = "The goal's text: the line after 'go
  *    reads discriminator/failure modes/evidence itself (no parser between).
  * ──────────────────────────────────────────────────────────────────────── */
 export const judgeSystem = `\
-You are a read-only reviewer signing off a coding goal. Do not trust claims; verify.
-Use read/grep/find/ls/bash to inspect the repository and the cited artifacts yourself. Re-read the
-files, logs, and diffs the evidence points to; if something asserted isn't on disk, you can't
-confirm it. Spot-check the evidence quotes against the artifacts: a quote or number that doesn't
-match what's actually there means the evidence was reconstructed from memory, not observed --
-reject and ask for re-observed evidence, even if the goal itself otherwise looks met. Evidence
-discipline is part of the goal. If the goal names a verify: command, run it and check it really tests the discriminator
-rather than passing tautologically. Judge whether the evidence shows the goal POSITIVELY succeeded
--- the discriminator's success signal is actually present, not just that the named failure modes
-were dodged; a run can rule out every trap and still have produced nothing. Then check each subtle
-failure mode is genuinely ruled out, not just unmentioned.
+You are a strictly read-only reviewer signing off a coding goal. You cannot execute anything: judge
+by reading (read/grep/find/ls). Never re-run the work or its verify command -- it may be a 10-hour
+job; the agent must bring you its saved output. Your job is evidence discipline, checked in order:
+
+1. Anything here? An empty or placeholder evidence: list -> reject: "there's nothing here -- fill
+   the evidence and try again."
+2. Quoted and attributed? Each item needs a source (file path / command) plus a verbatim quote of
+   what was observed, plus a one-line read. A bare claim -> reject: "you didn't quote and
+   attribute it."
+3. Provenance? It must be visible HOW each result was produced (the command run, where its output
+   was saved). Results with no origin -> reject: "I see the results, but how did you get them?"
+4. Spot-check: open the cited files. A quote or number that doesn't match what's on disk means the
+   evidence was reconstructed from memory, not observed -> reject and ask for re-observed
+   evidence, even if the goal otherwise looks met.
+5. Substance, only once 1-4 hold: does the evidence show the discriminator's success signal
+   POSITIVELY happened -- not just that the named failure modes were dodged; a run can rule out
+   every trap and still have produced nothing. Is each subtle failure mode genuinely ruled out,
+   not just unmentioned? If the goal names a verify: command, its saved output must be among the
+   evidence, and the command must actually test the discriminator rather than pass tautologically.
 
 Finish with exactly these two lines and nothing after:
 VERDICT: accept | reject
@@ -143,5 +154,5 @@ modes, verify command, and evidence list from the file itself.
 ${p.plan}
 --- end plan file ---
 
-Inspect the repo and artifacts, run verify if present, then give your VERDICT.`;
+Read the cited artifacts (you cannot execute anything), then give your VERDICT.`;
 }

@@ -86,18 +86,21 @@ Latency target came from the SLO review; keep the existing client API.
 
 ## Signing off a goal (`CompleteGoal`)
 
-`CompleteGoal(goal)` is the one blessed tool. It spawns a read-only `pi` subprocess (`-p
---no-session --no-extensions`, tools `read,bash,grep,find,ls`, edit/write excluded) with the whole
-plan file and the claimed goal. The judge finds the goal, re-derives from the cited artifacts rather
-than trusting claims, runs `verify` if the goal names one, and returns `VERDICT: accept | reject`
-plus what's missing. It inspects the live working tree, not HEAD: uncommitted work counts, and
-committing before sign-off is for durable evidence, not for the judge's visibility.
+`CompleteGoal(goal)` is the one blessed tool. It spawns a strictly read-only `pi` subprocess (`-p
+--no-session --no-extensions`, tools `read,grep,find,ls` -- no bash, no edit/write) with the whole
+plan file and the claimed goal. The judge cannot execute anything, so it never re-runs your verify
+command (which may be a 10-hour training job); the agent runs `verify` itself and saves the output
+as evidence. The judge reviews evidence discipline in order -- anything here at all? each item
+quoted and attributed? provenance visible (how was this produced)? do the quotes match the cited
+files on disk? -- and only then the substance, returning `VERDICT: accept | reject` plus what's
+missing. It reads the live working tree, not HEAD: uncommitted work counts, and committing before
+sign-off is for durable evidence, not for the judge's visibility.
 
 - accept: a sign-off line is appended to `## Log` and the goal is ticked `[x]` in the same write
   (exact goal-line match only; on wording drift the result asks the agent to tick it). The
   tool-written log line is the audit trail; a hand-tick without one shows in the diff.
 - every run saves the judge's full transcript to `.pi/judge/<stamp>.md`, referenced from the log
-  line, so "did the judge really re-run verify?" stays answerable after the fact.
+  line, so "what did the judge actually check?" stays answerable after the fact.
 - reject: the goal stays open and the agent gets the missing list.
 - judge ran but failed/errored/timed out, or returned no VERDICT line: accepted inconclusive,
   logged as such. There is no pre-emptive "no model" path -- a null judgeModel just omits
