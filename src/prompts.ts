@@ -66,6 +66,8 @@ Conventions:
 - Make the discriminator a concrete, checkable observation about a real artifact (a file, a test
   result, a committed diff, a metric), never about the plan file's own checkbox.
 - evidence stays empty at planning; you fill it at sign-off and a fresh read-only judge checks it.
+  Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
+  usually gitignored, so files there prove things only at judge time, not in history.
 
 When the goals are drafted, present them and stop for review. Do not begin execution.`;
 

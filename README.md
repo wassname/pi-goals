@@ -77,7 +77,9 @@ Latency target came from the SLO review; keep the existing client API.
   cancelled). That one line pattern is the only thing the extension itself reads, for the widget.
 - The `discriminator` is the success test, written while planning: the positive observation that the
   goal succeeded and that none of the `subtle failure mode`s could fake. `evidence` is the proof,
-  filled at sign-off: each item pairs a durable artifact with a short read of it.
+  filled at sign-off: each item pairs a durable artifact with a short read of it. Prefer committed
+  artifacts (files, tests, diffs); `.pi/` is usually gitignored, so evidence there is judge-time
+  proof only and won't survive in history.
 - Small format deviations are fine; the file is read by the human and the judge, not a parser.
 - The agent prunes finished goals itself when the file gets long (evidence survives in git history
   and `## Log`).
