@@ -96,9 +96,11 @@ export const completeGoalDescription =
 	"table plus how to read it, a metric plus what it shows -- not a bare claim). The read must show " +
 	"success POSITIVELY happened, not just that failures were avoided. Then call this with the goal's " +
 	"text (the line after 'goal:'; small wording drift is fine). A fresh read-only judge inspects the " +
-	"repo, runs the goal's verify command if it names one, and returns accept or reject with what's " +
-	"missing. On accept (or if the judge itself is unavailable), a sign-off line is appended to ## Log " +
-	"and YOU tick the goal [x]. On reject the goal stays open.";
+	"LIVE WORKING TREE (uncommitted changes included; committing first is for durability, not " +
+	"visibility), runs the goal's verify command if it names one, and returns accept or reject with " +
+	"what's missing. On accept (or if the judge itself failed), a sign-off line is appended to ## Log " +
+	"and the goal is ticked [x] for you; the result says if you must tick it yourself. On reject the " +
+	"goal stays open.";
 
 export const completeGoalParamDescription = "The goal's text: the line after 'goal:' in the plan file.";
 

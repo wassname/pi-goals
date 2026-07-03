@@ -90,9 +90,11 @@ Latency target came from the SLO review; keep the existing client API.
 --no-session --no-extensions`, tools `read,bash,grep,find,ls`, edit/write excluded) with the whole
 plan file and the claimed goal. The judge finds the goal, re-derives from the cited artifacts rather
 than trusting claims, runs `verify` if the goal names one, and returns `VERDICT: accept | reject`
-plus what's missing.
+plus what's missing. It inspects the live working tree, not HEAD: uncommitted work counts, and
+committing before sign-off is for durable evidence, not for the judge's visibility.
 
-- accept: a sign-off line is appended to `## Log` and the agent ticks the goal `[x]` itself. The
+- accept: a sign-off line is appended to `## Log` and the goal is ticked `[x]` in the same write
+  (exact goal-line match only; on wording drift the result asks the agent to tick it). The
   tool-written log line is the audit trail; a hand-tick without one shows in the diff.
 - reject: the goal stays open and the agent gets the missing list.
 - judge ran but failed/errored/timed out, or returned no VERDICT line: accepted inconclusive,

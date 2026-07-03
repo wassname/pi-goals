@@ -15,8 +15,9 @@
  *
  * The judge subsumes what v1 did in code: goal matching (no findGoal), evidence validation (a
  * placeholder gets rejected in words), verify execution, and format reading. The extension's only
- * write is appending a sign-off line to ## Log — the audit trail. The agent ticks [x] itself; a
- * hand-tick without a matching tool-written log line is visible in the diff.
+ * writes are the sign-off: append a log line to ## Log (the audit trail) and tick the goal [x] when
+ * an exact goal line matches (on drift the agent ticks, and the result says so). A hand-tick
+ * without a matching tool-written log line is visible in the diff either way.
  *
  * Judge ran but failed/errored/timed out, or returned no VERDICT line => accepted_inconclusive: the
  * working agent is never blocked on judge infra; the log line says the judge ran but failed. There
@@ -233,8 +234,21 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				(task) => runJudge(task, judgeModel, ctx.cwd, signal),
 			);
 			if (outcome.logEntry) {
-				writePlan(ctx, appendLog(readPlan(ctx), `${stamp()} ${outcome.logEntry}`));
+				// Sign-off write: tick the goal [x] (exact-subject match; dogfood showed agent bookkeeping
+				// is the drift point) and append the audit log line, one write. On wording drift the tick
+				// falls to the agent and the result says so -- both paths are explicit, never silent.
+				let updated = readPlan(ctx);
+				let tickNote = "";
+				if (outcome.logEntry.startsWith("signed off")) {
+					const ticked = tickGoal(updated, params.goal);
+					updated = ticked ?? updated;
+					tickNote = ticked
+						? `\n\nGoal ticked [x] in ${PLAN_REL}.`
+						: `\n\nNo exact goal line matched your wording -- tick it [x] in ${PLAN_REL} yourself.`;
+				}
+				writePlan(ctx, appendLog(updated, `${stamp()} ${outcome.logEntry}`));
 				updateWidget(ctx);
+				return result(outcome.resultText + tickNote, outcome.isError);
 			}
 			return result(outcome.resultText, outcome.isError);
 		},
@@ -300,7 +314,7 @@ export async function decideSignOff(
 	if (judge.error) {
 		const partial = judge.output ? `\n\npartial judge output:\n${judge.output}` : "";
 		return {
-			resultText: `Judge ran but failed (${judge.error}). Accepted inconclusive — logged. Tick the goal [x] in ${PLAN_REL} yourself.${partial}`,
+			resultText: `Judge ran but failed (${judge.error}). Accepted inconclusive — logged.${partial}`,
 			isError: false,
 			logEntry: `signed off "${input.goal}" (judge inconclusive: ran but failed: ${oneLine(judge.error)})`,
 		};
@@ -312,7 +326,7 @@ export async function decideSignOff(
 
 	if (verdict === "accept") {
 		return {
-			resultText: `Sign-off ACCEPTED. Tick the goal [x] in ${PLAN_REL} (the log line is already appended).\n\n--- judge ---\n${reasoning}`,
+			resultText: `Sign-off ACCEPTED (log line appended).\n\n--- judge ---\n${reasoning}`,
 			isError: false,
 			logEntry: `signed off "${input.goal}" (judge accept)`,
 		};
@@ -327,13 +341,25 @@ export async function decideSignOff(
 	}
 	// No VERDICT line: same fail-forward as a judge error -- the judge ran but didn't answer.
 	return {
-		resultText: `Judge returned no VERDICT line. Accepted inconclusive — logged. Tick the goal [x] in ${PLAN_REL} yourself.\n\n--- judge ---\n${reasoning || "(no output)"}`,
+		resultText: `Judge returned no VERDICT line. Accepted inconclusive — logged.\n\n--- judge ---\n${reasoning || "(no output)"}`,
 		isError: false,
 		logEntry: `signed off "${input.goal}" (judge inconclusive: no VERDICT line)`,
 	};
 }
 
-/** Append one line under ## Log (creating the section at EOF if absent). The extension's only write. */
+/** Tick the goal line whose subject exactly matches `goal` (trimmed, case-insensitive) to [x].
+ *  Null when there is no unique exact match (wording drift / duplicates) -- the caller then asks the
+ *  agent to tick it itself. Reuses GOAL_LINE; deliberately NOT fuzzy, that's the judge's job. */
+export function tickGoal(plan: string, goal: string): string | null {
+	const lines = plan.split("\n");
+	const want = goal.trim().toLowerCase();
+	const hits = lines.flatMap((l, i) => (GOAL_LINE.exec(l)?.[2].trim().toLowerCase() === want ? [i] : []));
+	if (hits.length !== 1) return null;
+	lines[hits[0]] = lines[hits[0]].replace(/\[[ xX/-]\]/, "[x]");
+	return lines.join("\n");
+}
+
+/** Append one line under ## Log (creating the section at EOF if absent). */
 export function appendLog(text: string, entry: string): string {
 	const lines = text.split("\n");
 	const line = `- ${entry}`;
