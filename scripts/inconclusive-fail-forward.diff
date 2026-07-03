@@ -1,0 +1,104 @@
+diff --git a/README.md b/README.md
+index ce4056a..5485002 100644
+--- a/README.md
++++ b/README.md
+@@ -145,9 +145,9 @@ else is the agent editing the file. It reads the goal's `evidence:` block from `
+    reasoning comes back in the result.
+ 
+ The judge defaults to the current session model and streams partial output while it runs. If the
+-current model is not visible to the extension, `CompleteGoal` does not fall back to Pi's implicit
+-default; it signs off as `judge inconclusive` and tells you to set `/goals judge <provider/model>`.
+-Point it at another model for an independent cross-family check.
++session model is not visible to the extension, the `--model` flag is omitted and pi uses its own
++configured default, so the judge always runs. `/goals judge <provider/model>` is an optional override
++for an independent cross-family check; never required.
+ 
+ ## Prompts
+ 
+diff --git a/src/index.ts b/src/index.ts
+index 9eb2a16..14784f7 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -326,7 +326,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
+ 				durationMs,
+ 				verifyCommand: goal.verify ?? undefined,
+ 				verifyExitCode: outcome.kind === "verify_failed" ? outcome.exitCode : undefined,
+-				judgeModel: judgeModel ?? "no explicit judge model",
++				judgeModel: judgeModel ?? "pi default",
+ 				reasoning,
+ 				isError: res.isError,
+ 			};
+@@ -522,14 +522,6 @@ async function decideSignOff(
+ 			};
+ 		}
+ 	}
+-	if (!judgeModel) {
+-		const reason = "no explicit judge model available; set /goals judge <provider/model>";
+-		return {
+-			outcome: { kind: "accepted_inconclusive", reason },
+-			reasoning: `VERDICT: inconclusive\nreason: ${reason}`,
+-			durationMs: Date.now() - startedAt,
+-		};
+-	}
+ 	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal, onUpdate);
+ 	const outcome: SignOff =
+ 		verdict.kind === "accepted"
+@@ -573,13 +565,25 @@ type JudgeResult =
+ 	| { kind: "rejected"; missing: string; reasoning: string; durationMs: number }
+ 	| { kind: "inconclusive"; reason: string; reasoning: string; durationMs: number };
+ 
++/** Stage 2: a read-only pi subprocess inspects the evidence against the repo and returns a verdict. */
++/** Build the pi argv for the read-only judge. `--model` is omitted when no explicit/session model is
++ *  set, so pi falls back to its configured default -- the judge always runs, never pre-emptively
++ *  fails as "no model". Exported for a unit test that locks this invariant (an empty `--model ""`
++ *  would make every sign-off silently inconclusive). */
++export function buildJudgeArgs(judgeModel: string | null): string[] {
++	const args = ["--mode", "json", "-p", "--no-session"];
++	if (judgeModel) args.push("--model", judgeModel);
++	args.push("--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem);
++	return args;
++}
++
+ /** Stage 2: a read-only pi subprocess inspects the evidence against the repo and returns a verdict. */
+ async function runJudge(
+ 	goal: Goal,
+ 	evidence: string,
+ 	paths: string[],
+ 	verifyResult: { command: string; exitCode: number; outputTail: string } | null,
+-	judgeModel: string,
++	judgeModel: string | null,
+ 	cwd: string,
+ 	signal: AbortSignal | undefined,
+ 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
+@@ -600,14 +604,14 @@ async function runJudge(
+ 		evidence,
+ 		paths,
+ 	});
+-	const args = ["--mode", "json", "-p", "--no-session", "--model", judgeModel, "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
++	const args = buildJudgeArgs(judgeModel);
+ 	args.push(task);
+ 
+ 	emit("spawning", `Spawning read-only judge for: ${goal.subject}`);
+ 	const inv = getPiInvocation(args);
+-	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
+-	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
+-	// existing repo checkout so it doesn't pollute the user's workspace.
++	// The judge runs in-place against this checkout (cwd is passed to spawn and the read-only tools
++	// read from it); pi --no-session does not clone into the parent. Proven and re-checked by
++	// scripts/check-judge-footprint.sh, which reproduces this invocation and asserts no parent clone.
+ 	const judge = await new Promise<{ output: string; error?: string; aborted?: boolean }>((resolve) => {
+ 		let settled = false;
+ 		let stdoutBuffer = "";
+diff --git a/src/prompts.ts b/src/prompts.ts
+index 03faea8..3b8d270 100644
+--- a/src/prompts.ts
++++ b/src/prompts.ts
+@@ -117,8 +117,6 @@ export function planInjection(p: {
+   counts: { done: number; open: number };
+ }): string {
+   if (!p.activeGoal) {
+-    // FIXME(heading): user wants the heading to show ".pi/goals.md: <title>" so the filename is explicit
+-    // even in the injection. Currently says "Goals (goals.md):" which is close but not the same.
+     return `.pi/goals.md: ${p.title}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its checkbox to [/]) or run /goals.`;
+   }
+   const subtasks = p.activeGoal.openSubtasks.length

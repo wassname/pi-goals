@@ -117,8 +117,6 @@ export function planInjection(p: {
   counts: { done: number; open: number };
 }): string {
   if (!p.activeGoal) {
-    // FIXME(heading): user wants the heading to show ".pi/goals.md: <title>" so the filename is explicit
-    // even in the injection. Currently says "Goals (goals.md):" which is close but not the same.
     return `.pi/goals.md: ${p.title}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its checkbox to [/]) or run /goals.`;
   }
   const subtasks = p.activeGoal.openSubtasks.length

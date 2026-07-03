@@ -326,7 +326,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				durationMs,
 				verifyCommand: goal.verify ?? undefined,
 				verifyExitCode: outcome.kind === "verify_failed" ? outcome.exitCode : undefined,
-				judgeModel: judgeModel ?? "no explicit judge model",
+				judgeModel: judgeModel ?? "pi default",
 				reasoning,
 				isError: res.isError,
 			};
@@ -522,14 +522,6 @@ async function decideSignOff(
 			};
 		}
 	}
-	if (!judgeModel) {
-		const reason = "no explicit judge model available; set /goals judge <provider/model>";
-		return {
-			outcome: { kind: "accepted_inconclusive", reason },
-			reasoning: `VERDICT: inconclusive\nreason: ${reason}`,
-			durationMs: Date.now() - startedAt,
-		};
-	}
 	const verdict = await runJudge(goal, evidence, paths, verifyResult, judgeModel, cwd, signal, onUpdate);
 	const outcome: SignOff =
 		verdict.kind === "accepted"
@@ -574,12 +566,24 @@ type JudgeResult =
 	| { kind: "inconclusive"; reason: string; reasoning: string; durationMs: number };
 
 /** Stage 2: a read-only pi subprocess inspects the evidence against the repo and returns a verdict. */
+/** Build the pi argv for the read-only judge. `--model` is omitted when no explicit/session model is
+ *  set, so pi falls back to its configured default -- the judge always runs, never pre-emptively
+ *  fails as "no model". Exported for a unit test that locks this invariant (an empty `--model ""`
+ *  would make every sign-off silently inconclusive). */
+export function buildJudgeArgs(judgeModel: string | null): string[] {
+	const args = ["--mode", "json", "-p", "--no-session"];
+	if (judgeModel) args.push("--model", judgeModel);
+	args.push("--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem);
+	return args;
+}
+
+/** Stage 2: a read-only pi subprocess inspects the evidence against the repo and returns a verdict. */
 async function runJudge(
 	goal: Goal,
 	evidence: string,
 	paths: string[],
 	verifyResult: { command: string; exitCode: number; outputTail: string } | null,
-	judgeModel: string,
+	judgeModel: string | null,
 	cwd: string,
 	signal: AbortSignal | undefined,
 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SignOffDetails }) => void,
@@ -600,14 +604,14 @@ async function runJudge(
 		evidence,
 		paths,
 	});
-	const args = ["--mode", "json", "-p", "--no-session", "--model", judgeModel, "--tools", JUDGE_TOOLS.join(","), "--exclude-tools", JUDGE_BLOCKED_TOOLS.join(","), "--append-system-prompt", evidenceJudgeSystem];
+	const args = buildJudgeArgs(judgeModel);
 	args.push(task);
 
 	emit("spawning", `Spawning read-only judge for: ${goal.subject}`);
 	const inv = getPiInvocation(args);
-	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
-	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
-	// existing repo checkout so it doesn't pollute the user's workspace.
+	// The judge runs in-place against this checkout (cwd is passed to spawn and the read-only tools
+	// read from it); pi --no-session does not clone into the parent. Proven and re-checked by
+	// scripts/check-judge-footprint.sh, which reproduces this invocation and asserts no parent clone.
 	const judge = await new Promise<{ output: string; error?: string; aborted?: boolean }>((resolve) => {
 		let settled = false;
 		let stdoutBuffer = "";

@@ -1,0 +1,30 @@
+diff --git a/src/index.ts b/src/index.ts
+index 9eb2a16..cdd7b45 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -605,9 +605,9 @@ async function runJudge(
+ 
+ 	emit("spawning", `Spawning read-only judge for: ${goal.subject}`);
+ 	const inv = getPiInvocation(args);
+-	// FIXME(side-effect): pi -p --no-session clones the repo into the PARENT of cwd (so alongside
+-	// the working dir), leaving a stale directory. The judge should run in a temp dir or inside the
+-	// existing repo checkout so it doesn't pollute the user's workspace.
++	// The judge runs in-place against this checkout (cwd is passed to spawn and the read-only tools
++	// read from it); pi --no-session does not clone into the parent. Proven and re-checked by
++	// scripts/check-judge-footprint.sh, which reproduces this invocation and asserts no parent clone.
+ 	const judge = await new Promise<{ output: string; error?: string; aborted?: boolean }>((resolve) => {
+ 		let settled = false;
+ 		let stdoutBuffer = "";
+diff --git a/src/prompts.ts b/src/prompts.ts
+index 03faea8..3b8d270 100644
+--- a/src/prompts.ts
++++ b/src/prompts.ts
+@@ -117,8 +117,6 @@ export function planInjection(p: {
+   counts: { done: number; open: number };
+ }): string {
+   if (!p.activeGoal) {
+-    // FIXME(heading): user wants the heading to show ".pi/goals.md: <title>" so the filename is explicit
+-    // even in the injection. Currently says "Goals (goals.md):" which is close but not the same.
+     return `.pi/goals.md: ${p.title}\nNo active goal. ${p.counts.open} open, ${p.counts.done} done. Pick the next goal (set its checkbox to [/]) or run /goals.`;
+   }
+   const subtasks = p.activeGoal.openSubtasks.length
