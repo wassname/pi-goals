@@ -18,8 +18,10 @@
  * write is appending a sign-off line to ## Log — the audit trail. The agent ticks [x] itself; a
  * hand-tick without a matching tool-written log line is visible in the diff.
  *
- * Judge unavailable (timeout/transport) => accepted_inconclusive: the working agent is never
- * blocked on judge infra; the log line says the judge didn't run.
+ * Judge ran but failed/errored/timed out, or returned no VERDICT line => accepted_inconclusive: the
+ * working agent is never blocked on judge infra; the log line says the judge ran but failed. There
+ * is no pre-emptive "no model" path -- a null judgeModel just omits --model so pi's configured
+ * default runs the judge, so inconclusive always means "ran but failed", never "couldn't start".
  *
  * All model-facing text lives in prompts.ts, in flow order.
  */
@@ -215,39 +217,19 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 			const judgeModel = state.judgeModel ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null);
 			onUpdate?.({ content: [{ type: "text", text: `Read-only judge (${judgeModel ?? "pi default"}) inspecting: ${params.goal}` }], details: {} });
-			const judge = await runJudge(judgeUser({ goal: params.goal, plan, planPath: PLAN_REL }), judgeModel, ctx.cwd, signal);
-
-			if (signal?.aborted) return result("Sign-off aborted.", true);
-
-			const log = (entry: string) => writePlan(ctx, appendLog(readPlan(ctx), `${stamp()} ${entry}`));
-			// Judge infra failure must not block the working agent: accept inconclusive, say so in the log.
-			if (judge.error) {
-				log(`signed off "${params.goal}" (judge unavailable: ${oneLine(judge.error)})`);
+			// decideSignOff runs the judge and derives the outcome + the one log line. judgeModel is never
+			// checked pre-emptively: null just means pi's configured default runs (buildJudgeArgs omits
+			// --model), so accepted_inconclusive always means "the judge ran but failed", never "no model".
+			const outcome = await decideSignOff(
+				{ goal: params.goal, plan, judgeModel },
+				signal,
+				(task) => runJudge(task, judgeModel, ctx.cwd, signal),
+			);
+			if (outcome.logEntry) {
+				writePlan(ctx, appendLog(readPlan(ctx), `${stamp()} ${outcome.logEntry}`));
 				updateWidget(ctx);
-				return result(
-					`Judge unavailable (${judge.error}). Accepted inconclusive — logged. Tick the goal [x] in ${PLAN_REL} yourself.${judge.output ? `\n\npartial judge output:\n${judge.output}` : ""}`,
-				);
 			}
-
-			const verdictLine = judge.output.split("\n").find((l) => /^\s*VERDICT\s*:/i.test(l)) ?? "";
-			const verdict = /^\s*VERDICT\s*:\s*(accept|reject)\s*$/i.exec(verdictLine)?.[1]?.toLowerCase();
-			const reasoning = judge.output.length > 2000 ? `...\n${judge.output.slice(-2000)}` : judge.output;
-
-			if (verdict === "accept") {
-				log(`signed off "${params.goal}" (judge accept)`);
-				updateWidget(ctx);
-				return result(`Sign-off ACCEPTED. Tick the goal [x] in ${PLAN_REL} (the log line is already appended).\n\n--- judge ---\n${reasoning}`);
-			}
-			if (verdict === "reject") {
-				const missing = judge.output.match(/missing\s*:\s*([\s\S]*)$/i)?.[1].trim() || judge.output.slice(-500);
-				log(`reject "${params.goal}": ${oneLine(missing)}`);
-				updateWidget(ctx);
-				return result(`Sign-off REJECTED. Missing:\n${missing}\n\n--- judge ---\n${reasoning}`, true);
-			}
-			// No VERDICT line: same fail-forward as judge-unavailable.
-			log(`signed off "${params.goal}" (judge inconclusive: no VERDICT line)`);
-			updateWidget(ctx);
-			return result(`Judge returned no VERDICT line. Accepted inconclusive — logged. Tick the goal [x] in ${PLAN_REL} yourself.\n\n--- judge ---\n${reasoning || "(no output)"}`);
+			return result(outcome.resultText, outcome.isError);
 		},
 	});
 }
@@ -264,6 +246,80 @@ function stamp(): string {
 
 function oneLine(s: string): string {
 	return s.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** A judge run's result: stdout output, plus an error string when the subprocess failed/timed out. */
+export interface JudgeResult {
+	output: string;
+	error?: string;
+}
+
+/** Inputs to a sign-off decision. judgeModel is null when no explicit/session model is set. */
+export interface SignOffInput {
+	goal: string;
+	plan: string;
+	judgeModel: string | null;
+}
+
+/** The outcome of a sign-off: the reply text, whether it's a hard error, and the one ## Log line to
+ *  append (null when nothing should be written, e.g. aborted before any verdict). */
+export interface SignOffOutcome {
+	resultText: string;
+	isError: boolean;
+	logEntry: string | null;
+}
+
+/** Run the judge and decide accept / reject / accepted_inconclusive. Pure aside from the injected
+ *  judge runner, so the unit test can lock the fail-forward invariant: judgeModel is NEVER checked
+ *  here, so a null model still reaches runJudge (pi's configured default runs it), and the only
+ *  producers of accepted_inconclusive are the judge-error and no-VERDICT paths -- i.e. "the judge
+ *  ran but failed", never "no model". The execute() wrapper does the plan-file write + widget.
+ *  Exported for the unit test that locks this invariant. */
+export async function decideSignOff(
+	input: SignOffInput,
+	signal: AbortSignal | undefined,
+	runJudgeFn: (task: string) => Promise<JudgeResult>,
+): Promise<SignOffOutcome> {
+	const task = judgeUser({ goal: input.goal, plan: input.plan, planPath: PLAN_REL });
+	const judge = await runJudgeFn(task);
+
+	if (signal?.aborted) return { resultText: "Sign-off aborted.", isError: true, logEntry: null };
+
+	// Judge ran but failed/errored/timed out: fail forward, say so in the log.
+	if (judge.error) {
+		const partial = judge.output ? `\n\npartial judge output:\n${judge.output}` : "";
+		return {
+			resultText: `Judge ran but failed (${judge.error}). Accepted inconclusive — logged. Tick the goal [x] in ${PLAN_REL} yourself.${partial}`,
+			isError: false,
+			logEntry: `signed off "${input.goal}" (judge inconclusive: ran but failed: ${oneLine(judge.error)})`,
+		};
+	}
+
+	const verdictLine = judge.output.split("\n").find((l) => /^\s*VERDICT\s*:/i.test(l)) ?? "";
+	const verdict = /^\s*VERDICT\s*:\s*(accept|reject)\s*$/i.exec(verdictLine)?.[1]?.toLowerCase();
+	const reasoning = judge.output.length > 2000 ? `...\n${judge.output.slice(-2000)}` : judge.output;
+
+	if (verdict === "accept") {
+		return {
+			resultText: `Sign-off ACCEPTED. Tick the goal [x] in ${PLAN_REL} (the log line is already appended).\n\n--- judge ---\n${reasoning}`,
+			isError: false,
+			logEntry: `signed off "${input.goal}" (judge accept)`,
+		};
+	}
+	if (verdict === "reject") {
+		const missing = judge.output.match(/missing\s*:\s*([\s\S]*)$/i)?.[1].trim() || judge.output.slice(-500);
+		return {
+			resultText: `Sign-off REJECTED. Missing:\n${missing}\n\n--- judge ---\n${reasoning}`,
+			isError: true,
+			logEntry: `reject "${input.goal}": ${oneLine(missing)}`,
+		};
+	}
+	// No VERDICT line: same fail-forward as a judge error -- the judge ran but didn't answer.
+	return {
+		resultText: `Judge returned no VERDICT line. Accepted inconclusive — logged. Tick the goal [x] in ${PLAN_REL} yourself.\n\n--- judge ---\n${reasoning || "(no output)"}`,
+		isError: false,
+		logEntry: `signed off "${input.goal}" (judge inconclusive: no VERDICT line)`,
+	};
 }
 
 /** Append one line under ## Log (creating the section at EOF if absent). The extension's only write. */
@@ -307,7 +363,7 @@ async function runJudge(
 	judgeModel: string | null,
 	cwd: string,
 	signal: AbortSignal | undefined,
-): Promise<{ output: string; error?: string }> {
+): Promise<JudgeResult> {
 	const args = buildJudgeArgs(judgeModel);
 	args.push(task);
 	const inv = getPiInvocation(args);

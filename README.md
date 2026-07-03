@@ -93,8 +93,10 @@ plus what's missing.
 - accept: a sign-off line is appended to `## Log` and the agent ticks the goal `[x]` itself. The
   tool-written log line is the audit trail; a hand-tick without one shows in the diff.
 - reject: the goal stays open and the agent gets the missing list.
-- judge unavailable (timeout, transport, no VERDICT line): accepted inconclusive, logged as such.
-  The working agent is never blocked on judge infra.
+- judge ran but failed/errored/timed out, or returned no VERDICT line: accepted inconclusive,
+  logged as such. There is no pre-emptive "no model" path -- a null judgeModel just omits
+  `--model` so pi's configured default runs the judge, so inconclusive always means "ran but
+  failed", never "couldn't start". The working agent is never blocked on judge infra.
 
 ## Prompts
 
