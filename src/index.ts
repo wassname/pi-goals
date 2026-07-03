@@ -144,7 +144,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 		const plan = readPlan(ctx);
 		const goals = scanGoals(plan);
-		if (goals.length === 0) return;
+		if (goals.length === 0) {
+			// Non-empty plan but no recognizable goal line: the harness would go silently inert (no
+			// widget, no injection, no reminders). Say so once instead -- cooperative but confused.
+			if (!plan.trim()) return;
+			return {
+				message: {
+					customType: PLAN_CONTEXT,
+					content: `${PLAN_REL} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat if it's meant to be the plan.`,
+					display: false,
+				},
+			};
+		}
 		// The plan file itself IS the injection: no parsing, no summarizing, the model sees the
 		// literal file it edits. Byte-identical when unchanged, so the prefix cache holds.
 		let body = `Current plan (${PLAN_REL}; keep it updated with your edit tool):\n\n${plan}`;
