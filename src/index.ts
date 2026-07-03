@@ -240,8 +240,12 @@ function result(text: string, isError = false) {
 	return { content: [{ type: "text" as const, text }], details: {}, isError };
 }
 
+/** Local time, not UTC: agents freehand-stamp their manual ## Log lines from the local clock they
+ *  see, so a UTC tool stamp made the trail read as two different afternoons (dogfood finding). */
 function stamp(): string {
-	return new Date().toISOString().slice(0, 16).replace("T", " ");
+	const d = new Date();
+	const p = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function oneLine(s: string): string {
