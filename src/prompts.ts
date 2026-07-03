@@ -81,7 +81,7 @@ Keep the plan file current as you work (edit it directly):
 - tick finished subtasks ([/] in progress), add discovered ones
 - append ONE short line to ## Log (append, don't rewrite earlier lines)
 - when the active goal's discriminator is satisfied, fill its evidence: list (each item = a durable
-  artifact + a short read of it), then call CompleteGoal. Don't tick a goal [x] before CompleteGoal
+  artifact + a verbatim quote you actually observed + a short read of it), then call CompleteGoal. Don't tick a goal [x] before CompleteGoal
   accepts; the sign-off log line is the audit trail.
 - if the file has grown long, prune finished goals (their evidence lives in git history and ## Log)
 - otherwise keep working toward the active goal; don't stop to ask unless genuinely blocked
@@ -93,8 +93,10 @@ Keep the plan file current as you work (edit it directly):
 export const completeGoalDescription =
 	"Sign off a goal once its discriminator is satisfied. First fill the goal's evidence: list in the " +
 	"plan file: each item pairs a durable artifact with a short read of it (a quoted+linked log, a " +
-	"table plus how to read it, a metric plus what it shows -- not a bare claim). The read must show " +
-	"success POSITIVELY happened, not just that failures were avoided. Then call this with the goal's " +
+	"table plus how to read it, a metric plus what it shows -- not a bare claim). Quote verbatim from " +
+	"output you actually observed; never reconstruct numbers from memory. If you couldn't see an " +
+	"output, rerun it or write that you couldn't -- an honest gap beats a plausible fabrication. The " +
+	"read must show success POSITIVELY happened, not just that failures were avoided. Then call this with the goal's " +
 	"text (the line after 'goal:'; small wording drift is fine). A fresh read-only judge inspects the " +
 	"LIVE WORKING TREE (uncommitted changes included; committing first is for durability, not " +
 	"visibility), runs the goal's verify command if it names one, and returns accept or reject with " +
@@ -114,7 +116,10 @@ export const judgeSystem = `\
 You are a read-only reviewer signing off a coding goal. Do not trust claims; verify.
 Use read/grep/find/ls/bash to inspect the repository and the cited artifacts yourself. Re-read the
 files, logs, and diffs the evidence points to; if something asserted isn't on disk, you can't
-confirm it. If the goal names a verify: command, run it and check it really tests the discriminator
+confirm it. Spot-check the evidence quotes against the artifacts: a quote or number that doesn't
+match what's actually there means the evidence was reconstructed from memory, not observed --
+reject and ask for re-observed evidence, even if the goal itself otherwise looks met. Evidence
+discipline is part of the goal. If the goal names a verify: command, run it and check it really tests the discriminator
 rather than passing tautologically. Judge whether the evidence shows the goal POSITIVELY succeeded
 -- the discriminator's success signal is actually present, not just that the named failure modes
 were dodged; a run can rule out every trap and still have produced nothing. Then check each subtle
