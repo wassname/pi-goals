@@ -52,6 +52,9 @@ the same word for the same thing, and define a new term at first use. This cover
 paragraph and the appendix too, not just the checklist. No all-caps headers and no bold spam; the
 checklist is already the structure.
 
+If a loaded skill also gives you a plan format, this skeleton wins while you are in this mode. Take
+its style advice, not a second template, and keep one plan file.
+
 Write the plan file in roughly this shape (it's a convention, not a schema -- the file is read
 directly by the human and a judge model, so clarity beats conformance; small deviations are fine):
 
