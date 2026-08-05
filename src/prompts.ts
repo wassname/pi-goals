@@ -4,13 +4,18 @@
  * Design: plan.md is for LLMs and the human, not for TypeScript. There is no parser and no schema;
  * the skeleton below is a convention the drafting prompt teaches, the working agent maintains with
  * its normal Edit tool, and the judge reads natively. The harness does three things for a
- * cooperative-but-confused model: memory (inject the file verbatim every turn), format guidance
- * (the skeleton), and fresh eyes (the read-only judge in CompleteGoal).
+ * cooperative-but-confused model: memory (a transient re-send of the plan when it goes stale),
+ * format guidance (the skeleton), and fresh eyes (the read-only judge in CompleteGoal).
+ *
+ * THE FOLD: everything above "## Log" is the working set (title, user voice, goals,
+ * discriminators) and is what gets re-sent on the reminder cadence. Everything below it (Log,
+ * Learnings, Appendix) is durable memory: unlimited, read on demand, and re-sent in full only at
+ * session start and after a compaction, which is where the settled context is actually needed.
  *
  * Flow:
- *   SETUP (plan mode)     1. planDrafting   — draft goals into plan.md (read-only phase)
- *   EXEC, each turn start 2. (the plan.md file itself, injected verbatim by index.ts)
- *   EXEC, periodic        3. reminder       — upkeep + autonomy nudge when plan.md went untouched
+ *   SETUP (plan mode)     1. planDrafting   — draft goals into plan.md (read-only phase), sent once
+ *   EXEC, on cadence      2. reminder       — the folded plan + upkeep nudge when plan.md went stale
+ *   EXEC, after compact   3. resync         — the WHOLE file back, once
  *   SIGN-OFF, agent-side  4. completeGoal*  — the one blessed tool's description
  *   SIGN-OFF, judge-side  5. judgeSystem/judgeUser — the one rigorous check
  *
@@ -26,20 +31,37 @@ You are in plan mode. The objective may arrive through conversation, not as one 
 Explore the repository read-only first: resolve discoverable facts by looking them up, and only ask
 the human when the answer is a genuine intent or preference choice. Do not write or run code in this
 phase (edit/write are blocked except for the plan file; don't mutate state via bash either). When
-the objective is clear, draft the plan file and stop for review.
+the objective is clear, draft the plan file and present it.
+
+How this mode ends: after each of your turns the human gets a menu (Ready / open in $EDITOR / keep
+planning). Plan mode ends when they pick Ready. So close every draft with one line -- the plan is
+final, pick Ready to start or reply to revise -- and do not redraft in silence. When a new
+requirement arrives, fold it in, say what changed, and say the plan is final again. Detail that
+doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
 
 Right-size it:
 - Default to ONE goal. Add another only when it's a genuinely separate checkpoint that can pass or
   fail on its own. Most objectives are 1-2 goals.
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
 - Don't invent goals to look thorough. When in doubt, merge.
+- Everything above "## Log" is the part the model carries while it works. Keep it under 50 lines,
+  reviewable in one pass. Everything below "## Log" is unlimited.
+
+Style: ASD-STE100 Simplified Technical English. Active voice, one idea per sentence, common words,
+the same word for the same thing, and define a new term at first use. This covers the context
+paragraph and the appendix too, not just the checklist. No all-caps headers and no bold spam; the
+checklist is already the structure.
 
 Write the plan file in roughly this shape (it's a convention, not a schema -- the file is read
 directly by the human and a judge model, so clarity beats conformance; small deviations are fine):
 
 # <short plan title>
 
-<context: restate the user's ask, their stated preferences, and any decisions you've agreed on>
+<context: one short paragraph. What the human wants and why.>
+
+## User voice
+
+- > "<the human's requirement, quoted word for word>"
 
 ## Goals
 
@@ -52,9 +74,15 @@ directly by the human and a judge model, so clarity beats conformance; small dev
     1. [ ] <subtask>
   - evidence: (empty until sign-off)
 
-# Future work / out of scope
+## Future work / out of scope
+
+<-- the fold: everything below here is durable memory, not the working set -->
 
 ## Log
+
+## Learnings
+
+## Appendix (context, not approved)
 
 Conventions:
 - A goal is a checkbox line beginning "goal:". Checkbox state: [ ] open, [/] active, [x] done,
@@ -69,24 +97,57 @@ Conventions:
 - evidence stays empty at planning; you fill it at sign-off and a fresh read-only judge checks it.
   Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
   usually gitignored, so files there prove things only at judge time, not in history.
+- User voice: quote the human word for word, one line per requirement, as they say it. Never
+  paraphrase there -- a paraphrase drifts, and then the goals churn on the next reply.
+- Rejected options stay visible: ~~struck through~~ with who rejected them and why, so nobody
+  relitigates them.
+- Learnings: one line per gotcha that a future reader would otherwise rediscover. Write down what
+  you saw from a source that does not persist (a browser page, an image, a long log tail) before
+  you do anything else with it.
+- Appendix: unlimited and unverified. Alternatives, links, dead ends, and the settled detail that
+  is not part of the approved goals. Nothing here is approved and nothing here is checked.
 
-When the goals are drafted, present them and stop for review. Do not begin execution.`;
+When the goals are drafted, present them and say the plan is final. Do not begin execution.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * 3. reminder — EXEC, appended to the injected plan when plan.md went
- *    untouched for a whole turn while goals are open. Wording stable (cache).
+ * 3. reminder — EXEC. Transient, never persisted, and only when the plan went stale for a couple of
+ *    turns. pi-tasks tried a per-turn injection and deleted it: "wallpaper noise that trains the
+ *    model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149). Carries the folded plan
+ *    (above ## Log), because a nudge with no plan in it makes the model go read the file anyway.
  * ──────────────────────────────────────────────────────────────────────── */
-export const reminder = `\
+export function reminder(foldedPlan: string, planRel: string): string {
+	return `\
 <system-reminder>
-Keep the plan file current as you work (edit it directly):
+Your plan (${planRel}, above the fold; the log, learnings and appendix are in the file):
+
+${foldedPlan}
+
+Keep it current as you work, with your normal edit tool:
 - tick finished subtasks ([/] in progress), add discovered ones
-- append ONE short line to ## Log (append, don't rewrite earlier lines)
+- append ONE short line to ## Log, and a line to ## Learnings for a gotcha worth keeping
 - when the active goal's discriminator is satisfied, fill its evidence: list (each item = a durable
-  artifact + a verbatim quote you actually observed + a short read of it), then call CompleteGoal. Don't tick a goal [x] before CompleteGoal
-  accepts; the sign-off log line is the audit trail.
-- if the file has grown long, prune finished goals (their evidence lives in git history and ## Log)
+  artifact + a verbatim quote you actually observed + a short read of it), then call CompleteGoal.
+  Don't tick a goal [x] before CompleteGoal accepts; the sign-off log line is the audit trail.
+- if the working set has grown long, prune finished goals (their evidence lives in git history and
+  ## Log) and move settled detail down to ## Appendix, which is unlimited
 - otherwise keep working toward the active goal; don't stop to ask unless genuinely blocked
 </system-reminder>`;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * 3b. resync — EXEC, one-shot at session start and after a compaction: the WHOLE file back,
+ *     appendix included. Modelled on pi-goal-x's [POST-COMPACTION RESYNC] one-shot. This is the
+ *     only place the below-the-fold sections are pushed; otherwise the agent reads them on demand.
+ * ──────────────────────────────────────────────────────────────────────── */
+export function resync(plan: string, planRel: string, why: string): string {
+	return `\
+<system-reminder>
+${why} This is the whole plan file (${planRel}), appendix included, so you don't re-litigate what
+was already settled. Keep working the active goal; edit the file directly as you go.
+
+${plan}
+</system-reminder>`;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────
  * 4. completeGoal — SIGN-OFF, agent-side: the one blessed tool

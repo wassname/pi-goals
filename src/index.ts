@@ -6,8 +6,12 @@
  * The v1 lesson: the parser existed so TypeScript could read plan.md, but almost every reader is a
  * model. So v2 has NO parser and no schema. The harness does exactly three things for a
  * cooperative-but-confused model:
- *   1. memory  — inject plan.md verbatim every turn (survives compaction; byte-identical when
- *                unchanged so the KV cache holds; stale copies stripped by the context hook)
+ *   1. memory  — a transient re-send of the plan, never persisted, on two triggers: the plan went
+ *                stale for STALE_TURNS turns (send the working set above ## Log), or the session
+ *                started / compacted (send the whole file, appendix included). v2 sent the whole
+ *                file every turn; pi-tasks tried that and deleted it as "wallpaper noise that
+ *                trains the model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149),
+ *                and the always-present CompleteGoal description carries the contract instead.
  *   2. format  — a skeleton convention taught in planDrafting (prompts.ts), not validated
  *   3. eyes    — CompleteGoal spawns a strictly read-only pi subprocess (--no-session, no bash)
  *                that gets the whole plan file plus the claimed goal, finds the goal itself
@@ -28,15 +32,14 @@
  * All model-facing text lives in prompts.ts, in flow order.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { completeGoalDescription, completeGoalParamDescription, judgeSystem, judgeUser, planDrafting, reminder } from "./prompts.js";
+import { completeGoalDescription, completeGoalParamDescription, judgeSystem, judgeUser, planDrafting, reminder, resync } from "./prompts.js";
 
 const STATE = "pi-goals-state";
-const PLAN_CONTEXT = "pi-goals-context"; // injected plan/guidance, stale copies stripped by the context hook
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
 const PLAN_REL = ".pi/plan.md";
@@ -49,20 +52,47 @@ const JUDGE_TIMEOUT_MS = 600_000;
 // Plan mode is read-only by convention AND a light gate: edit/write are blocked (except plan.md,
 // the deliverable). bash stays open — the prompt says don't mutate; guide, don't gate (spec D3).
 const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
+// Turns the plan may go untouched before it is re-sent. pi-tasks uses 4, or 2 while something is in
+// progress; here every goal is "in progress", so 2.
+const STALE_TURNS = 2;
 
-// The one regex in the whole extension: a checkbox line beginning "goal:", for the widget and the
-// "any goals open?" reminder condition. Everything else reads the file as prose.
+// A checkbox line beginning "goal:", for the widget and the "any goals open?" reminder condition.
+// Everything else reads the file as prose.
 const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*goal:\s*(.*)$/i;
+// An indented checkbox line that isn't a goal: a subtask. Only the widget reads these, so the human
+// sees the next action and not just the goal -- this file IS the task list.
+const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
+// The fold. Above it: the working set that gets re-sent. Below it: durable memory.
+const FOLD_LINE = /^##\s+Log\s*$/im;
 type GoalStatus = "open" | "active" | "done" | "cancelled";
 const CHAR_TO_STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "done", "-": "cancelled" };
 
-function scanGoals(plan: string): Array<{ status: GoalStatus; subject: string }> {
-	const goals: Array<{ status: GoalStatus; subject: string }> = [];
-	for (const line of plan.split("\n")) {
+function scanGoals(plan: string): Array<{ status: GoalStatus; subject: string; line: number }> {
+	const goals: Array<{ status: GoalStatus; subject: string; line: number }> = [];
+	plan.split("\n").forEach((line, i) => {
 		const m = GOAL_LINE.exec(line);
-		if (m) goals.push({ status: CHAR_TO_STATUS[m[1].toLowerCase()] ?? "open", subject: m[2].trim() });
-	}
+		if (m) goals.push({ status: CHAR_TO_STATUS[m[1].toLowerCase()] ?? "open", subject: m[2].trim(), line: i });
+	});
 	return goals;
+}
+
+/** The working set: everything above "## Log". Log, Learnings and Appendix below it are durable
+ *  memory -- unlimited, read on demand, pushed back only by a resync. Exported for the unit test. */
+export function foldPlan(plan: string): string {
+	const m = FOLD_LINE.exec(plan);
+	return (m ? plan.slice(0, m.index) : plan).trimEnd();
+}
+
+/** Open subtasks under the goal on line `goalLine`, up to the next goal line. */
+export function openSubtasks(plan: string, goalLine: number): string[] {
+	const lines = plan.split("\n");
+	const out: string[] = [];
+	for (let i = goalLine + 1; i < lines.length; i++) {
+		if (GOAL_LINE.test(lines[i])) break;
+		const m = SUBTASK_LINE.exec(lines[i]);
+		if (m && (m[1] === " " || m[1] === "/")) out.push(m[2].trim());
+	}
+	return out;
 }
 
 interface PlanState {
@@ -73,8 +103,14 @@ interface PlanState {
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
 	let state: PlanState = { isPlanMode: false, judgeModel: null };
-	// Reminder cadence: fire when goals are open but plan.md was untouched since the last turn.
-	let lastInjectedPlan = "";
+	// Reminder cadence (pi-tasks style): the plan is re-sent only after it has gone untouched for
+	// STALE_TURNS turns, and editing it resets the clock -- an agent that is maintaining the file
+	// doesn't need to be told to. In-memory, like pi-tasks: a new session starts fresh.
+	let turnsStale = 0;
+	let lastSeenPlan = "";
+	// Set on session start and after a compaction; drained by the next LLM call, which then carries
+	// the WHOLE file (appendix included) instead of just the working set.
+	let resyncReason: string | null = "New session.";
 
 	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, ".pi", "plan.md");
 	const readPlan = (ctx: ExtensionContext): string => (existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
@@ -102,9 +138,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const done = goals.filter((g) => g.status === "done").length;
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
-		// Only live goals get lines so finished work never pushes current work off screen.
-		const live = goals.filter((g) => g.status === "active" || g.status === "open");
-		ctx.ui.setWidget(WIDGET_KEY, [ctx.ui.theme.fg("muted", PLAN_REL), ...live.map((g) => `${mark[g.status]} ${g.subject}`)]);
+		// Only live goals get lines so finished work never pushes current work off screen. The active
+		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
+		const plan = readPlan(ctx);
+		const lines = [ctx.ui.theme.fg("muted", PLAN_REL)];
+		for (const g of goals.filter((g) => g.status === "active" || g.status === "open")) {
+			lines.push(`${mark[g.status]} ${g.subject}`);
+			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
+		}
+		ctx.ui.setWidget(WIDGET_KEY, lines);
 	}
 
 	// --- /goals: enter plan mode (or clear / set judge) --------------------------------------------
@@ -131,40 +173,67 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			state = { ...state, isPlanMode: true };
 			persist();
 			updateWidget(ctx);
+			// The drafting rules are sent ONCE, with the seed. v2 re-injected them every turn, which is
+			// why plan mode read as never-ending: every reply re-armed it. They come back only on a
+			// resync (session start / compaction), when the model has genuinely lost them.
 			const seed = arg
-				? `We're in plan mode. Objective: ${arg}\n\nExplore the repo read-only and ask me anything unclear. When the objective is nailed down, draft (or replace) the plan in ${planPath(ctx)}, then stop for review.`
-				: `We're in plan mode. Tell me what you want to plan. Explore read-only and ask questions as needed; when the objective is clear, draft the plan in ${planPath(ctx)} and stop for review.`;
+				? `We're in plan mode. Objective: ${arg}\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`
+				: `We're in plan mode. Tell me what you want to plan.\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`;
 			pi.sendUserMessage(seed, { deliverAs: "followUp" });
 		},
 	});
 
 	// --- hooks --------------------------------------------------------------------------------------
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	/** What this LLM call should carry, if anything: a one-shot resync, or a staleness reminder. */
+	function dueInjection(ctx: ExtensionContext, plan: string): string | null {
+		const drainResync = (): string | null => {
+			const why = resyncReason;
+			resyncReason = null;
+			return why;
+		};
 		if (state.isPlanMode) {
-			return { message: { customType: PLAN_CONTEXT, content: `${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`, display: false } };
+			const why = drainResync();
+			return why ? `<system-reminder>\n${why} You are still in plan mode.\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.\n</system-reminder>` : null;
 		}
-		const plan = readPlan(ctx);
+		if (!plan.trim()) return null;
+		const why = drainResync();
+		if (why) return resync(plan, PLAN_REL, why);
+		if (turnsStale < STALE_TURNS) return null;
 		const goals = scanGoals(plan);
 		if (goals.length === 0) {
 			// Non-empty plan but no recognizable goal line: the harness would go silently inert (no
-			// widget, no injection, no reminders). Say so once instead -- cooperative but confused.
-			if (!plan.trim()) return;
-			return {
-				message: {
-					customType: PLAN_CONTEXT,
-					content: `${PLAN_REL} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat if it's meant to be the plan.`,
-					display: false,
-				},
-			};
+			// widget, no injection, no reminders). Say so instead -- cooperative but confused.
+			return `<system-reminder>\n${PLAN_REL} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat it if it's meant to be the plan.\n</system-reminder>`;
 		}
-		// The plan file itself IS the injection: no parsing, no summarizing, the model sees the
-		// literal file it edits. Byte-identical when unchanged, so the prefix cache holds.
-		let body = `Current plan (${PLAN_REL}; keep it updated with your edit tool):\n\n${plan}`;
-		const live = goals.some((g) => g.status === "active" || g.status === "open");
-		if (live && plan === lastInjectedPlan) body += `\n\n${reminder}`;
-		lastInjectedPlan = plan;
-		return { message: { customType: PLAN_CONTEXT, content: body, display: false } };
+		if (!goals.some((g) => g.status === "active" || g.status === "open")) return null;
+		return reminder(foldPlan(plan), PLAN_REL);
+	}
+
+	// The one injection point: a transient user message on this LLM call only, never persisted. So
+	// there are no stale copies to strip, and an untouched turn costs nothing.
+	pi.on("context", async (event, ctx) => {
+		const text = dueInjection(ctx, readPlan(ctx));
+		if (!text) return;
+		turnsStale = 0;
+		return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
+	});
+
+	// The staleness clock: editing the plan resets it, the way a task tool call resets pi-tasks'.
+	pi.on("turn_end", async (_event, ctx) => {
+		const plan = readPlan(ctx);
+		if (plan === lastSeenPlan) {
+			turnsStale++;
+			return;
+		}
+		lastSeenPlan = plan;
+		turnsStale = 0;
+		updateWidget(ctx);
+	});
+
+	// A compaction is exactly when the settled context is gone, so push the whole file back once.
+	pi.on("session_compact", async () => {
+		resyncReason = "The session was just compacted.";
 	});
 
 	// Plan mode gate: block edit/write except on plan.md itself. bash stays open (guide, not gate).
@@ -177,34 +246,30 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// After a plan-mode turn: if goals were drafted, offer Ready. No edit menus, no fresh-session
-	// dance — the human reads the file and says go (or keeps talking to revise it).
+	// After a plan-mode turn: if goals were drafted, offer Ready. The human reads the file and says
+	// go, edits it in $EDITOR, or keeps talking to revise it (menu shape borrowed from pi-plan).
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!state.isPlanMode || !ctx.hasUI) return;
-		if (scanGoals(readPlan(ctx)).length === 0) return; // still exploring/asking; nothing to review yet
-		const choice = await ctx.ui.select(`Plan drafted in ${PLAN_REL}. Ready?`, [
-			"Ready — start working the plan",
-			"Keep planning (reply to revise)",
-		]);
-		if (!choice?.startsWith("Ready")) return;
-		state = { ...state, isPlanMode: false };
-		persist();
-		updateWidget(ctx);
-		pi.sendUserMessage(
-			`Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`,
-			{ deliverAs: "followUp" },
-		);
-	});
-
-	// Keep only the freshest injected plan; strip stale ones so history doesn't bloat and the model
-	// never sees an out-of-date plan.
-	pi.on("context", async (event) => {
-		const isCtx = (m: unknown) => (m as { customType?: string }).customType === PLAN_CONTEXT;
-		let lastIdx = -1;
-		event.messages.forEach((m, i) => {
-			if (isCtx(m)) lastIdx = i;
-		});
-		return { messages: event.messages.filter((m, i) => !isCtx(m) || i === lastIdx) };
+		while (scanGoals(readPlan(ctx)).length > 0) {
+			const choice = await ctx.ui.select(`Plan drafted in ${PLAN_REL}. Ready?`, [
+				"Ready — start working the plan",
+				"Open in $EDITOR — edit it myself",
+				"Keep planning (reply to revise)",
+			]);
+			if (choice?.startsWith("Open")) {
+				spawnSync(process.env.EDITOR || process.env.VISUAL || "vi", [planPath(ctx)], { stdio: "inherit" });
+				continue;
+			}
+			if (!choice?.startsWith("Ready")) return;
+			state = { ...state, isPlanMode: false };
+			persist();
+			updateWidget(ctx);
+			pi.sendUserMessage(
+				`Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`,
+				{ deliverAs: "followUp" },
+			);
+			return;
+		}
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -220,6 +285,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
 			.pop() as { data?: PlanState } | undefined;
 		if (last?.data) state = { ...state, ...last.data };
+		lastSeenPlan = readPlan(ctx);
+		resyncReason = "New session.";
 		updateWidget(ctx);
 	});
 
