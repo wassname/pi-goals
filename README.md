@@ -3,18 +3,25 @@
 Plan mode for agreeing on goals before any code gets written. Each goal names the subtle failure
 mode that could fake a "done" and the discriminator that tells real success from it. Everything
 lives in one markdown file, `.pi/plan.md`, which the agent edits with its normal edit tool and which
-is injected verbatim every turn so it survives compaction. A goal is signed off only after a fresh
-read-only judge checks its evidence against the repo.
+doubles as the task list. A goal is signed off only after a fresh read-only judge checks its
+evidence against the repo.
+
+The file has a fold at `## Log`. Above it is the working set: title, the human's own words, goals,
+discriminators. Below it is durable memory: the log, the learnings, and an unlimited unverified
+appendix. The working set is re-sent when the plan goes stale for a couple of turns; the whole file
+comes back at session start and after a compaction, which is when the settled context is gone.
 
 Design bet (v2): the plan file is for LLMs and the human, not for TypeScript. There is no parser and
 no schema. The format is a convention taught by a prompt; the judge, being a model, reads the file
-natively, finds the claimed goal itself (wording drift is fine), runs the goal's `verify` command
-itself, and validates the evidence in words. This deleted ~800 lines of v1 (parser, exact-string
-goal matching, verify runner, JSON-stream judge transport, review menus) and with them the footguns
-they caused.
+natively, finds the claimed goal itself (wording drift is fine), and validates the evidence in
+words. It cannot execute anything, so it never re-runs your `verify` command: you run it and save
+the output as evidence. This deleted ~800 lines of v1 (parser, exact-string goal matching, verify
+runner, JSON-stream judge transport, review menus) and with them the footguns they caused.
 
 Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/milestone) and
-[burneikis/pi-plan](https://github.com/burneikis/pi-plan), it guides rather than guards.
+[burneikis/pi-plan](https://github.com/burneikis/pi-plan), it guides rather than guards. The
+reminder cadence is copied from [tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) and the
+resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-x).
 [pi-lgtm](https://github.com/wassname/pi-lgtm) was my earlier, more complex attempt.
 
 ## Install
@@ -35,12 +42,13 @@ pi -e ./src/index.ts
 `/goals` enters plan mode and starts a conversation; the objective is an optional seed. From there:
 
 1. Plan. The agent explores read-only (edit/write are blocked except on the plan file itself), asks
-   about anything unclear, and drafts the goals into `.pi/plan.md`.
-2. Review. Read the file; a two-option prompt asks Ready or keep planning. To revise, just reply.
-3. Work. Each turn the whole plan file is injected (byte-identical when unchanged, so the KV cache
-   holds), plus a reminder when the file went untouched for a turn. The agent ticks subtasks,
-   appends to `## Log`, fills `evidence:`, and calls `CompleteGoal` when a discriminator is
-   satisfied.
+   about anything unclear, and drafts the goals into `.pi/plan.md`. The drafting rules are sent
+   once, with your objective, not re-sent every turn.
+2. Review. Read the file; a menu asks Ready, open in `$EDITOR`, or keep planning. To revise, just
+   reply. Plan mode ends when you pick Ready.
+3. Work. The agent ticks subtasks, appends to `## Log` and `## Learnings`, fills `evidence:`, and
+   calls `CompleteGoal` when a discriminator is satisfied. If it leaves the plan untouched for two
+   turns, the working set is sent back with a short upkeep reminder.
 
 Other commands: `/goals clear` empties the plan file; `/goals judge <model-ref>` picks a specific
 model for the sign-off judge (default: your current session model, else pi's default).
@@ -54,6 +62,10 @@ Coming from v1: a leftover `.pi/goals.md` is renamed to `.pi/plan.md` on session
 
 Latency target came from the SLO review; keep the existing client API.
 
+## User voice
+
+- > "keep the client API, I don't want to touch every call site"
+
 ## Goals
 
 1. [/] goal: Implement cache layer
@@ -66,23 +78,33 @@ Latency target came from the SLO review; keep the existing client API.
   - evidence:
     - > load-test.log: p95=41ms, hit-rate 0.93 (not bypassed)
 
-# Future work / out of scope
+## Future work / out of scope
 
 ## Log
 - 2026-06-15 14:02  cache client wired; eviction next
+
+## Learnings
+- the client retries on 503, so a cache miss storm looks like latency, not errors
+
+## Appendix (context, not approved)
 ```
 
 - A goal is a checkbox line beginning `goal:` (`[ ]` open, `[/]` active, `[x]` done, `[-]`
-  cancelled). That one line pattern is the only thing the extension itself reads (widget counts,
-  reminder cadence, the Ready prompt); everything else in the file is prose to the extension.
+  cancelled). Indented checkbox lines under a goal are its subtasks. Those two patterns plus the
+  `## Log` fold are the only things the extension itself reads; everything else is prose to it.
 - The `discriminator` is the success test, written while planning: the positive observation that the
   goal succeeded and that none of the `subtle failure mode`s could fake. `evidence` is the proof,
   filled at sign-off: each item pairs a durable artifact with a short read of it. Prefer committed
   artifacts (files, tests, diffs); `.pi/` is usually gitignored, so evidence there is judge-time
   proof only and won't survive in history.
+- `## User voice` holds the human's requirements word for word. A paraphrase drifts, and then the
+  goals churn on the next reply.
+- `## Learnings` is what you now know, one line per gotcha, deduped. `## Log` is what happened, one
+  line a turn. `## Appendix` is unlimited and unverified: alternatives, links, dead ends, and
+  settled detail that is not part of the approved goals.
 - Small format deviations are fine; the file is read by the human and the judge, not a parser.
-- The agent prunes finished goals itself when the file gets long (evidence survives in git history
-  and `## Log`).
+- The agent prunes finished goals itself when the working set gets long (evidence survives in git
+  history and `## Log`).
 
 ## Signing off a goal (`CompleteGoal`)
 
