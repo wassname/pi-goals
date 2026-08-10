@@ -1,13 +1,13 @@
 {
   "name": "@wassname2/pi-goals",
-  "version": "0.0.1",
-  "description": "One .pi/goals.md: set goals in plan mode, work them, sign off only when a read-only check passes. Successor to pi-lgtm.",
+  "version": "0.1.0",
+  "description": "One .pi/plan.md: set goals in plan mode, work them, sign off only when a read-only judge checks the evidence. Successor to pi-lgtm.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wassname/pi-goals.git"
+    "url": "git+https://github.com/wassname/pi-goals.git"
   },
   "keywords": [
     "pi-package",
@@ -25,8 +25,16 @@
     "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "latest"
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

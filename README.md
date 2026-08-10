@@ -26,10 +26,14 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Not yet published to npm; run from a checkout:
+```bash
+pi install npm:@wassname2/pi-goals
+```
+
+Or for development:
 
 ```bash
-git clone https://github.com/wassname/pi-plan && cd pi-plan && npm install
+git clone https://github.com/wassname/pi-goals && cd pi-goals && npm install
 pi -e ./src/index.ts
 ```
 
