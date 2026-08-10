@@ -22,7 +22,6 @@ Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages
 [burneikis/pi-plan](https://github.com/burneikis/pi-plan), it guides rather than guards. The
 reminder cadence is copied from [tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) and the
 resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-x).
-[pi-lgtm](https://github.com/wassname/pi-lgtm) was my earlier, more complex attempt.
 
 ## Install
 
