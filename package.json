@@ -50,6 +50,7 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
   }
 }

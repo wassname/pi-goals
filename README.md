@@ -6,6 +6,8 @@ lives in one markdown file, `.pi/plan.md`, which the agent edits with its normal
 doubles as the task list. A goal is signed off only after a fresh read-only judge checks its
 evidence against the repo.
 
+![the widget: live goals from .pi/plan.md, with the active goal's open subtasks](media/screenshot.png)
+
 The file has a fold at `## Log`. Above it is the working set: title, the human's own words, goals,
 discriminators. Below it is durable memory: the log, the learnings, and an unlimited unverified
 appendix. The working set is re-sent when the plan goes stale for a couple of turns; the whole file
