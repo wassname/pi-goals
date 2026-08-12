@@ -1,6 +1,6 @@
 {
   "name": "@wassname2/pi-goals",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One .pi/plan.md: set goals in plan mode, work them, sign off only when a read-only judge checks the evidence.",
   "author": "wassname",
   "license": "MIT",
