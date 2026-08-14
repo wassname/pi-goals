@@ -1,7 +1,7 @@
 /**
  * pi-goals v2 — all model-facing text, in flow order.
  *
- * Design: plan.md is for LLMs and the human, not for TypeScript. There is no parser and no schema;
+ * Design: the plan file is for LLMs and the human, not for TypeScript. No parser and no schema;
  * the skeleton below is a convention the drafting prompt teaches, the working agent maintains with
  * its normal Edit tool, and the judge reads natively. The harness does three things for a
  * cooperative-but-confused model: memory (a transient re-send of the plan when it goes stale),
@@ -13,8 +13,8 @@
  * session start and after a compaction, which is where the settled context is actually needed.
  *
  * Flow:
- *   SETUP (plan mode)     1. planDrafting   — draft goals into plan.md (read-only phase), sent once
- *   EXEC, on cadence      2. reminder       — the folded plan + upkeep nudge when plan.md went stale
+ *   SETUP (plan mode)     1. planDrafting   — draft goals into the plan file (read-only), sent once
+ *   EXEC, on cadence      2. reminder       — the folded plan + upkeep nudge when it went stale
  *   EXEC, after compact   3. resync         — the WHOLE file back, once
  *   SIGN-OFF, agent-side  4. completeGoal*  — the one blessed tool's description
  *   SIGN-OFF, judge-side  5. judgeSystem/judgeUser — the one rigorous check
@@ -24,7 +24,7 @@
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
- * 1. planDrafting — SETUP, plan mode (read-only: edit/write blocked except plan.md)
+ * 1. planDrafting — SETUP, plan mode (read-only: edit/write blocked except the plan file)
  * ──────────────────────────────────────────────────────────────────────── */
 export const planDrafting = `\
 You are in plan mode. The objective may arrive through conversation, not as one up-front command.

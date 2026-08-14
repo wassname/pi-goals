@@ -1,9 +1,16 @@
 /**
- * pi-goals v2 — plan mode drafts goals into one .pi/plan.md, the agent works them with its normal
- * Edit tool, and a fresh read-only judge signs each goal off through the one blessed tool,
+ * pi-goals v2 — plan mode drafts goals into .pi/plan/<session_id>.md, the agent works them with its
+ * normal Edit tool, and a fresh read-only judge signs each goal off through the one blessed tool,
  * CompleteGoal.
  *
- * The v1 lesson: the parser existed so TypeScript could read plan.md, but almost every reader is a
+ * One plan file per session, not per repo: two windows on one checkout, and any subagent (pi spawns
+ * those with --no-session, extensions ON), each resolve a different path, so they can't read or
+ * stomp each other's plan. The file name is also the arm switch: a session that never ran /goals has
+ * no file at its path, so the widget, the injections and CompleteGoal all stay silent. The id is
+ * stable exactly where it must be -- a resume reads it back from the session header, and a
+ * compaction keeps it; only an explicit fork/new session gets a new one.
+ *
+ * The v1 lesson: the parser existed so TypeScript could read the plan, but almost every reader is a
  * model. So v2 has NO parser and no schema. The harness does exactly three things for a
  * cooperative-but-confused model:
  *   1. memory  — a transient re-send of the plan, never persisted, on two triggers: the plan went
@@ -33,7 +40,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -42,15 +49,17 @@ import { completeGoalDescription, completeGoalParamDescription, judgeSystem, jud
 const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
-const PLAN_REL = ".pi/plan.md";
+const PLAN_DIR = ".pi/plan";
+// For static text (the /goals description) where there is no ctx to resolve the session id.
+const PLAN_SHAPE = `${PLAN_DIR}/<session_id>.md`;
 // Judge toolset: strictly read-only, NO bash -- the judge can never execute or mutate anything, and
 // in particular never re-runs a verify command (which may be a 10-hour training job). The agent runs
 // verify itself and saves the output as evidence; the judge reads it. Names match pi's tool registry.
 const JUDGE_TOOLS = ["read", "grep", "find", "ls"];
 const JUDGE_BLOCKED_TOOLS = ["edit", "write"];
 const JUDGE_TIMEOUT_MS = 600_000;
-// Plan mode is read-only by convention AND a light gate: edit/write are blocked (except plan.md,
-// the deliverable). bash stays open — the prompt says don't mutate; guide, don't gate (spec D3).
+// Plan mode is read-only by convention AND a light gate: edit/write are blocked (except the plan
+// file, the deliverable). bash stays open — the prompt says don't mutate; guide, not gate (spec D3).
 const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
 // Turns the plan may go untouched before it is re-sent. pi-tasks uses 4, or 2 while something is in
 // progress; here every goal is "in progress", so 2.
@@ -112,10 +121,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// the WHOLE file (appendix included) instead of just the working set.
 	let resyncReason: string | null = "New session.";
 
-	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, ".pi", "plan.md");
+	const planRel = (ctx: ExtensionContext) => `${PLAN_DIR}/${ctx.sessionManager.getSessionId()}.md`;
+	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, planRel(ctx));
 	const readPlan = (ctx: ExtensionContext): string => (existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
 	const writePlan = (ctx: ExtensionContext, content: string): void => {
-		mkdirSync(join(ctx.cwd, ".pi"), { recursive: true });
+		mkdirSync(join(ctx.cwd, PLAN_DIR), { recursive: true });
 		writeFileSync(planPath(ctx), content);
 	};
 
@@ -126,7 +136,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	function updateWidget(ctx: ExtensionContext): void {
 		if (state.isPlanMode) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
-			ctx.ui.setWidget(WIDGET_KEY, [`pi-goals: drafting goals in ${PLAN_REL}`]);
+			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
 			return;
 		}
 		const goals = scanGoals(readPlan(ctx));
@@ -140,8 +150,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
+		// No path line: the session id makes it 47 chars, too long to be worth a widget row. The
+		// human opens the file from the Ready menu, and every injected reminder still names it.
 		const plan = readPlan(ctx);
-		const lines = [ctx.ui.theme.fg("muted", PLAN_REL)];
+		const lines: string[] = [];
 		for (const g of goals.filter((g) => g.status === "active" || g.status === "open")) {
 			lines.push(`${mark[g.status]} ${g.subject}`);
 			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
@@ -152,15 +164,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- /goals: enter plan mode (or clear / set judge) --------------------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_REL}, review, then work them. /goals <objective> | /goals clear | /goals judge <model>`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals clear | /goals judge <model>`,
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			if (arg === "clear") {
-				writePlan(ctx, "");
+				rmSync(planPath(ctx), { force: true });
 				state = { ...state, isPlanMode: false };
 				persist();
 				updateWidget(ctx);
-				ctx.ui.notify(`Cleared ${PLAN_REL}.`, "info");
+				ctx.ui.notify(`Deleted ${planRel(ctx)}.`, "info");
 				return;
 			}
 			if (arg.startsWith("judge")) {
@@ -198,16 +210,16 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 		if (!plan.trim()) return null;
 		const why = drainResync();
-		if (why) return resync(plan, PLAN_REL, why);
+		if (why) return resync(plan, planRel(ctx), why);
 		if (turnsStale < STALE_TURNS) return null;
 		const goals = scanGoals(plan);
 		if (goals.length === 0) {
 			// Non-empty plan but no recognizable goal line: the harness would go silently inert (no
 			// widget, no injection, no reminders). Say so instead -- cooperative but confused.
-			return `<system-reminder>\n${PLAN_REL} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat it if it's meant to be the plan.\n</system-reminder>`;
+			return `<system-reminder>\n${planRel(ctx)} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat it if it's meant to be the plan.\n</system-reminder>`;
 		}
 		if (!goals.some((g) => g.status === "active" || g.status === "open")) return null;
-		return reminder(foldPlan(plan), PLAN_REL);
+		return reminder(foldPlan(plan), planRel(ctx));
 	}
 
 	// The one injection point: a transient user message on this LLM call only, never persisted. So
@@ -236,13 +248,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		resyncReason = "The session was just compacted.";
 	});
 
-	// Plan mode gate: block edit/write except on plan.md itself. bash stays open (guide, not gate).
+	// Plan mode gate: block edit/write except on the plan file itself. bash stays open (guide, not gate).
 	pi.on("tool_call", async (event, ctx) => {
 		if (!state.isPlanMode) return;
 		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
 			const target = (event.input as { path?: string }).path;
 			if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
-			return { block: true, reason: `Plan mode is read-only: only ${PLAN_REL} may be written while drafting. Agree the goals first, then choose Ready.` };
+			return { block: true, reason: `Plan mode is read-only: only ${planRel(ctx)} may be written while drafting. Agree the goals first, then choose Ready.` };
 		}
 	});
 
@@ -251,7 +263,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!state.isPlanMode || !ctx.hasUI) return;
 		while (scanGoals(readPlan(ctx)).length > 0) {
-			const choice = await ctx.ui.select(`Plan drafted in ${PLAN_REL}. Ready?`, [
+			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}. Ready?`, [
 				"Ready — start working the plan",
 				"Open in $EDITOR — edit it myself",
 				"Keep planning (reply to revise)",
@@ -273,13 +285,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		// v1 wrote .pi/goals.md; v2 reads .pi/plan.md. Rename so old goals aren't silently invisible
-		// (dogfood finding). Claude: one-time migration, delete once v1 files are gone from the wild.
-		const v1Path = join(ctx.cwd, ".pi", "goals.md");
-		if (existsSync(v1Path) && !existsSync(planPath(ctx))) {
-			renameSync(v1Path, planPath(ctx));
-			ctx.ui.notify(`Renamed .pi/goals.md -> ${PLAN_REL} (v2 filename).`, "info");
-		}
 		const last = ctx.sessionManager
 			.getEntries()
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
@@ -301,7 +306,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
 			const plan = readPlan(ctx);
-			if (!plan.trim()) return result(`No plan file at ${PLAN_REL}.`, true);
+			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
 
 			const judgeModel = state.judgeModel ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null);
 			onUpdate?.({ content: [{ type: "text", text: `Read-only judge (${judgeModel ?? "pi default"}) inspecting: ${params.goal}` }], details: {} });
@@ -309,7 +314,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			// checked pre-emptively: null just means pi's configured default runs (buildJudgeArgs omits
 			// --model), so accepted_inconclusive always means "the judge ran but failed", never "no model".
 			let judgeRaw: JudgeResult | null = null;
-			const outcome = await decideSignOff({ goal: params.goal, plan, judgeModel }, signal, async (task) => {
+			const outcome = await decideSignOff({ goal: params.goal, plan, planRel: planRel(ctx), judgeModel }, signal, async (task) => {
 				judgeRaw = await runJudge(task, judgeModel, ctx.cwd, signal);
 				return judgeRaw;
 			});
@@ -333,8 +338,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 					const ticked = tickGoal(updated, params.goal);
 					updated = ticked ?? updated;
 					tickNote = ticked
-						? `\n\nGoal ticked [x] in ${PLAN_REL}.`
-						: `\n\nNo exact goal line matched your wording -- tick it [x] in ${PLAN_REL} yourself.`;
+						? `\n\nGoal ticked [x] in ${planRel(ctx)}.`
+						: `\n\nNo exact goal line matched your wording -- tick it [x] in ${planRel(ctx)} yourself.`;
 				}
 				writePlan(ctx, appendLog(updated, `${stamp()} ${outcome.logEntry}${transcriptNote}`));
 				updateWidget(ctx);
@@ -373,6 +378,8 @@ export interface JudgeResult {
 export interface SignOffInput {
 	goal: string;
 	plan: string;
+	/** The session's plan file, relative to cwd; the judge prompt names it. */
+	planRel: string;
 	judgeModel: string | null;
 }
 
@@ -395,7 +402,7 @@ export async function decideSignOff(
 	signal: AbortSignal | undefined,
 	runJudgeFn: (task: string) => Promise<JudgeResult>,
 ): Promise<SignOffOutcome> {
-	const task = judgeUser({ goal: input.goal, plan: input.plan, planPath: PLAN_REL });
+	const task = judgeUser({ goal: input.goal, plan: input.plan, planPath: input.planRel });
 	const judge = await runJudgeFn(task);
 
 	if (signal?.aborted) return { resultText: "Sign-off aborted.", isError: true, logEntry: null };
