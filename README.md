@@ -2,11 +2,17 @@
 
 Plan mode for agreeing on goals before any code gets written. Each goal names the subtle failure
 mode that could fake a "done" and the discriminator that tells real success from it. Everything
-lives in one markdown file, `.pi/plan.md`, which the agent edits with its normal edit tool and which
-doubles as the task list. A goal is signed off only after a fresh read-only judge checks its
-evidence against the repo.
+lives in one markdown file, `.pi/plan/<session_id>.md`, which the agent edits with its normal edit
+tool and which doubles as the task list. A goal is signed off only after a fresh read-only judge
+checks its evidence against the repo.
 
-![the widget: live goals from .pi/plan.md, with the active goal's open subtasks](media/screenshot.png)
+![the widget: live goals from the session's plan file, with the active goal's open subtasks](media/screenshot.png)
+
+One plan file per session, not per repo. Two windows on one checkout, and any subagent (pi spawns
+those with `--no-session`, extensions on), each get their own path, so they can't read or overwrite
+each other's plan. The file name is also the on switch: a session that never ran `/goals` has no file
+at its path, so the widget, the reminders and `CompleteGoal` all stay quiet. The id survives a
+`/resume` and a compaction; an explicit fork gets a new id, and so a fresh empty plan.
 
 The file has a fold at `## Log`. Above it is the working set: title, the human's own words, goals,
 discriminators. Below it is durable memory: the log, the learnings, and an unlimited unverified
@@ -47,20 +53,18 @@ pi -e ./src/index.ts
 `/goals` enters plan mode and starts a conversation; the objective is an optional seed. From there:
 
 1. Plan. The agent explores read-only (edit/write are blocked except on the plan file itself), asks
-   about anything unclear, and drafts the goals into `.pi/plan.md`. The drafting rules are sent
-   once, with your objective, not re-sent every turn.
+   about anything unclear, and drafts the goals into this session's plan file. The drafting rules
+   are sent once, with your objective, not re-sent every turn.
 2. Review. Read the file; a menu asks Ready, open in `$EDITOR`, or keep planning. To revise, just
    reply. Plan mode ends when you pick Ready.
 3. Work. The agent ticks subtasks, appends to `## Log` and `## Learnings`, fills `evidence:`, and
    calls `CompleteGoal` when a discriminator is satisfied. If it leaves the plan untouched for two
    turns, the working set is sent back with a short upkeep reminder.
 
-Other commands: `/goals clear` empties the plan file; `/goals judge <model-ref>` picks a specific
-model for the sign-off judge (default: your current session model, else pi's default).
+Other commands: `/goals clear` deletes this session's plan file; `/goals judge <model-ref>` picks a
+specific model for the sign-off judge (default: your current session model, else pi's default).
 
-Coming from v1: a leftover `.pi/goals.md` is renamed to `.pi/plan.md` on session start.
-
-## The plan.md format (a convention, not a schema)
+## The plan file format (a convention, not a schema)
 
 ```markdown
 # ship the cache layer
