@@ -1,6 +1,6 @@
 {
   "name": "@wassname2/pi-goals",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "One plan file per session: set goals in plan mode, work them, sign off only when a read-only judge checks the evidence.",
   "author": "wassname",
   "license": "MIT",
