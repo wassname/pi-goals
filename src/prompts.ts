@@ -40,8 +40,8 @@ requirement arrives, fold it in, say what changed, and say the plan is final aga
 doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
 
 Right-size it:
-- Default to ONE goal. Add another only when it's a genuinely separate checkpoint that can pass or
-  fail on its own. Most objectives are 1-2 goals.
+- Keep the goal count low. A goal is a checkpoint that can pass or fail on its own, so split when
+  the parts can pass separately and merge when they can't. Most objectives land at 1-3 goals.
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
 - Don't invent goals to look thorough. When in doubt, merge.
 - Everything above "## Log" is the part the model carries while it works. Keep it under 50 lines,
