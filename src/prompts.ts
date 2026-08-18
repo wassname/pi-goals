@@ -40,10 +40,13 @@ requirement arrives, fold it in, say what changed, and say the plan is final aga
 doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
 
 Right-size it:
-- One goal per distinct piece of judgable evidence. If the objective has 19 of those, write 19
-  goals; if it has one, write one. The count follows the evidence, not a target.
+- One goal per distinct judgable outcome. Group related goals when it helps judge them together
+  and readability. The count follows the outcomes, not a target.
+- Describe outcomes in qualitative terms the judge can recognize. Don't invent metrics or
+  thresholds for problems you haven't explored yet — the judge knows it when it sees it.
+  Quantitative gates are fine only when you are certain they survive contact with reality.
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
-- Two goals that share one discriminator are one goal. Merge them instead of padding the count.
+- Two goals that share one discriminator are one goal. Merge them.
 - Everything above "## Log" is the part the model carries while it works. Keep it under 50 lines,
   reviewable in one pass. Everything below "## Log" is unlimited.
 
