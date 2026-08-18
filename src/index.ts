@@ -43,7 +43,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { completeGoalDescription, completeGoalParamDescription, judgeSystem, judgeUser, planDrafting, reminder, resync } from "./prompts.js";
 
 const STATE = "pi-goals-state";
