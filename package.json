@@ -41,9 +41,9 @@
     "lint:fix": "biome check --fix src/ test/"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-coding-agent": "^0.84.1",
     "@types/node": "^20.0.0",
-    "typebox": "1.3.7",
+    "typebox": "^1.3.7",
     "typescript": "^5.0.0",
     "@biomejs/biome": "^2.4.8",
     "vitest": "^4.0.18"
