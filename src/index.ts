@@ -282,6 +282,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				continue;
 			}
 			if (!choice?.startsWith("Ready")) return;
+			// Plan mode goes off BEFORE the compaction, not in its callback: a message typed while
+			// the summary runs is then handled in work mode. Left on, it would hit blocked tools, a
+			// "still in plan mode" injection, and a second Ready menu at agent_end.
 			state = { ...state, isPlanMode: false };
 			persist();
 			updateWidget(ctx);
