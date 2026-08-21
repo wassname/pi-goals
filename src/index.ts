@@ -258,13 +258,22 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// After a plan-mode turn: if goals were drafted, offer Ready. The human reads the file and says
-	// go, edits it in $EDITOR, or keeps talking to revise it (menu shape borrowed from pi-plan).
+	// After a plan-mode turn: if goals were drafted, print the working set and offer Ready. The plan
+	// is printed because "Ready?" over an unread file is not a review: the only other copy is inside
+	// a collapsed edit tool call. Reprinted after an $EDITOR pass only if the text changed.
+	// The human then says go, edits it, or keeps talking to revise it (menu shape borrowed from pi-plan).
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!state.isPlanMode || !ctx.hasUI) return;
+		let printed = "";
 		while (scanGoals(readPlan(ctx)).length > 0) {
+			const working = foldPlan(readPlan(ctx));
+			if (working !== printed) {
+				printed = working;
+				pi.sendMessage({ customType: "plan", content: working, display: true });
+			}
 			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}. Ready?`, [
 				"Ready — start working the plan",
+				"Ready + compact — the same, but summarize the planning chatter away first",
 				"Open in $EDITOR — edit it myself",
 				"Keep planning (reply to revise)",
 			]);
@@ -276,10 +285,22 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			state = { ...state, isPlanMode: false };
 			persist();
 			updateWidget(ctx);
-			pi.sendUserMessage(
-				`Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`,
-				{ deliverAs: "followUp" },
-			);
+			const work = `Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`;
+			if (!choice.includes("compact")) {
+				pi.sendUserMessage(work, { deliverAs: "followUp" });
+				return;
+			}
+			// Compaction fires session_compact, so the whole plan file comes back on the next call --
+			// the exploration is summarized away, the agreed goals are not. Sent from onComplete so
+			// the work turn starts after the summary exists; a failed compaction still starts work.
+			ctx.compact({
+				customInstructions: `Planning is finished. Keep what ${planRel(ctx)} depends on: the objective, the human's constraints, and what was ruled out and why. The read-only exploration that produced them can go.`,
+				onComplete: () => pi.sendUserMessage(work, { deliverAs: "followUp" }),
+				onError: (e) => {
+					ctx.ui.notify(`Compaction failed (${e.message}); starting work anyway.`, "warning");
+					pi.sendUserMessage(work, { deliverAs: "followUp" });
+				},
+			});
 			return;
 		}
 	});

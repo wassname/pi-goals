@@ -55,8 +55,10 @@ pi -e ./src/index.ts
 1. Plan. The agent explores read-only (edit/write are blocked except on the plan file itself), asks
    about anything unclear, and drafts the goals into this session's plan file. The drafting rules
    are sent once, with your objective, not re-sent every turn.
-2. Review. Read the file; a menu asks Ready, open in `$EDITOR`, or keep planning. To revise, just
-   reply. Plan mode ends when you pick Ready.
+2. Review. The working set is printed in the transcript, then a menu asks Ready, Ready + compact,
+   open in `$EDITOR`, or keep planning. To revise, just reply. Plan mode ends when you pick a Ready.
+   Ready + compact summarizes the planning conversation away first; the plan file comes back whole
+   on the next turn, so nothing you agreed is lost.
 3. Work. The agent ticks subtasks, appends to `## Log` and `## Learnings`, fills `evidence:`, and
    calls `CompleteGoal` when a discriminator is satisfied. If it leaves the plan untouched for two
    turns, the working set is sent back with a short upkeep reminder.
