@@ -4,6 +4,28 @@ Plan mode for agreeing on goals in a one page markdown file.
 
 A goal is signed off only after a fresh read-only judge checks its evidence against the repo.
 
+
+```md
+## <short plan title>
+
+<context: one short paragraph. What the human wants and why.>
+
+### User voice
+
+- │ "<the human's requirement, quoted in full word for word (with spelling fixes)>"
+
+### Goals
+
+1. [ ] goal: <one short jugable imperative outcome>
+- subtle failure mode: <a way this could look done but isn't>
+- discriminator: <the concrete observation that tells real success from that failure>
+- tasks:
+    1. [ ] <subtask>
+- evidence: (empty until sign-off)
+
+### Future work / out of scope
+```
+
 ![the widget: live goals from the session's plan file, with the active goal's open subtasks](media/screenshot.png)
 
 Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/milestone) and
