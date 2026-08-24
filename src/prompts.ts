@@ -27,7 +27,7 @@
  * 1. planDrafting — SETUP, plan mode (read-only: edit/write blocked except the plan file)
  * ──────────────────────────────────────────────────────────────────────── */
 export const planDrafting = `\
-You are in plan mode. You are making a short judgable plan the captures the user true goals, arrives at and checked by conversation.
+You are in plan mode. You are making a short judgeable plan that captures the user's real goals, then tests it in conversation.
 
 1. Explore the repository read-only first: resolve discoverable facts by looking them up, and only ask
 the human when the answer is a genuine intent or preference choice. Do not write or run code in this
@@ -42,7 +42,7 @@ requirement arrives, fold it in, say what changed, and say the plan is final aga
 doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
 
 Right-size it:
-- One goal per distinct judgable outcome. Group related goals when it helps judge them together
+- One goal per distinct judgeable outcome. Group related goals when it helps judge them together
   and readability. The count flows from the outcomes.
 - Describe outcomes in qualitative terms the judge and user can discriminate. 
 	- Use the users language or more precise don't transform "MV" into "knob" as it looses precision and is overloaded
@@ -50,6 +50,7 @@ Right-size it:
   	- Quantitative gates are fine only when you are certain they survive contact with reality.
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
 - Two goals that share one discriminator are one goal. Merge them.
+- Keep the goal subject short. Put its important scope, failure modes, discriminator, tasks, and evidence in the indented block beneath it. The judge reads the whole block and the whole plan.
 - Everything above "## Log" is the part the model updated while it works, and the user reviews. Keep it under 50 lines,
   reviewable in one pass. Everything below "## Log" is unlimited.
 
@@ -122,6 +123,9 @@ When the goals are drafted, present them and say the plan is final. Do not begin
  *    model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149). Carries the folded plan
  *    (above ## Log), because a nudge with no plan in it makes the model go read the file anyway.
  * ──────────────────────────────────────────────────────────────────────── */
+export const grillMe = `\
+Stay in plan mode. Ask the human the single most useful question that tests whether your understanding of the plan is correct. Name the interpretation you are testing. Do not start work, change the plan, or offer Ready until the human replies.`;
+
 export function reminder(foldedPlan: string, planRel: string): string {
 	return `\
 <system-reminder>
@@ -203,6 +207,10 @@ job; the agent must bring you its saved output. Your job is evidence discipline,
    every trap and still have produced nothing. Is each subtle failure mode genuinely ruled out,
    not just unmentioned? If the goal names a verify: command, its saved output must be among the
    evidence, and the command must actually test the discriminator rather than pass tautologically.
+
+Before the verdict, write this heading: checks:. Put one concise bullet under it for each artifact you actually read:
+path, verbatim observed quote, and what that observation establishes. This is an inspectable review
+record, not hidden reasoning. Do not write a checks bullet for a file you did not open.
 
 Finish with exactly these two lines and nothing after:
 VERDICT: accept | reject

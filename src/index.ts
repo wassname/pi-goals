@@ -1,14 +1,12 @@
 /**
- * pi-goals v2 — plan mode drafts goals into .pi/plan/<session_id>.md, the agent works them with its
+ * PI: pi-goals v2 drafts goals into .pi/plan/<session_id>-vN.md, the agent works them with its
  * normal Edit tool, and a fresh read-only judge signs each goal off through the one blessed tool,
  * CompleteGoal.
  *
- * One plan file per session, not per repo: two windows on one checkout, and any subagent (pi spawns
- * those with --no-session, extensions ON), each resolve a different path, so they can't read or
- * stomp each other's plan. The file name is also the arm switch: a session that never ran /goals has
- * no file at its path, so the widget, the injections and CompleteGoal all stay silent. The id is
- * stable exactly where it must be -- a resume reads it back from the session header, and a
- * compaction keeps it; only an explicit fork/new session gets a new one.
+ * PI: Each /goals call makes a new plan version, `.pi/plan/<session_id>-vN.md`. The selected version
+ * stays in session state across resume and compaction. Old drafts stay available but inert, so a new
+ * conversation cannot silently edit them. The filename is the arm switch: a session that never ran
+ * /goals has no active plan, so the widget, injections, and CompleteGoal all stay silent.
  *
  * The v1 lesson: the parser existed so TypeScript could read the plan, but almost every reader is a
  * model. So v2 has NO parser and no schema. The harness does exactly three things for a
@@ -40,18 +38,18 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { completeGoalDescription, completeGoalParamDescription, judgeSystem, judgeUser, planDrafting, reminder, resync } from "./prompts.js";
+import { completeGoalDescription, completeGoalParamDescription, grillMe, judgeSystem, judgeUser, planDrafting, reminder, resync } from "./prompts.js";
 
 const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
 const PLAN_DIR = ".pi/plan";
 // For static text (the /goals description) where there is no ctx to resolve the session id.
-const PLAN_SHAPE = `${PLAN_DIR}/<session_id>.md`;
+const PLAN_SHAPE = `${PLAN_DIR}/<session_id>-vN.md`;
 // Judge toolset: strictly read-only, NO bash -- the judge can never execute or mutate anything, and
 // in particular never re-runs a verify command (which may be a 10-hour training job). The agent runs
 // verify itself and saves the output as evidence; the judge reads it. Names match pi's tool registry.
@@ -104,14 +102,26 @@ export function openSubtasks(plan: string, goalLine: number): string[] {
 	return out;
 }
 
+export function nextPlanVersion(planNames: string[], sessionId: string): number {
+	const prefix = `${sessionId}-v`;
+	const versions = planNames.flatMap((name) => {
+		if (!name.startsWith(prefix) || !name.endsWith(".md")) return [];
+		const version = Number(name.slice(prefix.length, -".md".length));
+		return Number.isInteger(version) && version > 0 ? [version] : [];
+	});
+	return Math.max(0, ...versions) + 1;
+}
+
 interface PlanState {
 	isPlanMode: boolean;
 	/** Optional model ref for the sign-off judge; unset => current session model, else pi's default. */
 	judgeModel: string | null;
+	planVersion: number | null;
+	skipReadyMenu: boolean;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
-	let state: PlanState = { isPlanMode: false, judgeModel: null };
+	let state: PlanState = { isPlanMode: false, judgeModel: null, planVersion: null, skipReadyMenu: false };
 	// Reminder cadence (pi-tasks style): the plan is re-sent only after it has gone untouched for
 	// STALE_TURNS turns, and editing it resets the clock -- an agent that is maintaining the file
 	// doesn't need to be told to. In-memory, like pi-tasks: a new session starts fresh.
@@ -121,13 +131,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// the WHOLE file (appendix included) instead of just the working set.
 	let resyncReason: string | null = "New session.";
 
-	const planRel = (ctx: ExtensionContext) => `${PLAN_DIR}/${ctx.sessionManager.getSessionId()}.md`;
-	const planPath = (ctx: ExtensionContext) => join(ctx.cwd, planRel(ctx));
-	const readPlan = (ctx: ExtensionContext): string => (existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
+	const planRel = (ctx: ExtensionContext) => (state.planVersion === null ? PLAN_SHAPE : `${PLAN_DIR}/${ctx.sessionManager.getSessionId()}-v${state.planVersion}.md`);
+	const planPath = (ctx: ExtensionContext) => {
+		if (state.planVersion === null) throw new Error("No active plan version.");
+		return join(ctx.cwd, planRel(ctx));
+	};
+	const readPlan = (ctx: ExtensionContext): string => (state.planVersion !== null && existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
 	const writePlan = (ctx: ExtensionContext, content: string): void => {
 		mkdirSync(join(ctx.cwd, PLAN_DIR), { recursive: true });
 		writeFileSync(planPath(ctx), content);
 	};
+	const nextVersion = (ctx: ExtensionContext): number =>
+		nextPlanVersion(existsSync(join(ctx.cwd, PLAN_DIR)) ? readdirSync(join(ctx.cwd, PLAN_DIR)) : [], ctx.sessionManager.getSessionId());
 
 	function persist(): void {
 		pi.appendEntry<PlanState>(STATE, state);
@@ -164,25 +179,31 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- /goals: enter plan mode (or clear / set judge) --------------------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals clear | /goals judge <model>`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals --clear | /goals --judge <model>`,
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (arg === "clear") {
+			if (arg === "--clear") {
+				if (state.planVersion === null) {
+					ctx.ui.notify("No active plan to delete.", "info");
+					return;
+				}
+				const currentPlan = planRel(ctx);
 				rmSync(planPath(ctx), { force: true });
-				state = { ...state, isPlanMode: false };
+				state = { ...state, isPlanMode: false, planVersion: null, skipReadyMenu: false };
 				persist();
 				updateWidget(ctx);
-				ctx.ui.notify(`Deleted ${planRel(ctx)}.`, "info");
+				ctx.ui.notify(`Deleted ${currentPlan}.`, "info");
 				return;
 			}
-			if (arg.startsWith("judge")) {
-				const ref = arg.slice("judge".length).trim();
+			if (arg === "--judge" || arg.startsWith("--judge ")) {
+				const ref = arg.slice("--judge".length).trim();
 				state = { ...state, judgeModel: ref || null };
 				persist();
 				ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the session model", "info");
 				return;
 			}
-			state = { ...state, isPlanMode: true };
+			state = { ...state, isPlanMode: true, planVersion: nextVersion(ctx), skipReadyMenu: false };
+			writePlan(ctx, "");
 			persist();
 			updateWidget(ctx);
 			// The drafting rules are sent ONCE, with the seed. v2 re-injected them every turn, which is
@@ -258,28 +279,40 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// After a plan-mode turn: if goals were drafted, print the working set and offer Ready. The plan
+	// PI: After a plan-mode turn, print the full plan and offer Ready. The plan
 	// is printed because "Ready?" over an unread file is not a review: the only other copy is inside
 	// a collapsed edit tool call. Reprinted after an $EDITOR pass only if the text changed.
 	// The human then says go, edits it, or keeps talking to revise it (menu shape borrowed from pi-plan).
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!state.isPlanMode || !ctx.hasUI) return;
+		if (state.skipReadyMenu) {
+			state = { ...state, skipReadyMenu: false };
+			persist();
+			return;
+		}
 		let printed = "";
 		while (scanGoals(readPlan(ctx)).length > 0) {
-			const working = foldPlan(readPlan(ctx));
-			if (working !== printed) {
-				printed = working;
-				pi.sendMessage({ customType: "plan", content: working, display: true });
+			const plan = readPlan(ctx);
+			if (plan !== printed) {
+				printed = plan;
+				pi.sendMessage({ customType: "plan", content: plan, display: true });
 			}
 			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}. Ready?`, [
 				"Ready — start working the plan",
 				"Ready + compact — the same, but summarize the planning chatter away first",
+				"Grill me — ask one question that tests your plan understanding",
 				"Open in $EDITOR — edit it myself",
 				"Keep planning (reply to revise)",
 			]);
 			if (choice?.startsWith("Open")) {
 				spawnSync(process.env.EDITOR || process.env.VISUAL || "vi", [planPath(ctx)], { stdio: "inherit" });
 				continue;
+			}
+			if (choice?.startsWith("Grill me")) {
+				state = { ...state, skipReadyMenu: true };
+				persist();
+				pi.sendUserMessage(grillMe, { deliverAs: "followUp" });
+				return;
 			}
 			if (!choice?.startsWith("Ready")) return;
 			// Plan mode goes off BEFORE the compaction, not in its callback: a message typed while
@@ -313,7 +346,12 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			.getEntries()
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
 			.pop() as { data?: PlanState } | undefined;
-		if (last?.data) state = { ...state, ...last.data };
+		state = {
+			isPlanMode: last?.data?.isPlanMode ?? false,
+			judgeModel: last?.data?.judgeModel ?? null,
+			planVersion: last?.data?.planVersion ?? null,
+			skipReadyMenu: last?.data?.skipReadyMenu ?? false,
+		};
 		lastSeenPlan = readPlan(ctx);
 		resyncReason = "New session.";
 		updateWidget(ctx);
@@ -348,7 +386,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (judgeRaw !== null) {
 				const raw: JudgeResult = judgeRaw;
 				mkdirSync(join(ctx.cwd, ".pi", "judge"), { recursive: true });
-				const rel = `.pi/judge/${stamp().replace(/[: ]/g, "-")}.md`;
+				const rel = `.pi/judge/${stamp().replace(/[: ]/g, "-")}-${process.hrtime.bigint()}.md`;
 				writeFileSync(join(ctx.cwd, rel), `goal: ${params.goal}\nmodel: ${judgeModel ?? "pi default"}\nerror: ${raw.error ?? "none"}\n\n${raw.output}\n`);
 				transcriptNote = ` (${rel})`;
 			}
@@ -446,6 +484,15 @@ export async function decideSignOff(
 	const reasoning = judge.output.length > 2000 ? `...\n${judge.output.slice(-2000)}` : judge.output;
 
 	if (verdict === "accept") {
+		const beforeVerdict = judge.output.slice(0, judge.output.indexOf(verdictLine));
+		const checks = /^#{0,6}\s*(?:\*\*)?checks(?:\*\*)?:\s*$[\s\S]*^[-*]\s+.+$/im.test(beforeVerdict);
+		if (!checks) {
+			return {
+				resultText: `Sign-off REJECTED. Missing:\nchecked-artifact list before VERDICT: accept\n\n--- judge ---\n${reasoning}`,
+				isError: true,
+				logEntry: `reject "${input.goal}": judge accept had no checked-artifact list`,
+			};
+		}
 		return {
 			resultText: `Sign-off ACCEPTED (log line appended).\n\n--- judge ---\n${reasoning}`,
 			isError: false,

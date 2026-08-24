@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { decideSignOff, type JudgeResult } from "../src/index.js";
+import { judgeSystem } from "../src/prompts.js";
 
 // decideSignOff is the fail-forward invariant: judgeModel is NEVER checked pre-emptively, so a null
 // model still reaches runJudge (pi's configured default runs it), and the only producers of
@@ -9,11 +10,21 @@ const input = { goal: "x", plan: "# plan\n", planRel: ".pi/plan/s1.md", judgeMod
 
 describe("decideSignOff (fail-forward invariant)", () => {
 	it("proceeds to runJudge even when judgeModel is null (no pre-emptive 'no model' inconclusive)", async () => {
-		const runJudge = vi.fn().mockResolvedValue({ output: "VERDICT: accept\nall good" });
+		const output = "## checks:\n- evidence.txt: `PASS`; the saved check passed\n\nThe artifact proves the gate passed.\nVERDICT: accept\nmissing:";
+		const runJudge = vi.fn().mockResolvedValue({ output });
 		const out = await decideSignOff({ ...input, plan: "# plan\n1. [ ] goal: x\n" }, undefined, runJudge);
 		expect(runJudge).toHaveBeenCalledOnce(); // reached the judge -- no pre-emptive return on null model
 		expect(out.isError).toBe(false);
 		expect(out.logEntry).toContain("judge accept");
+		expect(out.resultText).toContain("evidence.txt: `PASS`");
+	});
+
+	it("rejects an accept verdict without a checked-artifact list", async () => {
+		const runJudge = vi.fn().mockResolvedValue({ output: "VERDICT: accept\nmissing:" });
+		const out = await decideSignOff(input, undefined, runJudge);
+		expect(out.isError).toBe(true);
+		expect(out.resultText).toContain("checked-artifact list");
+		expect(out.logEntry).toContain("no checked-artifact list");
 	});
 
 	it("a judge-subprocess error yields accepted_inconclusive with a 'ran but failed' reason", async () => {
@@ -52,6 +63,11 @@ describe("decideSignOff (fail-forward invariant)", () => {
 		expect(out.resultText).toContain("REJECTED");
 		expect(out.resultText).toContain("evidence, tests");
 		expect(out.logEntry).toContain("reject");
+	});
+
+	it("requires a concise checked-artifact review, not private reasoning", () => {
+		expect(judgeSystem).toContain("checks:");
+		expect(judgeSystem).toContain("not hidden reasoning");
 	});
 
 	it("writes nothing when aborted after the judge ran", async () => {

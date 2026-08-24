@@ -1,8 +1,8 @@
 # pi-goals
 
-Instead of a long plan, make a short list of goal in a one page markdown file. This way it's easy for you to review, and a subagent can just if each goal has been achieved.
+Make a short list of goals in one Markdown plan file. This is easy to review, and a subagent can check whether each goal is complete.
 
-The `goals.md` file looks something like this
+The plan file looks like this:
 
 ```md
 ## <short plan title>
@@ -23,6 +23,12 @@ The `goals.md` file looks something like this
 - evidence: (empty until sign-off)
 
 ### Future work / out of scope
+
+### Log
+
+### Learnings
+
+### Papercuts - problems, gotchas, suggestions
 ```
 
 ![the widget: live goals from the session's plan file, with the active goal's open subtasks](media/screenshot.png)
@@ -55,15 +61,17 @@ pi -e ./src/index.ts
 
 `/goals` enters plan mode and starts a conversation; the objective is an optional seed. From there:
 
-1. Plan. The agent explores read-only
-2. Review. The working set is printed in the transcript, then a menu asks Ready, Ready + compact,
-   open in `$EDITOR`, or keep planning.
+1. Plan. The agent explores read-only and drafts the plan.
+2. Review. The full plan is printed in the transcript, then a menu asks Ready, Ready + compact,
+   Grill me, open in `$EDITOR`, or keep planning. Grill me asks one understanding-check question and
+   keeps plan mode active.
 3. Work. The agent ticks subtasks, appends to `## Log` and `## Learnings`, fills `evidence:`, and
    calls `CompleteGoal` when a discriminator is satisfied. If it leaves the plan untouched for two
    turns, the working set is sent back with a short upkeep reminder.
 
-Other commands: `/goals clear` deletes this session's plan file; `/goals judge <model-ref>` picks a
-specific model for the sign-off judge (default: your current session model, else pi's default).
+Other commands: `/goals --clear` deletes this session's active plan file; `/goals --judge <model-ref>`
+picks a sign-off judge model (default: your current session model, else pi's default). The `--` prefix
+keeps ordinary objectives such as `judge model quality` from being parsed as commands.
 
 ## Prompts
 
