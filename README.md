@@ -1,6 +1,6 @@
 # pi-goals
 
-Instead of a long plan, make a short list of goal in a one page markdown file. This way it's easy for you to review, and a subagent can just if each goal has been achevied.
+Instead of a long plan, make a short list of goal in a one page markdown file. This way it's easy for you to review, and a subagent can just if each goal has been achieved.
 
 The `goals.md` file looks something like this
 
@@ -15,7 +15,7 @@ The `goals.md` file looks something like this
 
 ### Goals
 
-1. [ ] goal: <one short jugable imperative outcome>
+1. [ ] goal: <one short judgeable imperative outcome>
 - subtle failure mode: <a way this could look done but isn't>
 - discriminator: <the concrete observation that tells real success from that failure>
 - tasks:
