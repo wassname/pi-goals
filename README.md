@@ -1,9 +1,8 @@
 # pi-goals
 
-Plan mode for agreeing on goals in a one page markdown file. 
+Instead of a long plan, make a short list of goal in a one page markdown file. This way it's easy for you to review, and a subagent can just if each goal has been achevied.
 
-A goal is signed off only after a fresh read-only judge checks its evidence against the repo.
-
+The `goals.md` file looks something like this
 
 ```md
 ## <short plan title>
