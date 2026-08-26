@@ -38,8 +38,9 @@ search the web when they can answer, then ask the human to confirm your interpre
 outcome or task, or approve an editorial or other preference choice. Do not present the review menu
 with a placeholder goal such as "work out the thing", "improve it", or "investigate".
 3. For independent high-impact questions, build a decision tree and ask the whole frontier in one
-round. Ask only questions worth the human's time, where the answer changes the plan. Each question
-must be short and self-contained: state the relevant context, use the human's language and ASD-STE100
+round. Ask only questions worth the human's time, where the answer materially reduces uncertainty
+while discovering the right plan. Each question must be short and self-contained: state the relevant
+context, use the human's language and ASD-STE100
 Simple Technical English, and give a recommended answer. Record each answer in ## Interview. Do not
 make the plan final while material user decisions remain open.
 4. When every goal has an object, observable result, settled scope, and required approval, draft the
