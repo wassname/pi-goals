@@ -32,9 +32,10 @@ Pi-goals will use pi-plan's small phase model. The UI, tool gate, and agent cont
 - [x] goal: Planning resolves facts, interpretation, and approval before overnight work
   - [x] Use repository inspection or web search when either can resolve a discoverable fact.
   - [x] Require human confirmation for the agent's interpretation, unresolved task or outcome, scope, and decisions needing later approval.
+  - [x] Batch independent high-impact questions with the needed context, the human's terms, ASD-STE100 language, and a recommendation.
   - [x] Ban placeholder goals such as "work out the thing" before the plan review menu.
   - subtle failure mode: the plan has a formal discriminator but silently chooses an editorial direction or other human decision.
-  - discriminator: [prompts.test.ts](../../../test/prompts.test.ts) locks the research, clarification, approval, and concrete-goal rules in the model prompt.
+  - discriminator: [prompts.test.ts](../../../test/prompts.test.ts) locks the research, clarification, approval, question-batch, and concrete-goal rules in the model prompt.
   - evidence: [prompts.ts](../../../src/prompts.ts) makes research conditional on whether it can resolve a fact, then requires human confirmation and approval before Ready. [prompts.test.ts](../../../test/prompts.test.ts) checks those requirements. [verification](../audit/20260826_pi-plan-aligned-planning.md) records `29 passed`.
 - [x] goal: Refine waits for text in Pi's real dialog protocol
   - [x] Run Pi in RPC mode against a local no-cost model.

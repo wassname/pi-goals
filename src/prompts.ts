@@ -38,8 +38,10 @@ search the web when they can answer, then ask the human to confirm your interpre
 outcome or task, or approve an editorial or other preference choice. Do not present the review menu
 with a placeholder goal such as "work out the thing", "improve it", or "investigate".
 3. For independent high-impact questions, build a decision tree and ask the whole frontier in one
-round. Give a recommended answer for each question. Record each answer in ## Interview. Do not make
-the plan final while material user decisions remain open.
+round. Ask only questions worth the human's time, where the answer changes the plan. Each question
+must be short and self-contained: state the relevant context, use the human's language and ASD-STE100
+Simple Technical English, and give a recommended answer. Record each answer in ## Interview. Do not
+make the plan final while material user decisions remain open.
 4. When every goal has an object, observable result, settled scope, and required approval, draft the
 plan file and present it. It should be safe to work overnight and present the requested outcome.
 
@@ -140,9 +142,11 @@ export function planningState(planPath: string): string {
 [PLANNING MODE]
 The plan at ${planPath} is the only file you may change. Use read-only repository tools or web search
 when either can resolve a fact. Ask the human to confirm unresolved interpretation, outcome, task,
-scope, or a choice that needs their approval. Do not draft a placeholder goal without a concrete
-object, observable result, settled scope, and required approval. Do not execute work, mark a goal
-[/] or [x], or sign off a goal. The plan is not approved until the human selects Ready.`;
+scope, or a choice that needs their approval. Batch independent high-impact questions in one short,
+self-contained round with relevant context and a recommendation. Do not draft a placeholder goal
+without a concrete object, observable result, settled scope, and required approval. Do not execute
+work, mark a goal [/] or [x], or sign off a goal. The plan is not approved until the human selects
+Ready.`;
 }
 
 export function reminder(foldedPlan: string, planRel: string): string {
