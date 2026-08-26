@@ -80,4 +80,20 @@ describe("/goals draft flow", () => {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("leaves Pi idle when the human chooses Keep planning", async () => {
+		const flow = setup(["Keep planning (reply to revise)"]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: revise this\n");
+
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+
+			expect(flow.events).toEqual(["display", "select"]);
+			expect(flow.messages.filter((message) => !message.display)).toHaveLength(1);
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
 });
