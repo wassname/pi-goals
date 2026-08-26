@@ -35,6 +35,7 @@
     "build": "tsc",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test",
     "test": "vitest run",
+    "test:rpc": "vitest run test/rpc-review.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/ test/",
