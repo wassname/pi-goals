@@ -252,6 +252,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
 	});
 
+	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
+	pi.on("input", async (event, ctx) => {
+		if (state.isPlanMode && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
+	});
+
 	// The staleness clock: editing the plan resets it, the way a task tool call resets pi-tasks'.
 	pi.on("turn_end", async (_event, ctx) => {
 		const plan = readPlan(ctx);
@@ -539,6 +544,18 @@ export function appendLog(text: string, entry: string): string {
 		if (/^\s*-\s+/.test(lines[i])) insertAt = i + 1;
 	}
 	lines.splice(insertAt, 0, line);
+	return lines.join("\n");
+}
+
+/** PI: Preserve human plan-mode answers verbatim below the fold. */
+export function appendInterview(text: string, answer: string): string {
+	const lines = text.split("\n");
+	const header = lines.findIndex((l) => /^##\s+Interview\s*$/i.test(l));
+	const entry = [`### ${stamp()}`, "", ...answer.split("\n").map((line) => `> ${line}`), ""];
+	if (header === -1) return `${text.replace(/\n+$/, "")}\n\n## Interview\n\n${entry.join("\n")}`;
+	let insertAt = header + 1;
+	while (insertAt < lines.length && !/^##\s+/.test(lines[insertAt])) insertAt++;
+	lines.splice(insertAt, 0, ...entry);
 	return lines.join("\n");
 }
 

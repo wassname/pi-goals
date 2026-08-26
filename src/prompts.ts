@@ -51,8 +51,8 @@ Right-size it:
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
 - Two goals that share one discriminator are one goal. Merge them.
 - Keep the goal subject short. Put its important scope, failure modes, discriminator, tasks, and evidence in the indented block beneath it. The judge reads the whole block and the whole plan.
-- Everything above "## Log" is the part the model updated while it works, and the user reviews. Keep it under 50 lines,
-  reviewable in one pass. Everything below "## Log" is unlimited.
+- Keep the working set under 50 lines, excluding ## User voice. ## User voice has no line limit: quote
+  the human fully rather than shorten or paraphrase them. Everything below "## Log" is unlimited.
 
 Style: Make it easy for a busy and forgetfull user to review. Use ASD-STE100 Simplified Technical English. Use active voice, one idea per sentence, common words,
 the same word for the same thing, and define a new terms at first use. Use redundant context for skim readers e.g. "our output - the cells, CV tag" is easy to read and reminds context. This covers the context
@@ -86,6 +86,8 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
 ## Log
 ### {date}
 
+## Interview
+
 ## Learnings
 
 ## Papercuts - problems, gotchas, suggestions
@@ -106,7 +108,10 @@ Conventions:
   Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
   usually gitignored, so files there prove things only at judge time, not in history.
 - User voice: quote the human word for word, one line per requirement, as they say it. Never
-  paraphrase there -- a paraphrase drifts, and then the goals churn on the next reply.
+  paraphrase there -- a paraphrase drifts, and then the goals churn on the next reply. It is exempt
+  from the working-set line limit.
+- Interview: every human reply in plan mode is stored here verbatim as a dated blockquote. It is
+  durable memory below the fold, not a substitute for ## User voice.
 - Rejected options stay visible: ~~struck through~~ with who rejected them and why, so nobody
   relitigates them.
 - Learnings: one line per gotcha that a future reader would otherwise rediscover. Write down what

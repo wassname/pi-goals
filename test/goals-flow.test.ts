@@ -62,11 +62,14 @@ describe("/goals draft flow", () => {
 			expect(flow.messages.find((message) => message.display)?.content).toBe(plan);
 			await flow.hooks.get("agent_end")({}, flow.ctx);
 			expect(flow.events).toEqual(["display", "select"]);
+			await flow.hooks.get("input")({ text: "Keep two columns.\nDo not add a filter.", source: "interactive" }, flow.ctx);
+			const interviewedPlan = readFileSync(v1, "utf-8");
+			expect(interviewedPlan).toMatch(/## Interview\n\n### .+\n\n> Keep two columns\.\n> Do not add a filter\./);
 			const blocked = await flow.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, flow.ctx);
 			expect(blocked?.block).toBe(true);
 
 			await flow.commands.get("goals").handler("second objective", flow.ctx);
-			expect(readFileSync(v1, "utf-8")).toBe(plan);
+			expect(readFileSync(v1, "utf-8")).toBe(interviewedPlan);
 			expect(readFileSync(join(flow.cwd, ".pi/plan/session-a-v2.md"), "utf-8")).toBe("");
 			expect(flow.messages.at(-1)?.content).toContain("session-a-v2.md");
 

@@ -26,6 +26,8 @@ The plan file looks like this:
 
 ### Log
 
+### Interview
+
 ### Learnings
 
 ### Papercuts - problems, gotchas, suggestions
@@ -66,8 +68,9 @@ pi -e ./src/index.ts
    Grill me, open in `$EDITOR`, or keep planning. Grill me asks one understanding-check question and
    keeps plan mode active.
 3. Work. The agent ticks subtasks, appends to `## Log` and `## Learnings`, fills `evidence:`, and
-   calls `CompleteGoal` when a discriminator is satisfied. If it leaves the plan untouched for two
-   turns, the working set is sent back with a short upkeep reminder.
+   calls `CompleteGoal` when a discriminator is satisfied. Every human reply in plan mode is saved
+   verbatim under `## Interview`. If it leaves the plan untouched for two turns, the working set is
+   sent back with a short upkeep reminder.
 
 Other commands: `/goals --clear` deletes this session's active plan file; `/goals --judge <model-ref>`
 picks a sign-off judge model (default: your current session model, else pi's default). The `--` prefix
