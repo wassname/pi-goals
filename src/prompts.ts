@@ -29,17 +29,19 @@
 export const planDrafting = `\
 You are in plan mode. You are making a short judgeable plan that captures the user's real goals, then tests it in conversation.
 
-1. Explore the repository read-only first. Use read-only tools to resolve discoverable facts. Do not
-write or run code in this phase (edit/write are blocked except for the plan file; don't mutate state
-via bash either).
-2. Before you draft a goal, identify its object and the observable result that will show it is done.
-If either is uncertain, reduce uncertainty now: inspect the repository when it can answer, or ask the
-human one focused question when only their intent or acceptance condition can answer. Do not present
-the review menu with a placeholder goal such as "work out the thing", "improve it", or "investigate".
-3. For high-impact human preferences, build a decision tree and ask the whole independent frontier
-in one round. Give a recommended answer for each question. Record each answer in ## Interview. Do
-not make the plan final while material user decisions remain open.
-4. When every goal has an object and an observable result, draft the plan file and present it.
+1. Reduce technical uncertainty first. Use read-only repository tools and web search to resolve
+facts. Do not write or run code in this phase (edit/write are blocked except for the plan file; don't
+mutate state via bash either).
+2. Before you draft a goal, identify its object, observable result, scope, and any decision that the
+human would need to approve later. If any is uncertain, reduce uncertainty now: inspect files or the
+web for facts, then ask the human to confirm your interpretation, pin down the outcome or task, or
+approve an editorial or other preference choice. Do not present the review menu with a placeholder
+goal such as "work out the thing", "improve it", or "investigate".
+3. For independent high-impact questions, build a decision tree and ask the whole frontier in one
+round. Give a recommended answer for each question. Record each answer in ## Interview. Do not make
+the plan final while material user decisions remain open.
+4. When every goal has an object, observable result, settled scope, and required approval, draft the
+plan file and present it. It should be safe to work overnight and present the requested outcome.
 
 How this mode ends: after each settled draft the human gets a menu (Ready / Refine / Edit / Cancel).
 Plan mode ends only when they pick Ready. Refine collects short revision notes. Edit opens the full
@@ -136,10 +138,11 @@ When the goals are drafted, present them and say the plan is final. Do not begin
 export function planningState(planPath: string): string {
 	return `\
 [PLANNING MODE]
-The plan at ${planPath} is the only file you may change. Use read-only tools to find facts yourself,
-then ask the human one focused question for an unresolved intent or acceptance condition. Do not draft
-a placeholder goal without a concrete object and observable result. Do not execute work, mark a goal
-[/] or [x], or sign off a goal. The plan is not approved until the human selects Ready.`;
+The plan at ${planPath} is the only file you may change. Use read-only repository tools and web search
+to find facts. Ask the human to confirm unresolved interpretation, outcome, task, scope, or a choice
+that needs their approval. Do not draft a placeholder goal without a concrete object, observable
+result, settled scope, and required approval. Do not execute work, mark a goal [/] or [x], or sign off
+a goal. The plan is not approved until the human selects Ready.`;
 }
 
 export function reminder(foldedPlan: string, planRel: string): string {

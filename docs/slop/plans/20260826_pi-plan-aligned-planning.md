@@ -29,12 +29,13 @@ Pi-goals will use pi-plan's small phase model. The UI, tool gate, and agent cont
   - subtle failure mode: a review choice queues an unrequested agent turn or hides the plan below the dialog.
   - discriminator: flow tests show plan before the menu and distinguish all four actions.
   - evidence: [goals-flow.test.ts](../../../test/goals-flow.test.ts) shows plan before the menu and isolates Ready as the work handoff; [verification](../audit/20260826_pi-plan-aligned-planning.md) records `25 passed`. Pending human Pi TUI check.
-- [x] goal: Planning turns an unclear objective into a judgeable outcome
-  - [x] Require repository inspection for discoverable facts, then one focused human question for an unresolved outcome or acceptance condition.
+- [x] goal: Planning resolves facts, interpretation, and approval before overnight work
+  - [x] Require repository inspection and web search for discoverable facts.
+  - [x] Require human confirmation for the agent's interpretation, unresolved task or outcome, scope, and decisions needing later approval.
   - [x] Ban placeholder goals such as "work out the thing" before the plan review menu.
-  - subtle failure mode: the plan has a formal discriminator but its goal still has no object or observable result.
-  - discriminator: [prompts.test.ts](../../../test/prompts.test.ts) locks the inspect-or-ask rule and the concrete-goal rule in the model prompt.
-  - evidence: [prompts.ts](../../../src/prompts.ts) requires a goal object plus observable result, and [prompts.test.ts](../../../test/prompts.test.ts) asserts that wording. [verification](../audit/20260826_pi-plan-aligned-planning.md) records `29 passed`.
+  - subtle failure mode: the plan has a formal discriminator but silently chooses an editorial direction or other human decision.
+  - discriminator: [prompts.test.ts](../../../test/prompts.test.ts) locks the research, clarification, approval, and concrete-goal rules in the model prompt.
+  - evidence: [prompts.ts](../../../src/prompts.ts) requires research, human confirmation, and approval before Ready. [prompts.test.ts](../../../test/prompts.test.ts) checks those requirements. [verification](../audit/20260826_pi-plan-aligned-planning.md) records `29 passed`.
 - [x] goal: Refine waits for text in Pi's real dialog protocol
   - [x] Run Pi in RPC mode against a local no-cost model.
   - [x] Select Refine, observe the editor request, then submit text and observe the revision turn.
