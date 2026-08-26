@@ -5,7 +5,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import piGoalsExtension from "../src/index.js";
 
-function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = []) {
+function setup(
+	selectChoices: Array<string | undefined>,
+	editorChoices: Array<string | undefined> = [],
+	editPlan?: () => Promise<string | undefined>,
+) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-flow-"));
 	const commands = new Map<string, any>();
 	const hooks = new Map<string, any>();
@@ -28,7 +32,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 			},
 			editor: async () => {
 				events.push("editor");
-				return editorChoices.shift();
+				return editPlan ? editPlan() : editorChoices.shift();
 			},
 		},
 	};
@@ -88,6 +92,29 @@ describe("/goals draft flow", () => {
 		}
 	});
 
+	it("waits for Refine notes before starting a revision turn", async () => {
+		let submitNotes: (notes: string) => void;
+		const flow = setup(["Refine"], [], () => new Promise((resolve) => {
+			submitNotes = resolve;
+		}));
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make this specific\n");
+
+			const review = flow.hooks.get("agent_settled")({}, flow.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(flow.events).toEqual(["display", "select", "editor"]);
+			expect(flow.messages.filter((message) => !message.display)).toHaveLength(1);
+
+			submitNotes!("Name the output artifact.");
+			await review;
+			expect(flow.messages.at(-1)?.content).toContain("Revise the plan at");
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("starts work only when the human chooses Ready", async () => {
 		const flow = setup(["Ready"]);
 		try {
@@ -140,6 +167,7 @@ describe("/goals draft flow", () => {
 			const writePlan = await flow.hooks.get("tool_call")({ toolName: "write", input: { path: planPath } }, flow.ctx);
 			const writeCode = await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "README.md" } }, flow.ctx);
 			const readShell = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "pwd && ls && git log" } }, flow.ctx);
+			const changeDirectoryThenRead = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "cd . && ls -la" } }, flow.ctx);
 			const pipeShell = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "ls | head" } }, flow.ctx);
 			const pythonWrite = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "python -c \"open('README.md', 'w')\"" } }, flow.ctx);
 			const signoff = await flow.tools.get("CompleteGoal").execute("", { goal: "work" }, undefined, undefined, flow.ctx);
@@ -149,6 +177,7 @@ describe("/goals draft flow", () => {
 			expect(writePlan).toBeUndefined();
 			expect(writeCode?.block).toBe(true);
 			expect(readShell).toBeUndefined();
+			expect(changeDirectoryThenRead).toBeUndefined();
 			expect(pipeShell?.block).toBe(true);
 			expect(pythonWrite?.block).toBe(true);
 			expect(signoff.isError).toBe(true);

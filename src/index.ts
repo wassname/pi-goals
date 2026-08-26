@@ -427,7 +427,7 @@ function result(text: string, isError = false) {
 
 function isPlanningReadOnlyCommand(command: string): boolean {
 	if (/[|>]/.test(command)) return false;
-	return command.split(/&&|;/).every((part) => /^(?:pwd|ls\b|git\s+(?:status|log|diff|show|branch)\b|rg\b|grep\b|find\b|head\b|tail\b|wc\b|stat\b|test\b)\b/.test(part.trim()));
+	return command.split(/&&|;/).every((part) => /^(?:cd\b|pwd|ls\b|git\s+(?:status|log|diff|show|branch)\b|rg\b|grep\b|find\b|head\b|tail\b|wc\b|stat\b|test\b)\b/.test(part.trim()));
 }
 
 /** Local time, not UTC: agents freehand-stamp their manual ## Log lines from the local clock they
