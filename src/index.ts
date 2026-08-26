@@ -284,11 +284,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// PI: After a plan-mode turn, print the full plan and offer Ready. The plan
-	// is printed because "Ready?" over an unread file is not a review: the only other copy is inside
-	// a collapsed edit tool call. Reprinted after an $EDITOR pass only if the text changed.
-	// The human then says go, edits it, or keeps talking to revise it (menu shape borrowed from pi-plan).
-	pi.on("agent_end", async (_event, ctx) => {
+	// PI: After Pi settles, print the full plan and offer Ready. agent_end is still streaming, so a
+	// message sent there queues behind the menu instead of being reviewable first.
+	pi.on("agent_settled", async (_event, ctx) => {
 		if (!state.isPlanMode || !ctx.hasUI) return;
 		if (state.skipReadyMenu) {
 			state = { ...state, skipReadyMenu: false };

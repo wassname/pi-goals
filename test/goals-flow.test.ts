@@ -56,11 +56,11 @@ describe("/goals draft flow", () => {
 			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
 			writeFileSync(v1, plan);
 
-			await flow.hooks.get("agent_end")({}, flow.ctx);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			expect(flow.events).toEqual(["display", "select"]);
 			expect(flow.messages.at(-1)?.content).toContain("Ask the human the single most useful question");
 			expect(flow.messages.find((message) => message.display)?.content).toBe(plan);
-			await flow.hooks.get("agent_end")({}, flow.ctx);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			expect(flow.events).toEqual(["display", "select"]);
 			await flow.hooks.get("input")({ text: "Keep two columns.\nDo not add a filter.", source: "interactive" }, flow.ctx);
 			const interviewedPlan = readFileSync(v1, "utf-8");
