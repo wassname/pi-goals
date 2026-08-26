@@ -37,16 +37,17 @@
  * All model-facing text lives in prompts.ts, in flow order.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { completeGoalDescription, completeGoalParamDescription, grillMe, judgeSystem, judgeUser, planDrafting, reminder, resync } from "./prompts.js";
+import { completeGoalDescription, completeGoalParamDescription, judgeSystem, judgeUser, planDrafting, planningState, reminder, resync } from "./prompts.js";
 
 const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
+const PLANNING_CONTEXT = "pi-goals-planning-context";
 const PLAN_DIR = ".pi/plan";
 // For static text (the /goals description) where there is no ctx to resolve the session id.
 const PLAN_SHAPE = `${PLAN_DIR}/<session_id>-vN.md`;
@@ -112,16 +113,18 @@ export function nextPlanVersion(planNames: string[], sessionId: string): number 
 	return Math.max(0, ...versions) + 1;
 }
 
+type Phase = "planning" | "working" | null;
+
 interface PlanState {
-	isPlanMode: boolean;
+	phase: Phase;
 	/** Optional model ref for the sign-off judge; unset => current session model, else pi's default. */
 	judgeModel: string | null;
 	planVersion: number | null;
-	skipReadyMenu: boolean;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
-	let state: PlanState = { isPlanMode: false, judgeModel: null, planVersion: null, skipReadyMenu: false };
+	let state: PlanState = { phase: null, judgeModel: null, planVersion: null };
+	let planningContextPending = false;
 	// Reminder cadence (pi-tasks style): the plan is re-sent only after it has gone untouched for
 	// STALE_TURNS turns, and editing it resets the clock -- an agent that is maintaining the file
 	// doesn't need to be told to. In-memory, like pi-tasks: a new session starts fresh.
@@ -149,7 +152,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
-		if (state.isPlanMode) {
+		if (state.phase === "planning") {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
 			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
 			return;
@@ -189,7 +192,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				}
 				const currentPlan = planRel(ctx);
 				rmSync(planPath(ctx), { force: true });
-				state = { ...state, isPlanMode: false, planVersion: null, skipReadyMenu: false };
+				state = { ...state, phase: null, planVersion: null };
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify(`Deleted ${currentPlan}.`, "info");
@@ -202,7 +205,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the session model", "info");
 				return;
 			}
-			state = { ...state, isPlanMode: true, planVersion: nextVersion(ctx), skipReadyMenu: false };
+			state = { ...state, phase: "planning", planVersion: nextVersion(ctx) };
+			planningContextPending = true;
+			resyncReason = null;
 			writePlan(ctx, "");
 			persist();
 			updateWidget(ctx);
@@ -225,10 +230,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			resyncReason = null;
 			return why;
 		};
-		if (state.isPlanMode) {
-			const why = drainResync();
-			return why ? `<system-reminder>\n${why} You are still in plan mode.\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.\n</system-reminder>` : null;
-		}
+		if (state.phase === "planning") return null;
 		if (!plan.trim()) return null;
 		const why = drainResync();
 		if (why) return resync(plan, planRel(ctx), why);
@@ -243,18 +245,30 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return reminder(foldPlan(plan), planRel(ctx));
 	}
 
-	// The one injection point: a transient user message on this LLM call only, never persisted. So
-	// there are no stale copies to strip, and an untouched turn costs nothing.
+	// The phase snapshot enters context only when planning starts or context was lost.
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (state.phase !== "planning" || !planningContextPending) return;
+		planningContextPending = false;
+		return { message: { customType: PLANNING_CONTEXT, content: planningState(planPath(ctx)), display: false } };
+	});
+
+	// PI: Working turns never see an obsolete planning snapshot. Auto-compaction retries skip
+	// before_agent_start, so context restores the planning snapshot exactly once in that path.
 	pi.on("context", async (event, ctx) => {
+		const messages = state.phase === "planning" ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
+		if (state.phase === "planning" && planningContextPending) {
+			planningContextPending = false;
+			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: planningState(planPath(ctx)) }], timestamp: Date.now() }] };
+		}
 		const text = dueInjection(ctx, readPlan(ctx));
-		if (!text) return;
+		if (!text) return messages === event.messages ? undefined : { messages };
 		turnsStale = 0;
-		return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
+		return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
 	});
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
-		if (state.isPlanMode && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
+		if (state.phase === "planning" && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
 	});
 
 	// The staleness clock: editing the plan resets it, the way a task tool call resets pi-tasks'.
@@ -269,77 +283,66 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		updateWidget(ctx);
 	});
 
-	// A compaction is exactly when the settled context is gone, so push the whole file back once.
+	// A compaction loses context, so restore either the planning snapshot or the working plan once.
 	pi.on("session_compact", async () => {
-		resyncReason = "The session was just compacted.";
+		if (state.phase === "planning") planningContextPending = true;
+		else resyncReason = "The session was just compacted.";
 	});
 
-	// Plan mode gate: block edit/write except on the plan file itself. bash stays open (guide, not gate).
+	// PI: Block project changes while planning, but leave ordinary inspection available.
 	pi.on("tool_call", async (event, ctx) => {
-		if (!state.isPlanMode) return;
+		if (state.phase !== "planning") return;
 		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
 			const target = (event.input as { path?: string }).path;
 			if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
-			return { block: true, reason: `Plan mode is read-only: only ${planRel(ctx)} may be written while drafting. Agree the goals first, then choose Ready.` };
+			return { block: true, reason: `Planning is read-only: only ${planRel(ctx)} may be written. Agree the plan, then choose Ready.` };
+		}
+		if (event.toolName === "bash" && !isPlanningReadOnlyCommand(String((event.input as { command?: string }).command))) {
+			return { block: true, reason: "Planning is read-only: inspect facts without writes or pipes, then put the change in the plan." };
 		}
 	});
 
-	// PI: After Pi settles, print the full plan and offer Ready. agent_end is still streaming, so a
-	// message sent there queues behind the menu instead of being reviewable first.
+	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!state.isPlanMode || !ctx.hasUI) return;
-		if (state.skipReadyMenu) {
-			state = { ...state, skipReadyMenu: false };
-			persist();
-			return;
-		}
+		if (state.phase !== "planning" || !ctx.hasUI) return;
 		let printed = "";
-		while (scanGoals(readPlan(ctx)).length > 0) {
+		while (true) {
 			const plan = readPlan(ctx);
+			if (scanGoals(plan).length === 0) {
+				if (plan.trim()) ctx.ui.notify(`The plan has no goal line. Revise ${planRel(ctx)} to add one.`, "warning");
+				return;
+			}
 			if (plan !== printed) {
 				printed = plan;
 				pi.sendMessage({ customType: "plan", content: plan, display: true });
 			}
-			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}. Ready?`, [
-				"Ready — start working the plan",
-				"Ready + compact — the same, but summarize the planning chatter away first",
-				"Grill me — ask one question that tests your plan understanding",
-				"Open in $EDITOR — edit it myself",
-				"Keep planning (reply to revise)",
-			]);
-			if (choice?.startsWith("Open")) {
-				spawnSync(process.env.EDITOR || process.env.VISUAL || "vi", [planPath(ctx)], { stdio: "inherit" });
+			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Refine", "Edit", "Cancel"]);
+			if (choice === "Refine") {
+				const notes = await ctx.ui.editor("What should change about the plan?", "");
+				if (!notes?.trim()) continue;
+				writePlan(ctx, appendInterview(plan, notes));
+				planningContextPending = true;
+				pi.sendUserMessage(`Revise the plan at ${planPath(ctx)} using these human notes:\n\n${notes}\n\nKeep the same goal structure.`, { deliverAs: "followUp" });
+				return;
+			}
+			if (choice === "Edit") {
+				const edited = await ctx.ui.editor("Edit the plan", plan);
+				if (edited !== undefined && edited !== plan) writePlan(ctx, edited);
 				continue;
 			}
-			if (choice?.startsWith("Grill me")) {
-				state = { ...state, skipReadyMenu: true };
+			if (choice === "Cancel") {
+				rmSync(planPath(ctx), { force: true });
+				state = { ...state, phase: null, planVersion: null };
 				persist();
-				pi.sendUserMessage(grillMe, { deliverAs: "followUp" });
+				updateWidget(ctx);
+				ctx.ui.notify("Plan discarded.", "info");
 				return;
 			}
-			if (!choice?.startsWith("Ready")) return;
-			// Plan mode goes off BEFORE the compaction, not in its callback: a message typed while
-			// the summary runs is then handled in work mode. Left on, it would hit blocked tools, a
-			// "still in plan mode" injection, and a second Ready menu at agent_end.
-			state = { ...state, isPlanMode: false };
+			if (choice !== "Ready") return;
+			state = { ...state, phase: "working" };
 			persist();
 			updateWidget(ctx);
-			const work = `Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`;
-			if (!choice.includes("compact")) {
-				pi.sendUserMessage(work, { deliverAs: "followUp" });
-				return;
-			}
-			// Compaction fires session_compact, so the whole plan file comes back on the next call --
-			// the exploration is summarized away, the agreed goals are not. Sent from onComplete so
-			// the work turn starts after the summary exists; a failed compaction still starts work.
-			ctx.compact({
-				customInstructions: `Planning is finished. Keep what ${planRel(ctx)} depends on: the objective, the human's constraints, and what was ruled out and why. The read-only exploration that produced them can go.`,
-				onComplete: () => pi.sendUserMessage(work, { deliverAs: "followUp" }),
-				onError: (e) => {
-					ctx.ui.notify(`Compaction failed (${e.message}); starting work anyway.`, "warning");
-					pi.sendUserMessage(work, { deliverAs: "followUp" });
-				},
-			});
+			pi.sendUserMessage(`Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`, { deliverAs: "followUp" });
 			return;
 		}
 	});
@@ -350,13 +353,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
 			.pop() as { data?: PlanState } | undefined;
 		state = {
-			isPlanMode: last?.data?.isPlanMode ?? false,
+			phase: last?.data?.phase ?? null,
 			judgeModel: last?.data?.judgeModel ?? null,
 			planVersion: last?.data?.planVersion ?? null,
-			skipReadyMenu: last?.data?.skipReadyMenu ?? false,
 		};
 		lastSeenPlan = readPlan(ctx);
-		resyncReason = "New session.";
+		planningContextPending = state.phase === "planning";
+		resyncReason = state.phase === "working" ? "New session." : null;
 		updateWidget(ctx);
 	});
 
@@ -370,6 +373,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
+			if (state.phase === "planning") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
 
@@ -419,6 +423,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 function result(text: string, isError = false) {
 	return { content: [{ type: "text" as const, text }], details: {}, isError };
+}
+
+function isPlanningReadOnlyCommand(command: string): boolean {
+	if (/[|>]/.test(command)) return false;
+	return command.split(/&&|;/).every((part) => /^(?:pwd|ls\b|git\s+(?:status|log|diff|show|branch)\b|rg\b|grep\b|find\b|head\b|tail\b|wc\b|stat\b|test\b)\b/.test(part.trim()));
 }
 
 /** Local time, not UTC: agents freehand-stamp their manual ## Log lines from the local clock they

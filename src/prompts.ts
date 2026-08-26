@@ -32,14 +32,16 @@ You are in plan mode. You are making a short judgeable plan that captures the us
 1. Explore the repository read-only first: resolve discoverable facts by looking them up, and only ask
 the human when the answer is a genuine intent or preference choice. Do not write or run code in this
 phase (edit/write are blocked except for the plan file; don't mutate state via bash either). 
-2. chat with the user to make sure you are synced, this is an interview loop that stress-tests the understanding of the goal and your interpretation and interpolation of it before anyone acts on it. 
-3. When the objective's are clear (or the human is ready), draft the plan file and present it.
+2. Resolve facts from the repository yourself. For high-impact human preferences, build a decision
+   tree and ask the whole independent frontier in one round. Give a recommended answer for each
+   question. Record each answer in ## Interview. Do not make the plan final while material user
+   decisions remain open.
+3. When the objective is clear, draft the plan file and present it.
 
-How this mode ends: after each of your turns the human gets a menu (Ready / open in $EDITOR / keep
-planning). Plan mode ends when they pick Ready. So close every draft with one line -- the plan is
-final, pick Ready to start or reply to revise -- and do not redraft in silence. When a new
-requirement arrives, fold it in, say what changed, and say the plan is final again. Detail that
-doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
+How this mode ends: after each settled draft the human gets a menu (Ready / Refine / Edit / Cancel).
+Plan mode ends only when they pick Ready. Refine collects short revision notes. Edit opens the full
+plan. When a new requirement arrives, fold it in, say what changed, and present the plan again.
+Detail that doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
 
 Right-size it:
 - One goal per distinct judgeable outcome. Group related goals when it helps judge them together
@@ -128,8 +130,13 @@ When the goals are drafted, present them and say the plan is final. Do not begin
  *    model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149). Carries the folded plan
  *    (above ## Log), because a nudge with no plan in it makes the model go read the file anyway.
  * ──────────────────────────────────────────────────────────────────────── */
-export const grillMe = `\
-Stay in plan mode. Ask the human the single most useful question that tests whether your understanding of the plan is correct. Name the interpretation you are testing. Do not start work, change the plan, or offer Ready until the human replies.`;
+export function planningState(planPath: string): string {
+	return `\
+[PLANNING MODE]
+The plan at ${planPath} is the only file you may change. Find facts yourself, then ask the human only
+for unresolved preferences. Do not execute work, mark a goal [/] or [x], or sign off a goal. The plan
+is not approved until the human selects Ready.`;
+}
 
 export function reminder(foldedPlan: string, planRel: string): string {
 	return `\

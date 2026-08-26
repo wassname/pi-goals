@@ -5,16 +5,18 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import piGoalsExtension from "../src/index.js";
 
-function setup(selectChoices: Array<string | undefined>) {
+function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = []) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-flow-"));
 	const commands = new Map<string, any>();
 	const hooks = new Map<string, any>();
+	const tools = new Map<string, any>();
+	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
 	const events: string[] = [];
 	const messages: Array<{ content: string; display?: boolean }> = [];
 	const ctx = {
 		cwd,
 		hasUI: true,
-		sessionManager: { getSessionId: () => "session-a", getEntries: () => [] },
+		sessionManager: { getSessionId: () => "session-a", getEntries: () => entries },
 		ui: {
 			theme: { fg: (_kind: string, text: string) => text },
 			setStatus: () => {},
@@ -24,13 +26,17 @@ function setup(selectChoices: Array<string | undefined>) {
 				events.push("select");
 				return selectChoices.shift();
 			},
+			editor: async () => {
+				events.push("editor");
+				return editorChoices.shift();
+			},
 		},
 	};
 	const pi = {
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (name: string, handler: any) => hooks.set(name, handler),
-		appendEntry: () => {},
-		registerTool: () => {},
+		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		registerTool: (tool: any) => tools.set(tool.name, tool),
 		sendMessage: (message: { content: string; display?: boolean }) => {
 			events.push("display");
 			messages.push(message);
@@ -38,12 +44,12 @@ function setup(selectChoices: Array<string | undefined>) {
 		sendUserMessage: (message: string) => messages.push({ content: message }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, events, hooks, messages };
+	return { commands, ctx, cwd, entries, events, hooks, messages, tools };
 }
 
 describe("/goals draft flow", () => {
-	it("creates a new version, preserves the prior draft, displays the full plan before Ready, and keeps Grill me in plan mode", async () => {
-		const flow = setup(["Grill me — ask one question that tests your plan understanding"]);
+	it("preserves prior drafts, displays the plan before Refine, and records editor notes", async () => {
+		const flow = setup(["Refine"], ["Keep two columns.\nDo not add a filter."]);
 		try {
 			const legacy = join(flow.cwd, ".pi/plan/session-a.md");
 			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
@@ -55,16 +61,17 @@ describe("/goals draft flow", () => {
 			const plan = "# First plan\n\n## Goals\n\n1. [ ] goal: preserve this\n\n## Appendix (context, not approved)\nold context\n";
 			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
 			writeFileSync(v1, plan);
+			await flow.hooks.get("input")({ text: "The result must preserve column order.", source: "interactive" }, flow.ctx);
 
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.events).toEqual(["display", "select"]);
-			expect(flow.messages.at(-1)?.content).toContain("Ask the human the single most useful question");
-			expect(flow.messages.find((message) => message.display)?.content).toBe(plan);
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.events).toEqual(["display", "select"]);
-			await flow.hooks.get("input")({ text: "Keep two columns.\nDo not add a filter.", source: "interactive" }, flow.ctx);
+			expect(flow.events).toEqual(["display", "select", "editor"]);
+			expect(flow.messages.at(-1)?.content).toContain("Revise the plan at");
+			expect(flow.messages.find((message) => message.display)?.content).toContain("goal: preserve this");
 			const interviewedPlan = readFileSync(v1, "utf-8");
-			expect(interviewedPlan).toMatch(/## Interview\n\n### .+\n\n> Keep two columns\.\n> Do not add a filter\./);
+			expect(interviewedPlan).toContain("> The result must preserve column order.");
+			expect(interviewedPlan).toMatch(/## Interview\n\n### .+\n\n> The result must preserve column order\.[\s\S]+> Keep two columns\.\n> Do not add a filter\./);
+			const refineSnapshot = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+			expect(refineSnapshot.message.content).toContain("[PLANNING MODE]");
 			const blocked = await flow.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, flow.ctx);
 			expect(blocked?.block).toBe(true);
 
@@ -81,17 +88,71 @@ describe("/goals draft flow", () => {
 		}
 	});
 
-	it("leaves Pi idle when the human chooses Keep planning", async () => {
-		const flow = setup(["Keep planning (reply to revise)"]);
+	it("starts work only when the human chooses Ready", async () => {
+		const flow = setup(["Ready"]);
 		try {
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: revise this\n");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: work on this\n");
 
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 
 			expect(flow.events).toEqual(["display", "select"]);
+			expect(flow.messages.filter((message) => !message.display)).toHaveLength(2);
+			expect(flow.messages.at(-1)?.content).toContain("Work the goals");
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			expect(await flow.hooks.get("before_agent_start")({}, flow.ctx)).toBeUndefined();
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("edits a plan in Pi and cancels without starting work", async () => {
+		const original = "# Plan\n\n## Goals\n\n1. [ ] goal: original\n";
+		const edited = "# Plan\n\n## Goals\n\n1. [ ] goal: edited\n";
+		const flow = setup(["Edit", "Cancel"], [edited]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, original);
+
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+
+			expect(flow.events).toEqual(["display", "select", "editor", "display", "select"]);
+			expect(() => readFileSync(planPath, "utf-8")).toThrow();
 			expect(flow.messages.filter((message) => !message.display)).toHaveLength(1);
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("gives the agent a planning snapshot and blocks work routes", async () => {
+		const flow = setup([]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			const snapshot = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+			expect(snapshot.message.content).toContain("[PLANNING MODE]");
+			expect(snapshot.message.content).toContain(planPath);
+
+			const writePlan = await flow.hooks.get("tool_call")({ toolName: "write", input: { path: planPath } }, flow.ctx);
+			const writeCode = await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "README.md" } }, flow.ctx);
+			const readShell = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "pwd && ls && git log" } }, flow.ctx);
+			const pipeShell = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "ls | head" } }, flow.ctx);
+			const pythonWrite = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "python -c \"open('README.md', 'w')\"" } }, flow.ctx);
+			const signoff = await flow.tools.get("CompleteGoal").execute("", { goal: "work" }, undefined, undefined, flow.ctx);
+			await flow.hooks.get("session_compact")({}, flow.ctx);
+			const compacted = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
+
+			expect(writePlan).toBeUndefined();
+			expect(writeCode?.block).toBe(true);
+			expect(readShell).toBeUndefined();
+			expect(pipeShell?.block).toBe(true);
+			expect(pythonWrite?.block).toBe(true);
+			expect(signoff.isError).toBe(true);
+			expect(compacted.messages.at(-1).content[0].text).toContain("[PLANNING MODE]");
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
