@@ -34,7 +34,13 @@ Pi-goals will use pi-plan's small phase model. The UI, tool gate, and agent cont
   - [x] Ban placeholder goals such as "work out the thing" before the plan review menu.
   - subtle failure mode: the plan has a formal discriminator but its goal still has no object or observable result.
   - discriminator: [prompts.test.ts](../../../test/prompts.test.ts) locks the inspect-or-ask rule and the concrete-goal rule in the model prompt.
-  - evidence: [prompts.ts](../../../src/prompts.ts) requires a goal object plus observable result, and [prompts.test.ts](../../../test/prompts.test.ts) asserts that wording. [verification](../audit/20260826_pi-plan-aligned-planning.md) records `28 passed`.
+  - evidence: [prompts.ts](../../../src/prompts.ts) requires a goal object plus observable result, and [prompts.test.ts](../../../test/prompts.test.ts) asserts that wording. [verification](../audit/20260826_pi-plan-aligned-planning.md) records `29 passed`.
+- [x] goal: Refine waits for text in Pi's real dialog protocol
+  - [x] Run Pi in RPC mode against a local no-cost model.
+  - [x] Select Refine, observe the editor request, then submit text and observe the revision turn.
+  - subtle failure mode: a mocked editor hides a Pi RPC ordering defect, so Refine starts a turn before the human can type.
+  - discriminator: [rpc-review.test.ts](../../../test/rpc-review.test.ts) uses Pi's `extension_ui_request` and `extension_ui_response` protocol and observes two model requests before editor input, then the third revision request after it.
+  - evidence: [rpc-review.test.ts](../../../test/rpc-review.test.ts) starts the installed Pi executable plus [offline-model.ts](../../../test/fixtures/offline-model.ts), with no credential or network dependency. [verification](../audit/20260826_pi-plan-aligned-planning.md) records its pass.
 
 ## UAT / Verification
 

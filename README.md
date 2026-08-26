@@ -84,7 +84,7 @@ All model-facing text lives in [`src/prompts.ts`](src/prompts.ts), in flow order
 
 ```bash
 pi -e ./src/index.ts        # load locally
-npm test                    # vitest: judge argv invariants, appendLog, decideSignOff fail-forward
+npm test                    # vitest: unit checks plus Pi RPC review flow with a local offline model
 npm run typecheck
 npm run lint
 ```
