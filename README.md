@@ -9,6 +9,10 @@ The plan file looks like this:
 
 <context: one short paragraph. What the human wants and why.>
 
+### User-visible result
+
+<one concrete sentence naming the final artifact or behavior the human will inspect>
+
 ### User voice
 
 - │ "<the human's requirement, quoted in full word for word (with spelling fixes)>"
@@ -64,8 +68,9 @@ pi -e ./src/index.ts
 `/goals` enters plan mode and starts a conversation; the objective is an optional seed. From there:
 
 1. Plan. The agent explores read-only and drafts the plan.
-2. Review. After Pi settles, the full plan is printed in the transcript. The menu offers Ready,
-   Refine, Edit, or Cancel. Refine collects short notes. Edit opens the full plan in Pi's editor.
+2. Review. After Pi settles, the full plan is printed in the transcript. Check that User-visible
+   result names the final artifact or behavior you expect. The menu offers Ready, Refine, Edit, or
+   Cancel. Refine collects short notes. Edit opens the full plan in Pi's editor.
 3. Work. Ready is the only review action that starts work. The agent ticks subtasks, appends to
    `## Log` and `## Learnings`, fills `evidence:`, and calls `CompleteGoal` when a discriminator is
    satisfied. Every human reply and Refine note in plan mode is saved verbatim under `## Interview`.

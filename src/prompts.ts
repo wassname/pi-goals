@@ -43,7 +43,11 @@ while discovering the right plan. Each question must be short and self-contained
 context, use the human's language and ASD-STE100
 Simple Technical English, and give a recommended answer. Record each answer in ## Interview. Do not
 make the plan final while material user decisions remain open.
-4. When every goal has an object, observable result, settled scope, and required approval, draft the
+4. State the user-visible result before the goals: one concrete sentence naming what the human will
+inspect when this plan is done. Take it from the original request, not from your implementation plan.
+Every requested artifact and action must survive into this sentence. An agent-inferred constraint may
+not replace, defer, or contradict it; ask the human if an inference would change the result.
+5. When every goal has an object, observable result, settled scope, and required approval, draft the
 plan file and present it. It should be safe to work overnight and present the requested outcome.
 
 How this mode ends: after each settled draft the human gets a menu (Ready / Refine / Edit / Cancel).
@@ -73,6 +77,10 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
 # <short plan title>
 
 <context: one short paragraph. What the human wants and why.>
+
+## User-visible result
+
+<one concrete sentence naming the final artifact or behavior the human will inspect>
 
 ## User voice
 
@@ -117,9 +125,11 @@ Conventions:
 - evidence stays empty at planning; you fill it at sign-off and a fresh read-only judge checks it.
   Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
   usually gitignored, so files there prove things only at judge time, not in history.
+- User-visible result: restate the original deliverable, not the proposed implementation. Every goal
+  must contribute to it. Future work may not defer any artifact or action named there.
 - User voice: quote the human word for word, one line per requirement, as they say it. Never
   paraphrase there -- a paraphrase drifts, and then the goals churn on the next reply. It is exempt
-  from the working-set line limit.
+  from the working-set line limit. Never put an agent inference in User voice.
 - Interview: every human reply in plan mode is stored here verbatim as a dated blockquote. It is
   durable memory below the fold, not a substitute for ## User voice.
 - Rejected options stay visible: ~~struck through~~ with who rejected them and why, so nobody
@@ -165,6 +175,8 @@ Keep it current as you work, with your normal edit tool:
   Don't tick a goal [x] before CompleteGoal accepts; the sign-off log line is the audit trail.
 - if the working set has grown long, prune finished goals (their evidence lives in git history and
   ## Log) and move settled detail down to ## Appendix, which is unlimited
+- the human's latest message outranks this plan. If it corrects the deliverable or scope, amend the
+  user-visible result, user voice, and affected goals before continuing; don't defend the old plan
 - otherwise keep working toward the active goal; don't stop to ask unless genuinely blocked
 </system-reminder>`;
 }
@@ -177,8 +189,9 @@ Keep it current as you work, with your normal edit tool:
 export function resync(plan: string, planRel: string, why: string): string {
 	return `\
 <system-reminder>
-${why} This is the whole plan file (${planRel}), appendix included, so you don't re-litigate what
-was already settled. Keep working the active goal; edit the file directly as you go.
+${why} This is the whole plan file (${planRel}), appendix included. Keep working the active goal;
+edit the file directly as you go. The human's latest message outranks the plan: if it corrects the
+deliverable or scope, amend the plan rather than preserving an obsolete decision.
 
 ${plan}
 </system-reminder>`;
@@ -196,7 +209,9 @@ export const completeGoalDescription =
 	"the goal names a verify: command, run it yourself first and save its output to a file cited in " +
 	"the evidence: the judge cannot execute anything and will reject a claimed pass with no saved " +
 	"output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
-	"Then call this with the goal's text (the line after 'goal:'; small wording drift is fine). A " +
+	"Check that the claimed result uses the artifact and outcome named in User-visible result and does " +
+	"not substitute an agent-inferred deliverable. Then call this with the goal's text (the line after " +
+	"'goal:'; small wording drift is fine). A " +
 	"fresh strictly-read-only judge inspects the LIVE WORKING TREE (uncommitted changes included; " +
 	"committing first is for durability, not visibility) and returns accept or reject with what's " +
 	"missing. On accept (or if the judge itself failed), a sign-off line is appended to ## Log " +
@@ -216,6 +231,8 @@ You are a strictly read-only reviewer signing off a coding goal. You cannot exec
 by reading (read/grep/find/ls). Never re-run the work or its verify command -- it may be a 10-hour
 job; the agent must bring you its saved output. Your job is evidence discipline, checked in order:
 
+0. Task fidelity? Read User-visible result and User voice first. Reject if this goal contradicts,
+   replaces, or defers the requested artifact or outcome. Agent-inferred scope is not authority.
 1. Anything here? An empty or placeholder evidence: list -> reject: "there's nothing here -- fill
    the evidence and try again."
 2. Quoted and attributed? Each item needs a source (file path / command) plus a verbatim quote of
@@ -247,8 +264,8 @@ The working agent claims this goal is complete:
   goal: ${p.goal}
 
 Below is the full plan file (${p.planPath}). Find that goal in it (tolerate small wording drift; if
-you cannot find a matching goal at all, reject and say so). Read its discriminator, subtle failure
-modes, verify command, and evidence list from the file itself.
+you cannot find a matching goal at all, reject and say so). Read User-visible result and User voice
+first, then its discriminator, subtle failure modes, verify command, and evidence list.
 
 --- plan file ---
 ${p.plan}

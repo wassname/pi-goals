@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planDrafting, planningState } from "../src/prompts.js";
+import { judgeSystem, planDrafting, planningState, reminder, resync } from "../src/prompts.js";
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
@@ -16,5 +16,15 @@ describe("planning prompt", () => {
 		expect(planningState(".pi/plan/test.md")).toContain("web search\nwhen either can resolve a fact.");
 		expect(planningState(".pi/plan/test.md")).toContain("choice that needs their approval");
 		expect(planningState(".pi/plan/test.md")).toContain("self-contained round with relevant context and a recommendation");
+	});
+
+	it("anchors work and sign-off to the user-visible result", () => {
+		expect(planDrafting).toContain("## User-visible result");
+		expect(planDrafting).toContain("Take it from the original request, not from your implementation plan");
+		expect(planDrafting).toContain("Future work may not defer any artifact or action named there");
+		expect(reminder("plan", ".pi/plan/test.md")).toContain("latest message outranks this plan");
+		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
+		expect(judgeSystem).toContain("Task fidelity?");
+		expect(judgeSystem).toContain("Agent-inferred scope is not authority");
 	});
 });
