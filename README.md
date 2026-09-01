@@ -74,11 +74,14 @@ pi -e ./src/index.ts
 3. Work. Ready is the only review action that starts work. The agent ticks subtasks, appends to
    `## Log` and `## Learnings`, fills `evidence:`, and calls `CompleteGoal` when a discriminator is
    satisfied. Every human reply and Refine note in plan mode is saved verbatim under `## Interview`.
-   If it leaves the plan untouched for two turns, the working set is sent back with a short upkeep
+   After eight turns without a change above `## Log`, the working set is sent back with a short upkeep
    reminder.
 
-Other commands: `/goals --clear` deletes this session's active plan file; `/goals --judge <model-ref>`
-picks a sign-off judge model (default: your current session model, else pi's default). The `--` prefix
+Other commands: `/goals --clear` disconnects this session from its active plan, preserving the
+versioned file on disk; `/goals --auto [minutes|off]` continues active goals after the agent settles
+and then on that interval. It pauses after two automatic wakes with no working-plan change; `/goals
+--judge <model-ref>` picks a sign-off judge model (default: your current session model, else pi's
+default). The `--` prefix
 keeps ordinary objectives such as `judge model quality` from being parsed as commands.
 
 ## Prompts

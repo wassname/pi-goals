@@ -4,8 +4,8 @@
  * CompleteGoal.
  *
  * PI: Each /goals call makes a new plan version, `.pi/plan/<session_id>-vN.md`. The selected version
- * stays in session state across resume and compaction. Old drafts stay available but inert, so a new
- * conversation cannot silently edit them. The filename is the arm switch: a session that never ran
+ * stays in session state across resume and compaction. Old plans stay on disk but inert, so a new
+ * conversation cannot silently edit them. `/goals --clear` only disconnects this session; the filename is the arm switch: a session that never ran
  * /goals has no active plan, so the widget, injections, and CompleteGoal all stay silent.
  *
  * The v1 lesson: the parser existed so TypeScript could read the plan, but almost every reader is a
@@ -60,9 +60,12 @@ const JUDGE_TIMEOUT_MS = 600_000;
 // Plan mode is read-only by convention AND a light gate: edit/write are blocked (except the plan
 // file, the deliverable). bash stays open — the prompt says don't mutate; guide, not gate (spec D3).
 const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
-// Turns the plan may go untouched before it is re-sent. pi-tasks uses 4, or 2 while something is in
-// progress; here every goal is "in progress", so 2.
-const STALE_TURNS = 2;
+// A plan reminder is only useful after a substantial run of work that has not changed the working
+// set. Log and learning entries do not count as progress. Unlike pi-tasks, goals have no dedicated
+// progress tool, so this cadence repeats until the working set changes.
+const STALE_TURNS = 8;
+const AUTO_DEFAULT_INTERVAL_MS = 60 * 60 * 1_000;
+const AUTO_MAX_WAKES_WITHOUT_PROGRESS = 2;
 
 // A checkbox line beginning "goal:", for the widget and the "any goals open?" reminder condition.
 // Everything else reads the file as prose.
@@ -120,16 +123,23 @@ interface PlanState {
 	/** Optional model ref for the sign-off judge; unset => current session model, else pi's default. */
 	judgeModel: string | null;
 	planVersion: number | null;
+	/** User-enabled interval for continuing active goals after the agent settles. */
+	autoIntervalMs: number | null;
+	autoPaused: boolean;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
-	let state: PlanState = { phase: null, judgeModel: null, planVersion: null };
+	let state: PlanState = { phase: null, judgeModel: null, planVersion: null, autoIntervalMs: null, autoPaused: false };
 	let planningContextPending = false;
-	// Reminder cadence (pi-tasks style): the plan is re-sent only after it has gone untouched for
-	// STALE_TURNS turns, and editing it resets the clock -- an agent that is maintaining the file
-	// doesn't need to be told to. In-memory, like pi-tasks: a new session starts fresh.
+	// The reminder sees only the working set. A repeated Log line must not look like progress.
 	let turnsStale = 0;
-	let lastSeenPlan = "";
+	let lastSeenWorkingSet = "";
+	let autoTimer: ReturnType<typeof setTimeout> | null = null;
+	let autoWakeInFlight = false;
+	let autoWakesWithoutProgress = 0;
+	let autoLastWorkingSet = "";
+	let autoImmediateUsed = false;
+	let runStartedBackgroundWork = false;
 	// Set on session start and after a compaction; drained by the next LLM call, which then carries
 	// the WHOLE file (appendix included) instead of just the working set.
 	let resyncReason: string | null = "New session.";
@@ -151,6 +161,60 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		pi.appendEntry<PlanState>(STATE, state);
 	}
 
+	function clearAutoTimer(): void {
+		if (autoTimer !== null) clearTimeout(autoTimer);
+		autoTimer = null;
+	}
+
+	function activeGoals(ctx: ExtensionContext): boolean {
+		return scanGoals(readPlan(ctx)).some((goal) => goal.status === "active" || goal.status === "open");
+	}
+
+	function scheduleAutoContinue(ctx: ExtensionContext, delayMs = state.autoIntervalMs): void {
+		clearAutoTimer();
+		if (delayMs === null || state.phase !== "working" || state.autoIntervalMs === null || state.autoPaused || !activeGoals(ctx)) return;
+		autoTimer = setTimeout(() => {
+			autoTimer = null;
+			if (state.phase !== "working" || state.autoPaused || !ctx.isIdle() || !activeGoals(ctx)) return;
+			autoWakeInFlight = true;
+			pi.sendUserMessage(
+				`<system-reminder>Auto-continue is enabled by the human. Continue the active goal in ${planRel(ctx)}. Work from the open subtasks and observed artifacts. Keep the plan current, including useful Log entries. If you need a human decision, ask one direct question and leave the goal active.</system-reminder>`,
+				{ deliverAs: "followUp" },
+			);
+		}, delayMs);
+		autoTimer.unref();
+	}
+
+	function settleAuto(ctx: ExtensionContext): void {
+		if (state.phase !== "working" || state.autoIntervalMs === null || state.autoPaused || !activeGoals(ctx)) return;
+		const workingSet = foldPlan(readPlan(ctx));
+		const changed = workingSet !== autoLastWorkingSet;
+		if (changed) {
+			autoLastWorkingSet = workingSet;
+			autoWakesWithoutProgress = 0;
+			autoImmediateUsed = false;
+		}
+		if (autoWakeInFlight) {
+			autoWakeInFlight = false;
+			if (!changed) autoWakesWithoutProgress++;
+			if (autoWakesWithoutProgress >= AUTO_MAX_WAKES_WITHOUT_PROGRESS) {
+				state = { ...state, autoPaused: true };
+				persist();
+				updateWidget(ctx);
+				ctx.ui.notify("Goal auto-continue paused; waiting for user after two wakes without working-plan progress.", "warning");
+				return;
+			}
+			scheduleAutoContinue(ctx);
+			return;
+		}
+		if (!runStartedBackgroundWork && !autoImmediateUsed) {
+			autoImmediateUsed = true;
+			scheduleAutoContinue(ctx, 0);
+			return;
+		}
+		scheduleAutoContinue(ctx);
+	}
+
 	function updateWidget(ctx: ExtensionContext): void {
 		if (state.phase === "planning") {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
@@ -164,14 +228,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		const done = goals.filter((g) => g.status === "done").length;
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals`));
+		const auto = state.autoPaused ? " · waiting for user" : state.autoIntervalMs === null ? "" : ` · auto ${state.autoIntervalMs / 60_000}m`;
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${auto}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
 		// No path line: the session id makes it 47 chars, too long to be worth a widget row. The
 		// human opens the file from the Ready menu, and every injected reminder still names it.
 		const plan = readPlan(ctx);
-		const lines: string[] = [];
+		const lines: string[] = state.autoPaused ? [ctx.ui.theme.fg("warning", "⏸ waiting for user")] : [];
 		for (const g of goals.filter((g) => g.status === "active" || g.status === "open")) {
 			lines.push(`${mark[g.status]} ${g.subject}`);
 			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
@@ -182,20 +247,49 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- /goals: enter plan mode (or clear / set judge) --------------------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals --clear | /goals --judge <model>`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals --clear (disconnect) | /goals --auto [minutes|off] | /goals --judge <model>`,
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			if (arg === "--clear") {
 				if (state.planVersion === null) {
-					ctx.ui.notify("No active plan to delete.", "info");
+					ctx.ui.notify("No active plan to disconnect.", "info");
 					return;
 				}
 				const currentPlan = planRel(ctx);
-				rmSync(planPath(ctx), { force: true });
-				state = { ...state, phase: null, planVersion: null };
+				clearAutoTimer();
+				state = { ...state, phase: null, planVersion: null, autoIntervalMs: null, autoPaused: false };
 				persist();
 				updateWidget(ctx);
-				ctx.ui.notify(`Deleted ${currentPlan}.`, "info");
+				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
+				return;
+			}
+			if (arg === "--auto" || arg.startsWith("--auto ")) {
+				const value = arg.slice("--auto".length).trim();
+				if (value === "off") {
+					clearAutoTimer();
+					state = { ...state, autoIntervalMs: null, autoPaused: false };
+					persist();
+					updateWidget(ctx);
+					ctx.ui.notify("Goal auto-continue disabled.", "info");
+					return;
+				}
+				if (state.phase !== "working") {
+					ctx.ui.notify("Approve a plan with Ready before enabling auto-continue.", "warning");
+					return;
+				}
+				const minutes = value ? Number(value) : AUTO_DEFAULT_INTERVAL_MS / 60_000;
+				if (!Number.isInteger(minutes) || minutes < 1) {
+					ctx.ui.notify("Use /goals --auto [whole minutes], or /goals --auto off.", "warning");
+					return;
+				}
+				autoWakeInFlight = false;
+				autoWakesWithoutProgress = 0;
+				autoLastWorkingSet = foldPlan(readPlan(ctx));
+				state = { ...state, autoIntervalMs: minutes * 60_000, autoPaused: false };
+				persist();
+				updateWidget(ctx);
+				scheduleAutoContinue(ctx);
+				ctx.ui.notify(`Goal auto-continue enabled every ${minutes}m.`, "info");
 				return;
 			}
 			if (arg === "--judge" || arg.startsWith("--judge ")) {
@@ -268,29 +362,38 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
+		if (event.source !== "extension") {
+			clearAutoTimer();
+			autoImmediateUsed = false;
+			if (state.autoPaused) {
+				state = { ...state, autoPaused: false };
+				persist();
+				updateWidget(ctx);
+			}
+		}
 		if (state.phase === "planning" && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
 	});
 
-	// The staleness clock: editing the plan resets it, the way a task tool call resets pi-tasks'.
+	// The staleness clock sees only the working set. Log updates are durable evidence, not progress.
 	pi.on("turn_end", async (_event, ctx) => {
-		const plan = readPlan(ctx);
-		if (plan === lastSeenPlan) {
+		const workingSet = foldPlan(readPlan(ctx));
+		if (workingSet === lastSeenWorkingSet) {
 			turnsStale++;
 			return;
 		}
-		lastSeenPlan = plan;
+		lastSeenWorkingSet = workingSet;
 		turnsStale = 0;
 		updateWidget(ctx);
 	});
 
-	// A compaction loses context, so restore either the planning snapshot or the working plan once.
-	pi.on("session_compact", async () => {
-		if (state.phase === "planning") planningContextPending = true;
-		else resyncReason = "The session was just compacted.";
+	pi.on("agent_start", async () => {
+		runStartedBackgroundWork = false;
 	});
 
-	// PI: Block project changes while planning, but leave ordinary inspection available.
 	pi.on("tool_call", async (event, ctx) => {
+		if (state.phase === "working" && (event.toolName === "subagent" || (event.toolName === "process" && (event.input as { action?: string }).action === "start"))) {
+			runStartedBackgroundWork = true;
+		}
 		if (state.phase !== "planning") return;
 		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
 			const target = (event.input as { path?: string }).path;
@@ -302,8 +405,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
+	// A compaction loses context, so restore either the planning snapshot or the working plan once.
+	pi.on("session_compact", async () => {
+		if (state.phase === "planning") planningContextPending = true;
+		else resyncReason = "The session was just compacted.";
+	});
+
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
+		if (state.phase === "working") {
+			settleAuto(ctx);
+			return;
+		}
 		if (state.phase !== "planning" || !ctx.hasUI) return;
 		let printed = "";
 		while (true) {
@@ -356,11 +469,19 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			phase: last?.data?.phase ?? null,
 			judgeModel: last?.data?.judgeModel ?? null,
 			planVersion: last?.data?.planVersion ?? null,
+			autoIntervalMs: last?.data?.autoIntervalMs ?? null,
+			autoPaused: last?.data?.autoPaused ?? false,
 		};
-		lastSeenPlan = readPlan(ctx);
+		lastSeenWorkingSet = foldPlan(readPlan(ctx));
+		autoLastWorkingSet = lastSeenWorkingSet;
 		planningContextPending = state.phase === "planning";
 		resyncReason = state.phase === "working" ? "New session." : null;
 		updateWidget(ctx);
+		scheduleAutoContinue(ctx);
+	});
+
+	pi.on("session_shutdown", async () => {
+		clearAutoTimer();
 	});
 
 	// --- the one blessed tool: CompleteGoal ---------------------------------------------------------

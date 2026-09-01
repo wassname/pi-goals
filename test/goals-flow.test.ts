@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import piGoalsExtension from "../src/index.js";
 
 function setup(
@@ -20,6 +20,7 @@ function setup(
 	const ctx = {
 		cwd,
 		hasUI: true,
+		isIdle: () => true,
 		sessionManager: { getSessionId: () => "session-a", getEntries: () => entries },
 		ui: {
 			theme: { fg: (_kind: string, text: string) => text },
@@ -92,6 +93,25 @@ describe("/goals draft flow", () => {
 		}
 	});
 
+	it("disconnects without deleting the active plan", async () => {
+		const flow = setup([]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: preserve this\n");
+
+			await flow.commands.get("goals").handler("--clear", flow.ctx);
+
+			expect(readFileSync(planPath, "utf-8")).toContain("goal: preserve this");
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null });
+
+			await flow.commands.get("goals").handler("next objective", flow.ctx);
+			expect(readFileSync(join(flow.cwd, ".pi/plan/session-a-v2.md"), "utf-8")).toBe("");
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("waits for Refine notes before starting a revision turn", async () => {
 		let submitNotes: (notes: string) => void;
 		const flow = setup(["Refine"], [], () => new Promise((resolve) => {
@@ -149,6 +169,83 @@ describe("/goals draft flow", () => {
 			expect(() => readFileSync(planPath, "utf-8")).toThrow();
 			expect(flow.messages.filter((message) => !message.display)).toHaveLength(1);
 		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("reminds every eight unchanged working-set turns, ignoring log-only edits", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			for (let turn = 0; turn < 3; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n- checked input\n");
+			for (let turn = 0; turn < 5; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
+
+			const reminder = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
+			expect(reminder.messages.at(-1).content[0].text).toContain(".pi/plan/session-a-v1.md");
+
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n  - [x] inspect input\n\n## Log\n- checked input\n");
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			for (let turn = 0; turn < 7; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
+			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages).toHaveLength(0);
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages.at(-1).content[0].text).toContain("make the output");
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("auto-continues once on stop, then pauses after two no-progress wakes", async () => {
+		vi.useFakeTimers();
+		const flow = setup(["Ready"]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await flow.commands.get("goals").handler("--auto 1", flow.ctx);
+
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await vi.advanceTimersByTimeAsync(0);
+			const autoMessages = () => flow.messages.filter((message) => message.content.includes("Auto-continue is enabled"));
+			expect(autoMessages()).toHaveLength(1);
+
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(autoMessages()).toHaveLength(2);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(autoMessages()).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("delays auto-continuation after a known background start", async () => {
+		vi.useFakeTimers();
+		const flow = setup(["Ready"]);
+		try {
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await flow.commands.get("goals").handler("--auto 1", flow.ctx);
+			await flow.hooks.get("agent_start")({}, flow.ctx);
+			await flow.hooks.get("tool_call")({ toolName: "process", input: { action: "start" } }, flow.ctx);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await vi.advanceTimersByTimeAsync(0);
+			const autoMessages = () => flow.messages.filter((message) => message.content.includes("Auto-continue is enabled"));
+			expect(autoMessages()).toHaveLength(0);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(autoMessages()).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
