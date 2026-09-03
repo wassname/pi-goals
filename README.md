@@ -77,12 +77,26 @@ pi -e ./src/index.ts
    After eight turns without a change above `## Log`, the working set is sent back with a short upkeep
    reminder.
 
+Optional persistent perspective requires the separate `pi-subagents` package (`pi install
+npm:pi-subagents`, then restart or reload Pi). `/goals steward on` forks one non-writing Oracle
+when Ready is selected. Work waits for its plan decision. The child process exits after the
+review, while its session is retained. The first `CompleteGoal` call resumes that same session for a
+trajectory and scope check; after approval, a second call runs the normal fresh evidence judge. The
+steward cannot complete goals or make unresolved human decisions. `/goals steward off` disables it.
+Between reviews there is no running child process or model call. The retained session receives a
+bounded contract view: evidence detail stays with the fresh judge, approved checkbox state is
+normalized, and current goal status remains visible. The Oracle's profile includes inspection-only
+bash by contract; pi-goals rejects its decision if pi-subagents reports a file-mutation effect. This
+is not an OS sandbox. If pi-subagents is absent, Ready stays in planning after a visible RPC timeout;
+install it, retry Ready, or use `/goals steward off`. The integration is process-local and does not
+require `pi-intercom`.
+
 Other commands: `/goals --clear` disconnects this session from its active plan, preserving the
 versioned file on disk; `/goals --auto [minutes|off]` continues active goals after the agent settles
-and then on that interval. It pauses after two automatic wakes with no working-plan change; `/goals
---judge <model-ref>` picks a sign-off judge model (default: your current session model, else pi's
-default). The `--` prefix
-keeps ordinary objectives such as `judge model quality` from being parsed as commands.
+and then on that interval. It pauses after two automatic wakes with no working-plan change;
+`/goals --judge <model-ref>` picks a sign-off judge model (default: your current session model, else
+pi's default); `/goals steward [on|off|status]` controls the optional persistent plan steward. The
+older `--` forms remain only for the existing clear, auto, and judge controls.
 
 ## Prompts
 

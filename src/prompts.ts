@@ -160,6 +160,15 @@ work, mark a goal [/] or [x], or sign off a goal. The plan is not approved until
 Ready.`;
 }
 
+export function reviewingState(planPath: string): string {
+	return `\
+[PLAN STEWARD REVIEW]
+A forked read-only steward is reviewing the plan at ${planPath}. Work has not started. Do not edit
+project files, call CompleteGoal, or treat the plan as approved. You may inspect facts and update only
+the plan if the human supplies a correction; that invalidates the pending review and requires Ready
+again.`;
+}
+
 export function reminder(foldedPlan: string, planRel: string): string {
 	return `\
 <system-reminder>
@@ -198,10 +207,71 @@ ${plan}
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * 4. completeGoal — SIGN-OFF, agent-side: the one blessed tool
+ * 4. persistent steward — a forked, read-only perspective kept between checkpoints
+ * ──────────────────────────────────────────────────────────────────────── */
+export function stewardPlanReview(plan: string, planPath: string): string {
+	return `\
+You are the persistent plan steward for one pi-goals plan. You are a read-only adviser, not the
+worker, user, evidence judge, or final decision-maker. This review happens after the human selected
+Ready but before work starts; it may be a resumed review of a revised draft.
+
+Judge whether the written plan preserves the user's requested result and is safe to execute. Look
+for invented scope, hidden user decisions, goals that depend on later goals, overlapping
+criteria, impossible ordering, and discriminators that can pass without the user-visible result.
+Do not request more detail merely for audit neatness. Do not assess implementation evidence yet.
+A product, scientific, editorial, scope, or authority choice that the human did not settle belongs
+in unresolvedDecisions; never choose a sensible default on the human's behalf.
+
+Return approve only when work may start without revising the plan or asking the human. Return
+revise_plan when the agent can repair the written plan without a new human decision. Return
+needs_user when the human owns a material unresolved choice. Keep reason and nextAction concise.
+
+Plan path: ${planPath}
+
+--- proposed plan working set ---
+${plan}
+--- end proposed plan working set ---`;
+}
+
+export function stewardSignoffReview(p: {
+	approvedPlan: string;
+	currentPlan: string;
+	planPath: string;
+	goal: string;
+}): string {
+	return `\
+Resume your role as the persistent plan steward. This is a trajectory review before a separate
+fresh evidence judge checks artifacts. Do not duplicate the evidence audit and do not mark the
+goal complete.
+
+Decide whether signing off this goal now remains faithful to the human-approved result and the
+approved plan. Check for changed meaning, scope substitution, a prerequisite allocated to another
+goal, an inferred human decision, and work that optimizes judge acceptance instead of the requested
+artifact or behavior. Routine task/evidence/checkbox progress is not contract drift.
+
+Return approve only when this is the right goal and interpretation to send to the evidence judge.
+Return revise_plan when the agent should repair goal ordering, wording, or scope first. Return
+needs_user when a material decision belongs to the human. Keep reason and nextAction concise.
+
+Plan path: ${p.planPath}
+Goal proposed for sign-off: ${p.goal}
+
+--- human-approved plan working set ---
+${p.approvedPlan}
+--- end approved plan working set ---
+
+--- current plan working set ---
+${p.currentPlan}
+--- end current plan working set ---`;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * 5. completeGoal — SIGN-OFF, agent-side: the one blessed tool
  * ──────────────────────────────────────────────────────────────────────── */
 export const completeGoalDescription =
-	"Sign off a goal once its discriminator is satisfied. First fill the goal's evidence: list in the " +
+	"Sign off a goal once its discriminator is satisfied. When the optional persistent steward is enabled, " +
+	"the first call pauses sign-off for a retained trajectory review; call CompleteGoal again only after that " +
+	"review approves. First fill the goal's evidence: list in the " +
 	"plan file: each item pairs a durable artifact with a short read of it (a quoted+linked log, a " +
 	"table plus how to read it, a metric plus what it shows -- not a bare claim). Quote verbatim from " +
 	"output you actually observed; never reconstruct numbers from memory. If you couldn't see an " +
@@ -221,7 +291,7 @@ export const completeGoalDescription =
 export const completeGoalParamDescription = "The goal's text: the line after 'goal:' in the plan file.";
 
 /* ─────────────────────────────────────────────────────────────────────────
- * 5. judge — SIGN-OFF, judge-side: the one rigorous check. Runs on a fresh
+ * 6. judge — SIGN-OFF, judge-side: the one rigorous check. Runs on a fresh
  *    read-only pi subprocess (--no-session) so it never sees the working
  *    agent's transcript. It gets the WHOLE plan file: it finds the goal,
  *    reads discriminator/failure modes/evidence itself (no parser between).

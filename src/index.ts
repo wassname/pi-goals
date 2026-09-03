@@ -38,11 +38,34 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { completeGoalDescription, completeGoalParamDescription, judgeSystem, judgeUser, planDrafting, planningState, reminder, resync } from "./prompts.js";
+import {
+	completeGoalDescription,
+	completeGoalParamDescription,
+	judgeSystem,
+	judgeUser,
+	planDrafting,
+	planningState,
+	reminder,
+	resync,
+	reviewingState,
+	stewardPlanReview,
+	stewardSignoffReview,
+} from "./prompts.js";
+import {
+	rpcRunId,
+	rpcText,
+	STEWARD_OUTPUT_SCHEMA,
+	type StewardDecision,
+	SUBAGENT_ASYNC_COMPLETE_EVENT,
+	stewardCompletion,
+	stewardContract,
+	subagentRpc,
+} from "./steward.js";
 
 const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
@@ -116,7 +139,15 @@ export function nextPlanVersion(planNames: string[], sessionId: string): number 
 	return Math.max(0, ...versions) + 1;
 }
 
-type Phase = "planning" | "working" | null;
+type Phase = "planning" | "reviewing" | "working" | null;
+type StewardReview = {
+	kind: "plan" | "signoff";
+	runId: string;
+	goal?: string;
+	/** Full plan hash for plan review; folded working-set hash for sign-off review. */
+	snapshotHash: string;
+};
+type StewardApproval = { goal: string; workingSetHash: string };
 
 interface PlanState {
 	phase: Phase;
@@ -126,11 +157,31 @@ interface PlanState {
 	/** User-enabled interval for continuing active goals after the agent settles. */
 	autoIntervalMs: number | null;
 	autoPaused: boolean;
+	/** Opt-in persistent, forked plan steward supplied by pi-subagents. */
+	stewardEnabled: boolean;
+	stewardRunId: string | null;
+	stewardReview: StewardReview | null;
+	stewardApproval: StewardApproval | null;
+	/** Immutable working set captured when the steward approved work to start. */
+	approvedPlan: string | null;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
-	let state: PlanState = { phase: null, judgeModel: null, planVersion: null, autoIntervalMs: null, autoPaused: false };
+	let state: PlanState = {
+		phase: null,
+		judgeModel: null,
+		planVersion: null,
+		autoIntervalMs: null,
+		autoPaused: false,
+		stewardEnabled: false,
+		stewardRunId: null,
+		stewardReview: null,
+		stewardApproval: null,
+		approvedPlan: null,
+	};
 	let planningContextPending = false;
+	let liveContext: ExtensionContext | null = null;
+	let stewardRecoveryFrom: string | null = null;
 	// The reminder sees only the working set. A repeated Log line must not look like progress.
 	let turnsStale = 0;
 	let lastSeenWorkingSet = "";
@@ -159,6 +210,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	function persist(): void {
 		pi.appendEntry<PlanState>(STATE, state);
+	}
+
+	function contentHash(text: string): string {
+		return createHash("sha256").update(text).digest("hex");
+	}
+
+	function workingSetHash(plan: string): string {
+		return contentHash(foldPlan(plan));
+	}
+
+	function workMessage(ctx: ExtensionContext): string {
+		return `Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`;
 	}
 
 	function clearAutoTimer(): void {
@@ -221,6 +284,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
 			return;
 		}
+		if (state.phase === "reviewing") {
+			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "steward review"));
+			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: forked steward reviewing the plan"]);
+			return;
+		}
 		const goals = scanGoals(readPlan(ctx));
 		if (goals.length === 0) {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -229,7 +297,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 		const done = goals.filter((g) => g.status === "done").length;
 		const auto = state.autoPaused ? " · waiting for user" : state.autoIntervalMs === null ? "" : ` · auto ${state.autoIntervalMs / 60_000}m`;
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${auto}`));
+		const steward = state.stewardEnabled ? state.stewardReview ? " · steward reviewing" : " · steward" : "";
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${auto}${steward}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
@@ -244,10 +313,168 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		ctx.ui.setWidget(WIDGET_KEY, lines);
 	}
 
-	// --- /goals: enter plan mode (or clear / set judge) --------------------------------------------
+	function stewardMessage(decision: StewardDecision): string {
+		const drift = decision.contractDrift.length ? `\nContract drift:\n- ${decision.contractDrift.join("\n- ")}` : "";
+		const unresolved = decision.unresolvedDecisions.length ? `\nNeeds human decision:\n- ${decision.unresolvedDecisions.join("\n- ")}` : "";
+		return `Persistent plan steward: ${decision.decision}\n${decision.reason}\nNext: ${decision.nextAction}${drift}${unresolved}`;
+	}
+
+	async function startPlanSteward(ctx: ExtensionContext): Promise<void> {
+		const plan = readPlan(ctx);
+		const workingSet = stewardContract(foldPlan(plan));
+		const hash = contentHash(plan);
+		try {
+			const prompt = stewardPlanReview(workingSet, planRel(ctx));
+			const data = state.stewardRunId
+				? await subagentRpc(pi, "resume", { id: state.stewardRunId, message: prompt })
+				: await subagentRpc(pi, "spawn", {
+					agent: "oracle",
+					task: prompt,
+					context: "fork",
+					async: true,
+					mission: false,
+					outputSchema: STEWARD_OUTPUT_SCHEMA,
+				});
+			const runId = rpcRunId(data);
+			if (!runId) throw new Error("pi-subagents spawn reply contained no run id");
+			state = { ...state, phase: "reviewing", stewardReview: { kind: "plan", runId, snapshotHash: hash }, stewardApproval: null };
+			planningContextPending = true;
+			persist();
+			updateWidget(ctx);
+			ctx.ui.notify("Forked plan steward is reviewing the approved draft. Work will start after its decision.", "info");
+		} catch (error) {
+			state = { ...state, phase: "planning", stewardRunId: null, stewardReview: null };
+			persist();
+			updateWidget(ctx);
+			ctx.ui.notify(`Could not start the plan steward: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
+	}
+
+	async function startSignoffSteward(ctx: ExtensionContext, goal: string): Promise<string> {
+		if (!state.stewardRunId || !state.approvedPlan) return "Persistent steward has no retained approved-plan session. Select Ready again or disable the steward.";
+		const currentPlan = stewardContract(foldPlan(readPlan(ctx)), { preserveGoalStatus: true });
+		const hash = workingSetHash(readPlan(ctx));
+		try {
+			const data = await subagentRpc(pi, "resume", {
+				id: state.stewardRunId,
+				message: stewardSignoffReview({
+					approvedPlan: state.approvedPlan,
+					currentPlan,
+					planPath: planRel(ctx),
+					goal,
+				}),
+			});
+			const runId = rpcRunId(data);
+			if (!runId) throw new Error("pi-subagents resume reply contained no run id");
+			state = { ...state, stewardReview: { kind: "signoff", runId, goal, snapshotHash: hash }, stewardApproval: null };
+			persist();
+			updateWidget(ctx);
+			return `Sign-off paused while the persistent steward reviews trajectory and scope (run ${runId.slice(0, 8)}). Its child process exits after the review; the retained session will be resumed at the next checkpoint.`;
+		} catch (error) {
+			return `Could not resume the persistent steward: ${error instanceof Error ? error.message : String(error)}`;
+		}
+	}
+
+	async function reconcilePendingSteward(ctx: ExtensionContext): Promise<void> {
+		const pending = state.stewardReview;
+		if (!pending) {
+			if (state.phase === "reviewing") {
+				state = { ...state, phase: "planning" };
+				persist();
+			}
+			return;
+		}
+		try {
+			const status = await subagentRpc(pi, "status", { id: pending.runId });
+			if (!/\b(?:complete|failed|paused|stopped)\b/i.test(rpcText(status))) return;
+			if (state.stewardReview?.runId !== pending.runId) return;
+			const plan = readPlan(ctx);
+			const message = pending.kind === "plan"
+				? stewardPlanReview(stewardContract(foldPlan(plan)), planRel(ctx))
+				: stewardSignoffReview({
+					approvedPlan: state.approvedPlan ?? "(approved plan unavailable)",
+					currentPlan: stewardContract(foldPlan(plan), { preserveGoalStatus: true }),
+					planPath: planRel(ctx),
+					goal: pending.goal ?? "(goal unavailable)",
+				});
+			stewardRecoveryFrom = pending.runId;
+			const resumed = await subagentRpc(pi, "resume", { id: pending.runId, message });
+			const runId = rpcRunId(resumed);
+			if (!runId) throw new Error("pi-subagents resume reply contained no run id");
+			if (state.stewardReview?.runId !== pending.runId) return;
+			state = { ...state, stewardReview: { ...pending, runId } };
+			persist();
+			ctx.ui.notify("Recovered the pending persistent steward review after session restart.", "info");
+		} catch (error) {
+			ctx.ui.notify(`Could not reconcile the pending steward review: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		} finally {
+			stewardRecoveryFrom = null;
+		}
+	}
+
+	pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, async (payload: unknown) => {
+		const ctx = liveContext;
+		const pending = state.stewardReview;
+		const completion = stewardCompletion(payload);
+		if (completion?.runId === stewardRecoveryFrom) return;
+		if (!ctx || !pending || !completion || completion.runId !== pending.runId) return;
+		state = { ...state, stewardRunId: completion.runId, stewardReview: null };
+		if (completion.error || !completion.decision) {
+			if (pending.kind === "plan") state = { ...state, phase: "planning" };
+			persist();
+			updateWidget(ctx);
+			pi.sendMessage({
+				customType: "pi-goals-steward",
+				content: `Persistent plan steward failed: ${completion.error ?? "no decision"}. The plan or goal remains unapproved; retry or use /goals steward off.`,
+				display: true,
+			}, { triggerTurn: true });
+			return;
+		}
+		const decision = completion.decision;
+		if (pending.kind === "plan") {
+			const current = readPlan(ctx);
+			if (contentHash(current) !== pending.snapshotHash) {
+				state = { ...state, phase: "planning" };
+				persist();
+				updateWidget(ctx);
+				pi.sendMessage({ customType: "pi-goals-steward", content: "The plan changed while the steward reviewed it. Review the current draft and select Ready again.", display: true }, { triggerTurn: true });
+				return;
+			}
+			if (decision.decision === "approve") {
+				state = { ...state, phase: "working", approvedPlan: stewardContract(foldPlan(current)) };
+				persist();
+				updateWidget(ctx);
+				pi.sendMessage({ customType: "pi-goals-steward", content: stewardMessage(decision), display: true });
+				pi.sendUserMessage(workMessage(ctx), { deliverAs: "followUp" });
+				return;
+			}
+			state = { ...state, phase: "planning", approvedPlan: null };
+			persist();
+			planningContextPending = true;
+			updateWidget(ctx);
+			pi.sendMessage({ customType: "pi-goals-steward", content: stewardMessage(decision), display: true }, { triggerTurn: true });
+			return;
+		}
+		if (decision.decision === "approve" && pending.goal) {
+			state = { ...state, stewardApproval: { goal: pending.goal, workingSetHash: pending.snapshotHash } };
+			persist();
+			updateWidget(ctx);
+			pi.sendMessage({
+				customType: "pi-goals-steward",
+				content: `${stewardMessage(decision)}\n\nTrajectory review passed. Call CompleteGoal again for the fresh evidence review.`,
+				display: true,
+			}, { triggerTurn: true });
+			return;
+		}
+		persist();
+		updateWidget(ctx);
+		pi.sendMessage({ customType: "pi-goals-steward", content: stewardMessage(decision), display: true }, { triggerTurn: true });
+	});
+
+	// --- /goals: enter plan mode (or clear / set judge / set steward) -------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals --clear (disconnect) | /goals --auto [minutes|off] | /goals --judge <model>`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals steward [on|off|status] | /goals --clear | /goals --auto [minutes|off] | /goals --judge <model>`,
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			if (arg === "--clear") {
@@ -257,7 +484,17 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				}
 				const currentPlan = planRel(ctx);
 				clearAutoTimer();
-				state = { ...state, phase: null, planVersion: null, autoIntervalMs: null, autoPaused: false };
+				state = {
+					...state,
+					phase: null,
+					planVersion: null,
+					autoIntervalMs: null,
+					autoPaused: false,
+					stewardRunId: null,
+					stewardReview: null,
+					stewardApproval: null,
+					approvedPlan: null,
+				};
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
@@ -292,6 +529,39 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Goal auto-continue enabled every ${minutes}m.`, "info");
 				return;
 			}
+			if (arg === "steward" || arg.startsWith("steward ")) {
+				const value = arg.slice("steward".length).trim() || "status";
+				if (value === "status") {
+					const status = state.stewardEnabled
+						? state.stewardReview ? `enabled; ${state.stewardReview.kind} review running` : state.stewardRunId ? "enabled; retained steward ready" : "enabled; starts when Ready is selected"
+						: "disabled";
+					ctx.ui.notify(`Persistent plan steward: ${status}.`, "info");
+					return;
+				}
+				if (value !== "on" && value !== "off") {
+					ctx.ui.notify("Use /goals steward on, off, or status.", "warning");
+					return;
+				}
+				if (value === "on" && state.phase === "working" && !state.stewardRunId) {
+					ctx.ui.notify("Enable the persistent steward before selecting Ready so it can approve the plan baseline.", "warning");
+					return;
+				}
+				state = {
+					...state,
+					stewardEnabled: value === "on",
+					...(value === "off" ? {
+						phase: state.phase === "reviewing" ? "planning" : state.phase,
+						stewardRunId: null,
+						stewardReview: null,
+						stewardApproval: null,
+						approvedPlan: null,
+					} : {}),
+				};
+				persist();
+				updateWidget(ctx);
+				ctx.ui.notify(`Persistent plan steward ${value === "on" ? "enabled" : "disabled"}.`, "info");
+				return;
+			}
 			if (arg === "--judge" || arg.startsWith("--judge ")) {
 				const ref = arg.slice("--judge".length).trim();
 				state = { ...state, judgeModel: ref || null };
@@ -299,7 +569,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the session model", "info");
 				return;
 			}
-			state = { ...state, phase: "planning", planVersion: nextVersion(ctx) };
+			state = {
+				...state,
+				phase: "planning",
+				planVersion: nextVersion(ctx),
+				stewardRunId: null,
+				stewardReview: null,
+				stewardApproval: null,
+				approvedPlan: null,
+			};
 			planningContextPending = true;
 			resyncReason = null;
 			writePlan(ctx, "");
@@ -324,7 +602,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			resyncReason = null;
 			return why;
 		};
-		if (state.phase === "planning") return null;
+		if (state.phase === "planning" || state.phase === "reviewing") return null;
 		if (!plan.trim()) return null;
 		const why = drainResync();
 		if (why) return resync(plan, planRel(ctx), why);
@@ -341,18 +619,21 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// The phase snapshot enters context only when planning starts or context was lost.
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if (state.phase !== "planning" || !planningContextPending) return;
+		if ((state.phase !== "planning" && state.phase !== "reviewing") || !planningContextPending) return;
 		planningContextPending = false;
-		return { message: { customType: PLANNING_CONTEXT, content: planningState(planPath(ctx)), display: false } };
+		const content = state.phase === "reviewing" ? reviewingState(planPath(ctx)) : planningState(planPath(ctx));
+		return { message: { customType: PLANNING_CONTEXT, content, display: false } };
 	});
 
 	// PI: Working turns never see an obsolete planning snapshot. Auto-compaction retries skip
 	// before_agent_start, so context restores the planning snapshot exactly once in that path.
 	pi.on("context", async (event, ctx) => {
-		const messages = state.phase === "planning" ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
-		if (state.phase === "planning" && planningContextPending) {
+		const inPlanGate = state.phase === "planning" || state.phase === "reviewing";
+		const messages = inPlanGate ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
+		if (inPlanGate && planningContextPending) {
 			planningContextPending = false;
-			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: planningState(planPath(ctx)) }], timestamp: Date.now() }] };
+			const text = state.phase === "reviewing" ? reviewingState(planPath(ctx)) : planningState(planPath(ctx));
+			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
 		}
 		const text = dueInjection(ctx, readPlan(ctx));
 		if (!text) return messages === event.messages ? undefined : { messages };
@@ -371,7 +652,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				updateWidget(ctx);
 			}
 		}
-		if (state.phase === "planning" && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
+		if ((state.phase === "planning" || state.phase === "reviewing") && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
 	});
 
 	// The staleness clock sees only the working set. Log updates are durable evidence, not progress.
@@ -394,7 +675,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (state.phase === "working" && (event.toolName === "subagent" || (event.toolName === "process" && (event.input as { action?: string }).action === "start"))) {
 			runStartedBackgroundWork = true;
 		}
-		if (state.phase !== "planning") return;
+		if (state.phase !== "planning" && state.phase !== "reviewing") return;
 		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
 			const target = (event.input as { path?: string }).path;
 			if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
@@ -407,7 +688,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// A compaction loses context, so restore either the planning snapshot or the working plan once.
 	pi.on("session_compact", async () => {
-		if (state.phase === "planning") planningContextPending = true;
+		if (state.phase === "planning" || state.phase === "reviewing") planningContextPending = true;
 		else resyncReason = "The session was just compacted.";
 	});
 
@@ -445,22 +726,35 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			}
 			if (choice === "Cancel") {
 				rmSync(planPath(ctx), { force: true });
-				state = { ...state, phase: null, planVersion: null };
+				state = {
+					...state,
+					phase: null,
+					planVersion: null,
+					stewardRunId: null,
+					stewardReview: null,
+					stewardApproval: null,
+					approvedPlan: null,
+				};
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify("Plan discarded.", "info");
 				return;
 			}
 			if (choice !== "Ready") return;
-			state = { ...state, phase: "working" };
+			if (state.stewardEnabled) {
+				await startPlanSteward(ctx);
+				return;
+			}
+			state = { ...state, phase: "working", approvedPlan: foldPlan(plan) };
 			persist();
 			updateWidget(ctx);
-			pi.sendUserMessage(`Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`, { deliverAs: "followUp" });
+			pi.sendUserMessage(workMessage(ctx), { deliverAs: "followUp" });
 			return;
 		}
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		liveContext = ctx;
 		const last = ctx.sessionManager
 			.getEntries()
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
@@ -471,16 +765,23 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			planVersion: last?.data?.planVersion ?? null,
 			autoIntervalMs: last?.data?.autoIntervalMs ?? null,
 			autoPaused: last?.data?.autoPaused ?? false,
+			stewardEnabled: last?.data?.stewardEnabled ?? false,
+			stewardRunId: last?.data?.stewardRunId ?? null,
+			stewardReview: last?.data?.stewardReview ?? null,
+			stewardApproval: last?.data?.stewardApproval ?? null,
+			approvedPlan: last?.data?.approvedPlan ?? null,
 		};
+		await reconcilePendingSteward(ctx);
 		lastSeenWorkingSet = foldPlan(readPlan(ctx));
 		autoLastWorkingSet = lastSeenWorkingSet;
-		planningContextPending = state.phase === "planning";
+		planningContextPending = state.phase === "planning" || state.phase === "reviewing";
 		resyncReason = state.phase === "working" ? "New session." : null;
 		updateWidget(ctx);
 		scheduleAutoContinue(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
+		liveContext = null;
 		clearAutoTimer();
 	});
 
@@ -494,9 +795,24 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
-			if (state.phase === "planning") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
+			if (state.phase === "planning" || state.phase === "reviewing") return result("Planning is not approved. Wait for the steward or choose Ready before signing off a goal.", true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
+
+			if (state.stewardEnabled) {
+				const hash = workingSetHash(plan);
+				const approved = state.stewardApproval;
+				const approvalMatches = approved
+					&& approved.goal.trim().toLowerCase() === params.goal.trim().toLowerCase()
+					&& approved.workingSetHash === hash;
+				if (!approvalMatches) {
+					if (state.stewardReview) return result("Sign-off is already paused for a persistent steward review. Wait for its decision.");
+					const message = await startSignoffSteward(ctx, params.goal);
+					return result(message, message.startsWith("Could not") || message.startsWith("Persistent steward has no"));
+				}
+				state = { ...state, stewardApproval: null };
+				persist();
+			}
 
 			const judgeModel = state.judgeModel ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null);
 			onUpdate?.({ content: [{ type: "text", text: `Read-only judge (${judgeModel ?? "pi default"}) inspecting: ${params.goal}` }], details: {} });
