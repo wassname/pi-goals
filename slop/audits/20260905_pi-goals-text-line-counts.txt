@@ -21,6 +21,9 @@
    104 scripts/inconclusive-fail-forward.diff
     30 scripts/stale-fixme-removal.diff
     31 slop/audits/20260905_goal-steward-validation.md
+    42 slop/audits/20260905_pi-goals-file-types.txt
+    48 slop/audits/20260905_pi-goals-line-count-table.md
+    25 slop/audits/20260905_pi-goals-text-line-counts.txt
     15 slop/audits/20260905_steward-probe.json
     37 slop/plans/20260905_goal-steward.md
    678 src/index.ts
@@ -36,4 +39,4 @@
    133 test/steward.test.ts
     32 test/tick-goal.test.ts
     15 tsconfig.json
-  6689 total
+  6804 total

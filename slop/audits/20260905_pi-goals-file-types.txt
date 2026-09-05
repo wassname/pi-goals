@@ -22,6 +22,9 @@ text/x-shellscript	scripts/check-stale-fixmes.sh
 text/x-diff	scripts/inconclusive-fail-forward.diff
 text/x-diff	scripts/stale-fixme-removal.diff
 text/plain	slop/audits/20260905_goal-steward-validation.md
+text/plain	slop/audits/20260905_pi-goals-file-types.txt
+text/plain	slop/audits/20260905_pi-goals-line-count-table.md
+text/plain	slop/audits/20260905_pi-goals-text-line-counts.txt
 application/json	slop/audits/20260905_steward-probe.json
 text/plain	slop/plans/20260905_goal-steward.md
 application/javascript	src/index.ts
