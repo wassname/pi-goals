@@ -102,7 +102,7 @@ continue until all goals close, the human uses `auto off`, or the plan is cleare
 
 ## Prompts
 
-Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts.ts). Runtime-agent registration and RPC calls live in [`src/worker.ts`](src/worker.ts). The supervisor-only nested-worker registration and approval tool live in [`src/supervisor-runtime.ts`](src/supervisor-runtime.ts).
+Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts.ts). Supervisor registration and RPC calls live in [`src/worker.ts`](src/worker.ts). The packaged worker definition lives in [`agents/goal-worker.md`](agents/goal-worker.md), and the supervisor-only approval tool lives in [`src/supervisor-runtime.ts`](src/supervisor-runtime.ts).
 
 ## Manual check
 

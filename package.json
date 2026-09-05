@@ -27,6 +27,7 @@
   },
   "files": [
     "src",
+    "agents",
     "README.md"
   ],
   "publishConfig": {
@@ -54,6 +55,11 @@
     "extensions": [
       "./src/index.ts"
     ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    },
     "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
   }
 }

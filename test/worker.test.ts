@@ -2,13 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
 	processWorkState,
 	registerGoalSupervisor,
-	registerGoalWorker,
 	resumeGoalSupervisor,
 	startGoalSupervisor,
 	steerGoalSupervisor,
 	subagentWorkState,
 	supervisorSystemPrompt,
-	workerSystemPrompt,
 } from "../src/worker.js";
 
 class Events {
@@ -52,25 +50,6 @@ describe("goal hierarchy registration", () => {
 		expect(definition?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
 		expect(supervisorSystemPrompt).toContain("nested goal-worker");
 		expect(supervisorSystemPrompt).toContain("ApproveGoal");
-		expect(workerSystemPrompt).toContain("retained implementation worker");
-	});
-
-	it("registers the implementation worker without nested supervisor tools", () => {
-		const events = new Events();
-		let definition: Record<string, unknown> | undefined;
-		events.on("pi-subagents:runtime-agent-register:v1", (raw) => {
-			const request = raw as { definition: Record<string, unknown>; result?: unknown };
-			definition = request.definition;
-			request.result = { ok: true, registration: { dispose() {} } };
-		});
-
-		registerGoalWorker(events, null);
-		expect(definition?.allowNestedSubagents).toBeUndefined();
-		expect(definition).not.toHaveProperty("subagentOnlyExtensions");
-	});
-
-	it("fails clearly when pi-subagents is absent", () => {
-		expect(() => registerGoalWorker(new Events(), null)).toThrow("pi-subagents is not installed or not ready");
 	});
 });
 

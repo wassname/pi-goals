@@ -7,7 +7,6 @@ const RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
 const RPC_VERSION = 1;
 const RPC_TIMEOUT_MS = 15_000;
 export const SUPERVISOR_AGENT = "goal-supervisor";
-export const WORKER_AGENT = "goal-worker";
 
 interface EventBus {
 	on(event: string, handler: (data: unknown) => void): () => void;
@@ -49,12 +48,6 @@ is clean, and you have explicitly inspected the plan, repository, evidence, and 
 Otherwise return continue or redirect the worker. Do not claim acceptance in prose: only ApproveGoal creates the durable
 approval checkpoint. -- Pi/Codex`;
 
-export const workerSystemPrompt = `You are the retained implementation worker for one goal supervisor.
-Work autonomously from the approved plan. The latest human message outranks the plan. Keep the plan current, run the real checks, commit the implementation,
-and leave specific evidence in its Log. Your goal supervisor owns direction and approval. Send contact_supervisor
-progress updates when evidence changes the research direction, when an hourly check asks for one, or when you need a
-decision. Do not claim a goal is complete; report the evidence and let the supervisor decide. -- Pi/Codex`;
-
 export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
 	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
 	const request: Record<string, unknown> = {
@@ -79,30 +72,6 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 	const result = request.result as { ok?: boolean; registration?: Registration; error?: Error } | undefined;
 	if (!result) throw new Error("pi-subagents is not installed or not ready.");
 	if (!result.ok || !result.registration) throw result.error ?? new Error("pi-subagents rejected the goal-supervisor agent.");
-	return result.registration;
-}
-
-export function registerGoalWorker(events: EventBus, model: string | null): Registration {
-	const request: Record<string, unknown> = {
-		version: 1,
-		name: WORKER_AGENT,
-		definition: {
-			description: "Implementation worker directed by the retained goal supervisor.",
-			systemPrompt: workerSystemPrompt,
-			...(model ? { model } : {}),
-			systemPromptMode: "replace",
-			inheritProjectContext: true,
-			inheritGlobalContext: true,
-			inheritSkills: true,
-			defaultContext: "fork",
-			defaultAsync: true,
-			defaultProgress: true,
-		},
-	};
-	events.emit(REGISTER_EVENT, request);
-	const result = request.result as { ok?: boolean; registration?: Registration; error?: Error } | undefined;
-	if (!result) throw new Error("pi-subagents is not installed or not ready.");
-	if (!result.ok || !result.registration) throw result.error ?? new Error("pi-subagents rejected the goal-worker agent.");
 	return result.registration;
 }
 

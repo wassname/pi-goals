@@ -30,12 +30,6 @@ function setup() {
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const events = new Events();
-	let workerDefinition: Record<string, unknown> | undefined;
-	events.on("pi-subagents:runtime-agent-register:v1", (raw) => {
-		const request = raw as { definition: Record<string, unknown>; result?: unknown };
-		workerDefinition = request.definition;
-		request.result = { ok: true, registration: { dispose() {} } };
-	});
 	events.on("subagents:rpc:v1:request", (raw) => {
 		const request = raw as any;
 		events.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
@@ -54,15 +48,13 @@ function setup() {
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 	};
 	supervisorRuntime(pi as any);
-	return { cwd, ctx, hooks, tools, workerDefinition: () => workerDefinition };
+	return { cwd, ctx, hooks, tools };
 }
 
 describe("supervisor-only runtime", () => {
-	it("registers the nested worker and blocks direct supervisor writes", async () => {
+	it("blocks direct supervisor writes", async () => {
 		const runtime = setup();
 		try {
-			await runtime.hooks.get("session_start")({}, runtime.ctx);
-			expect(runtime.workerDefinition()?.description).toContain("Implementation worker");
 			expect((await runtime.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, runtime.ctx))?.block).toBe(true);
 			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status && npm test" } }, runtime.ctx))).toBeUndefined();
 		} finally {
@@ -73,7 +65,6 @@ describe("supervisor-only runtime", () => {
 	it("writes an approval only after inspecting the plan and confirming a clean worktree at a commit", async () => {
 		const runtime = setup();
 		try {
-			await runtime.hooks.get("session_start")({}, runtime.ctx);
 			const planPath = join(runtime.cwd, ".pi/plan/session-a-v1.md");
 			mkdirSync(join(runtime.cwd, ".pi/plan"), { recursive: true });
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: ship it\n  - evidence: verify.log: PASS\n");

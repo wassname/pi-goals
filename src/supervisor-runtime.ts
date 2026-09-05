@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
 import { isSupervisorReadOnlyCommand } from "./index.js";
-import { registerGoalWorker, subagentWorkState } from "./worker.js";
+import { subagentWorkState } from "./worker.js";
 
 const APPROVE_GOAL = "ApproveGoal";
 
@@ -13,19 +13,6 @@ function result(text: string, isError = false) {
 }
 
 export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
-	let workerRegistration: { dispose(): void } | null = null;
-
-	pi.on("session_start", async (_event, ctx) => {
-		workerRegistration?.dispose();
-		workerRegistration = registerGoalWorker(pi.events, null);
-		ctx.ui.notify("Goal supervisor can now launch its retained worker.", "info");
-	});
-
-	pi.on("session_shutdown", async () => {
-		workerRegistration?.dispose();
-		workerRegistration = null;
-	});
-
 	pi.on("tool_call", async (event) => {
 		if (event.toolName === "edit" || event.toolName === "write") {
 			return { block: true, reason: "Goal supervision is read-only. Direct project changes to the nested goal-worker." };

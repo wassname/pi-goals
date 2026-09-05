@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { completeGoalDescription, planDrafting, planningState, resync } from "../src/prompts.js";
-import { workerSystemPrompt } from "../src/worker.js";
+
+const workerSystemPrompt = readFileSync(new URL("../agents/goal-worker.md", import.meta.url), "utf8");
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
@@ -24,8 +26,8 @@ describe("planning prompt", () => {
 		expect(planDrafting).toContain("Take it from the original request, not from your implementation plan");
 		expect(planDrafting).toContain("Future work may not defer any artifact or action named there");
 		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
-		expect(workerSystemPrompt).toContain("latest human message outranks the plan");
-		expect(workerSystemPrompt).toContain("goal supervisor owns direction and approval");
+		expect(workerSystemPrompt).toContain("human's latest message outranks the plan");
+		expect(workerSystemPrompt).toContain("main Pi agent is the research supervisor");
 		expect(completeGoalDescription).toContain("approval checkpoint only after it inspected");
 	});
 });
