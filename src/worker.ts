@@ -39,8 +39,9 @@ interface AsyncSnapshot {
 export type WorkState = "active" | "idle" | "unknown";
 
 export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session only coordinates with the human.
-Launch one goal-worker, then rely on native progress and completion updates. Do not poll status, wait, or repeatedly
-steer an active worker. Read the current plan, repository, cited evidence, and saved verification output yourself after
+Your forked planning history is compacted before your first turn. Launch one goal-worker, then rely on native progress
+and completion updates. Do not poll status, wait, or repeatedly steer an active worker. Use CheckWorkerState once only
+after a needs-attention notice or a scheduled review. Read the current plan, repository, cited evidence, and saved verification output yourself after
 the worker finishes. Do not edit project files. Use read/search and standard verification commands only. The worker must
 commit its changes before approval. When no nested work is active, HEAD is committed, the worktree is clean, and the
 evidence proves the discriminator, call ApproveGoal with the current approval ID. Otherwise give the retained worker
@@ -54,7 +55,7 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 		definition: {
 			description: "Read-only supervisor that owns a nested retained implementation worker.",
 			systemPrompt: supervisorSystemPrompt,
-			tools: ["read", "grep", "find", "ls", "bash", "subagent", "ApproveGoal"],
+			tools: ["read", "grep", "find", "ls", "bash", "subagent", "CheckWorkerState", "ApproveGoal"],
 			allowNestedSubagents: true,
 			subagentOnlyExtensions: [supervisorRuntime],
 			...(model ? { model } : {}),
@@ -63,7 +64,7 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 			inheritProjectContext: false,
 			inheritGlobalContext: false,
 			inheritSkills: false,
-			defaultContext: "fresh",
+			defaultContext: "fork",
 			defaultAsync: true,
 			defaultProgress: true,
 		},
@@ -112,14 +113,15 @@ function asyncRunId(data: RpcData): string {
 	return runId;
 }
 
-export async function startGoalSupervisor(events: EventBus, cwd: string, task: string, signal?: AbortSignal): Promise<string> {
+export async function startGoalSupervisor(events: EventBus, cwd: string, task: string, compactPlanning: boolean, signal?: AbortSignal): Promise<string> {
 	const data = await rpc(events, "spawn", {
 		agent: SUPERVISOR_AGENT,
 		task,
 		cwd,
-		context: "fresh",
+		context: "fork",
 		async: true,
 		mission: false,
+		extensionBindings: { "pi-goals/1": { compactPlanning } },
 	}, signal);
 	return asyncRunId(data);
 }

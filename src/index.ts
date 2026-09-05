@@ -187,7 +187,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function startOrResumeWorker(ctx: ExtensionContext, task: string, signal?: AbortSignal): Promise<string> {
+	async function startOrResumeWorker(ctx: ExtensionContext, task: string, compactPlanning: boolean, signal?: AbortSignal): Promise<string> {
 		if (workerLaunchPending) throw new Error("A goal-worker launch is already in progress.");
 		if (!workerRegistration) setupWorker(ctx);
 		if (!workerRegistration) throw new Error(`Goal worker unavailable: ${workerRegistrationError ?? "pi-subagents is not ready"}.`);
@@ -196,7 +196,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		try {
 			const runId = state.workerRunId
 				? await resumeGoalSupervisor(pi.events, state.workerRunId, task, signal)
-				: await startGoalSupervisor(pi.events, ctx.cwd, task, signal);
+				: await startGoalSupervisor(pi.events, ctx.cwd, task, compactPlanning, signal);
 			rememberWorkerRun(runId);
 			return runId;
 		} finally {
@@ -238,7 +238,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return `${instruction}\n\nYou are the retained goal-supervisor. Here is the complete current plan; inspect its exact goal blocks and cited evidence before directing or approving work.\nPlan path: ${planPath(ctx)}\nApproval ID: ${state.approvalId}\nNested worker model: ${state.workerModel ?? "pi-subagents default"}\nPass the exact approval ID to ApproveGoal. Keep checkpoint paths and the approval ID from the nested worker.\nPrivate approval checkpoints, one per current goal:\n${checkpoints || "(no open goals)"}\n\n${plan}`;
 	}
 
-	async function directSupervisor(ctx: ExtensionContext, instruction: string, signal?: AbortSignal): Promise<string> {
+	async function directSupervisor(ctx: ExtensionContext, instruction: string, signal?: AbortSignal, compactPlanning = false): Promise<string> {
 		beginReview(ctx);
 		const task = supervisorTask(ctx, instruction);
 		if (state.workerPending && state.workerRunId) {
@@ -251,7 +251,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				persist();
 			}
 		}
-		return startOrResumeWorker(ctx, task, signal);
+		return startOrResumeWorker(ctx, task, compactPlanning, signal);
 	}
 
 	function wakeSupervisor(ctx: ExtensionContext, reason: string): void {
@@ -518,7 +518,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				persist();
 				updateWidget(ctx);
 				try {
-					await directSupervisor(ctx, "Start by launching or resuming the nested goal-worker. Then supervise the current plan.");
+					await directSupervisor(ctx, "Start by launching or resuming the nested goal-worker. Then supervise the current plan.", undefined, choice === "Ready (compact)");
 					scheduleSupervisorCheck(ctx);
 					return true;
 				} catch (error) {

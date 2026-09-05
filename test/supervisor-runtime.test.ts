@@ -29,6 +29,8 @@ function setup() {
 	execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd });
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
+	const entries: any[] = [];
+	const compactCalls: any[] = [];
 	const events = new Events();
 	events.on("subagents:rpc:v1:request", (raw) => {
 		const request = raw as any;
@@ -42,17 +44,18 @@ function setup() {
 	});
 	const ctx = {
 		cwd,
-		sessionManager: { getSessionId: () => "supervisor-session" },
+		sessionManager: { getSessionId: () => "supervisor-session", getEntries: () => entries },
+		compact: (options: any) => compactCalls.push(options),
 		ui: { notify() {} },
 	};
 	const pi = {
 		events,
 		on: (name: string, handler: any) => hooks.set(name, handler),
-		appendEntry() {},
+		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 	};
 	supervisorRuntime(pi as any);
-	return { cwd, ctx, events, hooks, tools };
+	return { cwd, ctx, events, hooks, tools, entries, compactCalls };
 }
 
 describe("supervisor-only runtime", () => {
@@ -70,10 +73,34 @@ describe("supervisor-only runtime", () => {
 		}
 	});
 
+	it("compacts a requested fork before the first supervisor turn", async () => {
+		const previous = process.env.PI_SUBAGENT_EXTENSION_BINDINGS;
+		process.env.PI_SUBAGENT_EXTENSION_BINDINGS = JSON.stringify({ "pi-goals/1": { compactPlanning: true } });
+		const runtime = setup();
+		try {
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			expect(runtime.compactCalls).toHaveLength(1);
+			const replacement = await runtime.hooks.get("session_before_compact")({
+				preparation: { firstKeptEntryId: "old", tokensBefore: 70_000 },
+				branchEntries: [{ id: "recent", type: "message", message: { role: "assistant" } }],
+			}, runtime.ctx);
+			expect(replacement.compaction).toMatchObject({ firstKeptEntryId: "recent", tokensBefore: 70_000 });
+			runtime.compactCalls[0].onComplete({});
+			await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
+			expect(runtime.entries).toContainEqual({ type: "custom", customType: "pi-goals-supervisor-compacted", data: { version: 1 } });
+		} finally {
+			if (previous === undefined) delete process.env.PI_SUBAGENT_EXTENSION_BINDINGS;
+			else process.env.PI_SUBAGENT_EXTENSION_BINDINGS = previous;
+			rmSync(runtime.cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("blocks approval while its retained worker is pending", async () => {
 		const runtime = setup();
 		try {
 			runtime.events.emit("subagent:async-started", { id: "nested-1", agent: "goal-worker" });
+			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
+			expect(state.content[0].text).toBe("retained-worker=active; run=nested-1");
 			const blocked = await runtime.tools.get("ApproveGoal").execute("", {}, undefined, undefined, runtime.ctx);
 			expect(blocked.isError).toBe(true);
 			expect(blocked.content[0].text).toContain("retained worker is pending");
@@ -93,6 +120,8 @@ describe("supervisor-only runtime", () => {
 			const checkpoint = approvalPath(runtime.cwd, "main-session", "ship it");
 			runtime.events.emit("subagent:async-started", { id: "nested-1", agent: "goal-worker" });
 			runtime.events.emit("subagent:process-terminal", { runId: "nested-1", state: "observed" });
+			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
+			expect(state.content[0].text).toBe("retained-worker=terminal; run=nested-1");
 			const accepted = await runtime.tools.get("ApproveGoal").execute("", {
 				approvalId: "review-1",
 				goal: "ship it",

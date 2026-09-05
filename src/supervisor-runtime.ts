@@ -7,6 +7,7 @@ import { isSupervisorReadOnlyCommand } from "./index.js";
 import { processWorkState } from "./worker.js";
 
 const NESTED_STATE = "pi-goals-nested-worker";
+const COMPACTED_STATE = "pi-goals-supervisor-compacted";
 
 interface NestedState {
 	runId: string | null;
@@ -22,8 +23,17 @@ function targetRun(input: Record<string, unknown>): string | null {
 	return typeof value === "string" && value ? value : null;
 }
 
+function compactPlanningRequested(): boolean {
+	const raw = process.env.PI_SUBAGENT_EXTENSION_BINDINGS;
+	if (!raw) return false;
+	const bindings = JSON.parse(raw) as { "pi-goals/1"?: { compactPlanning?: unknown } };
+	return bindings["pi-goals/1"]?.compactPlanning === true;
+}
+
 export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 	let nested: NestedState = { runId: null, pending: false };
+	let compacting = false;
+	let compactionDone = Promise.resolve();
 	const persist = () => pi.appendEntry<NestedState>(NESTED_STATE, nested);
 
 	pi.events.on("subagent:async-started", (raw) => {
@@ -41,11 +51,46 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 	pi.events.on("subagent:async-complete", completeNested);
 	pi.events.on("subagent:process-terminal", completeNested);
 
+	pi.on("session_before_compact", async (event) => {
+		if (!compacting) return;
+		const branchEntries = event.branchEntries as Array<{ id?: string; type?: string; message?: { role?: string } }>;
+		const latestMessage = [...branchEntries].reverse().find((entry) => entry.type === "message" && ["user", "assistant"].includes(entry.message?.role ?? ""));
+		return {
+			compaction: {
+				summary: "Planning is complete. The latest retained goal-supervisor task contains the current plan and approval paths; use it as the source of truth. -- PI[gpt-5.6-sol]",
+				firstKeptEntryId: latestMessage?.id ?? event.preparation.firstKeptEntryId,
+				tokensBefore: event.preparation.tokensBefore,
+				details: { source: "pi-goals-plan-handoff" },
+			},
+		};
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
-		const last = ctx.sessionManager.getEntries()
+		const entries = ctx.sessionManager.getEntries();
+		const last = entries
 			.filter((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === NESTED_STATE)
 			.pop() as { data?: NestedState } | undefined;
 		nested = last?.data ?? nested;
+		if (!compactPlanningRequested()) return;
+		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === COMPACTED_STATE)) return;
+		compacting = true;
+		compactionDone = new Promise<void>((resolvePromise, reject) => {
+			ctx.compact({
+				onComplete: () => {
+					compacting = false;
+					pi.appendEntry(COMPACTED_STATE, { version: 1 });
+					resolvePromise();
+				},
+				onError: (error) => {
+					compacting = false;
+					reject(error);
+				},
+			});
+		});
+	});
+
+	pi.on("before_agent_start", async () => {
+		await compactionDone;
 	});
 
 	pi.on("tool_call", async (event) => {
@@ -66,6 +111,17 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 		if (action === "status") return { block: true, reason: "Do not poll the retained worker. Use its native progress and completion updates." };
 		if (["resume", "steer", "interrupt", "stop"].includes(action) && targetRun(input) === nested.runId) return;
 		return { block: true, reason: "The supervisor may inspect or control only its retained goal-worker." };
+	});
+
+	pi.registerTool({
+		name: "CheckWorkerState",
+		label: "Check retained worker",
+		description: "Return concise retained-worker state after a needs-attention notice or scheduled review. This does not return transcript text.",
+		parameters: Type.Object({}),
+		async execute() {
+			const state = nested.runId ? (nested.pending ? "active" : "terminal") : "not-started";
+			return result(`retained-worker=${state}${nested.runId ? `; run=${nested.runId}` : ""}`);
+		},
 	});
 
 	pi.registerTool({
