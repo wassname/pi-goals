@@ -63,6 +63,7 @@ describe("supervisor-only runtime", () => {
 			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git branch new-name" } }, runtime.ctx))?.block).toBe(true);
 			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "worker" } }, runtime.ctx))?.block).toBe(true);
 			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx))).toBeUndefined();
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status", id: "nested-1" } }, runtime.ctx))?.block).toBe(true);
 			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status && npm test" } }, runtime.ctx))).toBeUndefined();
 		} finally {
 			rmSync(runtime.cwd, { recursive: true, force: true });
@@ -90,6 +91,8 @@ describe("supervisor-only runtime", () => {
 			mkdirSync(join(runtime.cwd, ".pi/plan"), { recursive: true });
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: ship it\n  - evidence: verify.log: PASS\n");
 			const checkpoint = approvalPath(runtime.cwd, "main-session", "ship it");
+			runtime.events.emit("subagent:async-started", { id: "nested-1", agent: "goal-worker" });
+			runtime.events.emit("subagent:process-terminal", { runId: "nested-1", state: "observed" });
 			const accepted = await runtime.tools.get("ApproveGoal").execute("", {
 				approvalId: "review-1",
 				goal: "ship it",

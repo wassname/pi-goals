@@ -72,8 +72,8 @@ pi -e npm:pi-subagents -e .
 
 1. Plan. The agent explores read-only and drafts the plan.
 2. Review. After Pi settles, the full plan is printed in the transcript. Check that User-visible
-   result names the final artifact or behavior you expect. Ready forks the retained supervisor and
-   preserves the main context. Ready (compact) first forks that supervisor from the full main context,
+   result names the final artifact or behavior you expect. Ready starts the retained supervisor with
+   a small fresh context and preserves the main context. Ready (compact) starts that supervisor first,
    then requests Pi's normal compaction of the main session only. It never compacts the retained
    supervisor or worker. Refine collects short notes. Edit opens the full plan in Pi's editor.
 3. Work. The topology is:

@@ -255,7 +255,7 @@ describe("/goals draft flow", () => {
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 
 			expect(flow.events).toEqual(["display", "select"]);
-			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", context: "fork" } });
+			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", context: "fresh" } });
 			expect(flow.messages.filter((message) => !message.display)).toHaveLength(1);
 			const supervisor = await flow.hooks.get("before_agent_start")({}, flow.ctx);
 			expect(supervisor.systemPrompt).toContain("thin human-facing coordinator");
@@ -430,7 +430,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: produce report\n  - discriminator: report.txt contains PASS\n  - evidence:\n    - report.txt: `PASS`\n\n## Log\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", context: "fork" } });
+			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", context: "fresh" } });
 			flow.eventBus.emit("subagent:async-complete", { runId: "worker-1", results: [{ success: true }] });
 
 			const resumed = await flow.tools.get("GuideGoalWorker").execute("", { instruction: "Verify report.txt." }, undefined, undefined, flow.ctx);

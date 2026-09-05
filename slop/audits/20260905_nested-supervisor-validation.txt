@@ -71,8 +71,21 @@ $ git diff --stat 2852432
  test/worker.test.ts                                |  18 ++-
  12 files changed, 354 insertions(+), 143 deletions(-)
 
-## Runtime boundary
+## Dogfood run
 
-No model-backed Ready -> goal-supervisor -> goal-worker run was executed here. Unit tests cover the package-discovery contract, nested tool restrictions, review freshness, clean-state filtering, stop dispatch, stale-run recovery, and mechanical sign-off. The README manual check is the user acceptance test.
+The model-backed run produced commit `0a33ff2` and independently verified 47 text-file word counts with zero set, count, or order mismatches. Approval then deadlocked:
+
+> Cannot approve while the retained worker is pending.
+
+The worker process was terminal, but its model result was `Request was aborted`; the completion event did not clear retained state. A supervisor resume also failed because `subagent_supervisor` was unavailable in its strict tool list.
+
+Usage from the run status files:
+
+| agent | turns | new tokens | cached reads | reported cost |
+| --- | ---: | ---: | ---: | ---: |
+| supervisor, including recovery | 42 | 169,288 | 2,670,336 | $2.35 |
+| worker | 17 | 67,803 | 812,544 | $0.90 |
+
+The corrective patch starts the supervisor with fresh context, removes global/project/skill inheritance from that supervisor, blocks status polling, removes the unavailable tool, and treats process-terminal as terminal worker state. Unit tests pass; a second model-backed run is still required.
 
 -- PI[gpt-5.6-sol]

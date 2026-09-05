@@ -46,18 +46,23 @@ describe("goal hierarchy registration", () => {
 		registerGoalSupervisor(events, "provider/cheap-model");
 
 		expect(definition?.model).toBe("provider/cheap-model");
-		expect(definition?.defaultContext).toBe("fork");
+		expect(definition?.defaultContext).toBe("fresh");
+		expect(definition?.thinking).toBe("low");
+		expect(definition?.inheritProjectContext).toBe(false);
+		expect(definition?.inheritGlobalContext).toBe(false);
+		expect(definition?.inheritSkills).toBe(false);
 		expect(definition?.defaultProgress).toBe(true);
 		expect(definition?.allowNestedSubagents).toBe(true);
-		expect(definition?.tools).toEqual(["read", "grep", "find", "ls", "bash", "subagent", "subagent_supervisor", "ApproveGoal"]);
+		expect(definition?.tools).toEqual(["read", "grep", "find", "ls", "bash", "subagent", "ApproveGoal"]);
 		expect(definition?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
-		expect(supervisorSystemPrompt).toContain("nested goal-worker");
+		expect(supervisorSystemPrompt).toContain("Launch one goal-worker");
+		expect(supervisorSystemPrompt).toContain("Do not poll status");
 		expect(supervisorSystemPrompt).toContain("ApproveGoal");
 	});
 });
 
 describe("goal worker RPC", () => {
-	it("starts from a fork, resumes retained context, and steers a live run", async () => {
+	it("starts fresh, resumes retained context, and steers a live run", async () => {
 		const events = new Events();
 		const requests: any[] = [];
 		replyToRpc(events, (request) => {
@@ -70,7 +75,7 @@ describe("goal worker RPC", () => {
 		await steerGoalSupervisor(events, "run-2", "report");
 		await stopGoalSupervisor(events, "run-2");
 
-		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", cwd: "/repo", context: "fork", async: true } });
+		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", cwd: "/repo", context: "fresh", async: true } });
 		expect(requests[1]).toMatchObject({ method: "resume", params: { id: "run-1", message: "continue" } });
 		expect(requests[2]).toMatchObject({ method: "steer", params: { id: "run-2", message: "report", mode: "steer" } });
 		expect(requests[3]).toMatchObject({ method: "stop", params: { id: "run-2" } });

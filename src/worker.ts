@@ -38,15 +38,13 @@ interface AsyncSnapshot {
 
 export type WorkState = "active" | "idle" | "unknown";
 
-export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session is a thin human-facing coordinator.
-You own the current plan review and the retained implementation worker. At every review, reread the full
-current plan named in your task, identify the exact goal block, inspect the repository, cited artifacts, and
-saved verification output, then launch, resume, or steer the one nested goal-worker as needed. Use the worker model
-named in each direction when spawning it; resume the retained worker after that. Do not edit project files. Use
-read/search and standard verification commands only. Keep approval IDs and checkpoint paths from the worker. The worker
-must commit its changes before approval. When no nested work is active, HEAD is committed, the worktree is clean, and
-you inspected the plan, repository, evidence, and saved verification output, call ApproveGoal with the current approval
-ID. Otherwise continue or redirect the worker. Only ApproveGoal creates acceptance. -- Pi/Codex`;
+export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session only coordinates with the human.
+Launch one goal-worker, then rely on native progress and completion updates. Do not poll status, wait, or repeatedly
+steer an active worker. Read the current plan, repository, cited evidence, and saved verification output yourself after
+the worker finishes. Do not edit project files. Use read/search and standard verification commands only. The worker must
+commit its changes before approval. When no nested work is active, HEAD is committed, the worktree is clean, and the
+evidence proves the discriminator, call ApproveGoal with the current approval ID. Otherwise give the retained worker
+one concrete correction. Only ApproveGoal creates acceptance. -- Pi/Codex`;
 
 export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
 	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
@@ -56,15 +54,16 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 		definition: {
 			description: "Read-only supervisor that owns a nested retained implementation worker.",
 			systemPrompt: supervisorSystemPrompt,
-			tools: ["read", "grep", "find", "ls", "bash", "subagent", "subagent_supervisor", "ApproveGoal"],
+			tools: ["read", "grep", "find", "ls", "bash", "subagent", "ApproveGoal"],
 			allowNestedSubagents: true,
 			subagentOnlyExtensions: [supervisorRuntime],
 			...(model ? { model } : {}),
 			systemPromptMode: "replace",
-			inheritProjectContext: true,
-			inheritGlobalContext: true,
-			inheritSkills: true,
-			defaultContext: "fork",
+			thinking: "low",
+			inheritProjectContext: false,
+			inheritGlobalContext: false,
+			inheritSkills: false,
+			defaultContext: "fresh",
 			defaultAsync: true,
 			defaultProgress: true,
 		},
@@ -118,7 +117,7 @@ export async function startGoalSupervisor(events: EventBus, cwd: string, task: s
 		agent: SUPERVISOR_AGENT,
 		task,
 		cwd,
-		context: "fork",
+		context: "fresh",
 		async: true,
 		mission: false,
 	}, signal);

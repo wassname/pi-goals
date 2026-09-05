@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
 import { isSupervisorReadOnlyCommand } from "./index.js";
-import { processWorkState, subagentWorkState } from "./worker.js";
+import { processWorkState } from "./worker.js";
 
 const NESTED_STATE = "pi-goals-nested-worker";
 
@@ -32,11 +32,14 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 		nested = { runId: event.id, pending: true };
 		persist();
 	});
-	pi.events.on("subagent:async-complete", (raw) => {
-		if ((raw as { runId?: unknown }).runId !== nested.runId) return;
+	const completeNested = (raw: unknown) => {
+		const event = raw as { id?: unknown; runId?: unknown };
+		if ((event.runId ?? event.id) !== nested.runId) return;
 		nested = { ...nested, pending: false };
 		persist();
-	});
+	};
+	pi.events.on("subagent:async-complete", completeNested);
+	pi.events.on("subagent:process-terminal", completeNested);
 
 	pi.on("session_start", async (_event, ctx) => {
 		const last = ctx.sessionManager.getEntries()
@@ -60,7 +63,7 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 			return { block: true, reason: nested.runId ? "Resume the retained goal-worker instead of starting another worker." : "The supervisor may start only goal-worker." };
 		}
 		if (action === "list") return;
-		if (action === "status" && (!targetRun(input) || targetRun(input) === nested.runId)) return;
+		if (action === "status") return { block: true, reason: "Do not poll the retained worker. Use its native progress and completion updates." };
 		if (["resume", "steer", "interrupt", "stop"].includes(action) && targetRun(input) === nested.runId) return;
 		return { block: true, reason: "The supervisor may inspect or control only its retained goal-worker." };
 	});
@@ -81,8 +84,8 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (nested.pending) return result("Cannot approve while the retained worker is pending.", true);
-			const [subagents, processes] = await Promise.all([subagentWorkState(pi.events), Promise.resolve(processWorkState(pi.events))]);
-			if (subagents !== "idle" || processes !== "idle") return result(`Cannot approve: subagents=${subagents}; processes=${processes}.`, true);
+			const processes = processWorkState(pi.events);
+			if (processes !== "idle") return result(`Cannot approve: processes=${processes}.`, true);
 			const planPath = resolve(params.planPath);
 			let plan: string;
 			let repository: ReturnType<typeof repositoryState>;
