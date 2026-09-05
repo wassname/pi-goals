@@ -28,7 +28,7 @@ const plan = `# Plan
 ## Appendix (context, not approved)
 ${"filler line\n".repeat(200)}`;
 
-describe("foldPlan (the working set is what gets re-sent; below ## Log is durable memory)", () => {
+describe("foldPlan (current goals are above ## Log; durable memory is below it)", () => {
 	it("keeps the title, user voice and goals", () => {
 		const folded = foldPlan(plan);
 		expect(folded).toContain("keep it under 50 lines");

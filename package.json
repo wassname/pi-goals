@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.2.2",
-  "description": "One plan file per session with a persistent read-only goal steward powered by pi-subagents.",
+  "description": "One plan file per session with a main research supervisor and retained pi-subagents worker.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
@@ -18,9 +18,12 @@
     "proof",
     "uat",
     "evidence",
-    "steward",
+    "supervisor",
     "subagent"
   ],
+  "dependencies": {
+    "@sting8k/pi-vcc": "^0.6.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"

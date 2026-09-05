@@ -1,34 +1,32 @@
 /**
- * PI: pi-goals owns one versioned plan per session. A persistent, read-only pi-subagents child
- * keeps the high-level context, reviews progress, and decides CompleteGoal sign-off.
+ * PI: pi-goals owns one versioned plan per session. The main agent supervises a cheaper retained
+ * pi-subagents worker, reviews progress, and decides CompleteGoal sign-off.
  *
  * Each /goals call makes `.pi/plan/<session_id>-vN.md`. The selected version survives resume and
  * compaction. Old plans stay on disk but inactive. A session with no selected plan has no widget,
- * injections, steward reviews, or CompleteGoal sign-off.
+ * supervision, worker, or CompleteGoal sign-off.
  *
  * TypeScript reads only goal checkbox lines for the widget. Models read the plan as prose. The
- * worker alone edits it. The steward receives the plan path on every review, rereads the complete
- * file, and can inspect cited artifacts with read-only tools. pi-subagents owns child sessions,
- * persistence, resume, completion events, structured output, and contact with the parent.
+ * worker edits the project and records evidence. The main agent keeps the high-level context and
+ * directs the worker. pi-subagents owns the worker session, fork, persistence, resume, events,
+ * and Fleet controls.
  *
- * — Pi/Codex
+ * -- Pi/Codex
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, reminder, resync } from "./prompts.js";
+import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
 import {
-	checkpointReview,
-	readyReview,
-	registerStewardAgent,
-	resumeSteward,
-	runStewardReview,
-	type StewardDecision,
-	signoffReview,
-	startSteward,
-} from "./steward.js";
+	processWorkState,
+	registerGoalWorker,
+	resumeGoalWorker,
+	startGoalWorker,
+	steerGoalWorker,
+	subagentWorkState,
+} from "./worker.js";
 
 const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
@@ -37,23 +35,18 @@ const PLANNING_CONTEXT = "pi-goals-planning-context";
 const PLAN_DIR = ".pi/plan";
 // For static text (the /goals description) where there is no ctx to resolve the session id.
 const PLAN_SHAPE = `${PLAN_DIR}/<session_id>-vN.md`;
-// Plan mode is read-only by convention AND a light gate: edit/write are blocked (except the plan
-// file, the deliverable). bash stays open — the prompt says don't mutate; guide, not gate (spec D3).
+// Plan mode blocks edit/write except for its plan file. bash remains available for read-only inspection. -- Pi/Codex
 const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
-// A plan reminder is only useful after a substantial run of work that has not changed the working
-// set. Log and learning entries do not count as progress. Unlike pi-tasks, goals have no dedicated
-// progress tool, so this cadence repeats until the working set changes.
-const STALE_TURNS = 8;
 const AUTO_DEFAULT_INTERVAL_MS = 60 * 60 * 1_000;
-const AUTO_MAX_WAKES_WITHOUT_PROGRESS = 2;
+const SUPERVISOR_COMPACT_TOKENS = 100_000;
 
-// A checkbox line beginning "goal:", for the widget and the "any goals open?" reminder condition.
+// A checkbox line beginning "goal:", used by the widget and supervisor scheduling.
 // Everything else reads the file as prose.
 const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*goal:\s*(.*)$/i;
 // An indented checkbox line that isn't a goal: a subtask. Only the widget reads these, so the human
 // sees the next action and not just the goal -- this file IS the task list.
 const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
-// The fold. Above it: the working set that gets re-sent. Below it: durable memory.
+// The fold separates current goals from the longer research record.
 const FOLD_LINE = /^##\s+Log\s*$/im;
 type GoalStatus = "open" | "active" | "done" | "cancelled";
 const CHAR_TO_STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "done", "-": "cancelled" };
@@ -67,8 +60,7 @@ function scanGoals(plan: string): Array<{ status: GoalStatus; subject: string; l
 	return goals;
 }
 
-/** The working set: everything above "## Log". Log, Learnings and Appendix below it are durable
- *  memory -- unlimited, read on demand, pushed back only by a resync. Exported for the unit test. */
+/** Return the short current-goal section above "## Log". Exported for the unit test. */
 export function foldPlan(plan: string): string {
 	const m = FOLD_LINE.exec(plan);
 	return (m ? plan.slice(0, m.index) : plan).trimEnd();
@@ -100,39 +92,33 @@ type Phase = "planning" | "working" | null;
 
 interface PlanState {
 	phase: Phase;
-	stewardModel: string | null;
-	stewardRunId: string | null;
-	stewardPending: boolean;
+	workerModel: string | null;
+	workerRunId: string | null;
+	workerPending: boolean;
 	planVersion: number | null;
 	autoIntervalMs: number | null;
-	autoPaused: boolean;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
+	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	let state: PlanState = {
 		phase: null,
-		stewardModel: null,
-		stewardRunId: null,
-		stewardPending: false,
+		workerModel: null,
+		workerRunId: null,
+		workerPending: false,
 		planVersion: null,
 		autoIntervalMs: null,
-		autoPaused: false,
 	};
 	let planningContextPending = false;
-	// The reminder sees only the working set. A repeated Log line must not look like progress.
-	let turnsStale = 0;
-	let lastSeenWorkingSet = "";
 	let autoTimer: ReturnType<typeof setTimeout> | null = null;
-	let autoWakeInFlight = false;
-	let autoWakesWithoutProgress = 0;
-	let autoLastWorkingSet = "";
-	let autoImmediateUsed = false;
-	let runStartedBackgroundWork = false;
-	let stewardRegistration: { dispose(): void } | null = null;
-	let stewardRegistrationError: string | null = null;
-	let unsubscribeStewardCompletion: (() => void) | null = null;
-	// Set on session start and after a compaction; drained by the next LLM call, which then carries
-	// the WHOLE file (appendix included) instead of just the working set.
+	let supervisorWakePending = false;
+	let supervisorCompactionPending = false;
+	let workerRegistration: { dispose(): void } | null = null;
+	let workerRegistrationError: string | null = null;
+	let unsubscribeWorkerCompletion: (() => void) | null = null;
+	let workerLaunchPending = false;
+	const workerCompletionsDuringLaunch = new Set<string>();
+	// Set on session start and after compaction; the next supervisor call receives the whole plan.
 	let resyncReason: string | null = "New session.";
 
 	const planRel = (ctx: ExtensionContext) => (state.planVersion === null ? PLAN_SHAPE : `${PLAN_DIR}/${ctx.sessionManager.getSessionId()}-v${state.planVersion}.md`);
@@ -152,44 +138,52 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		pi.appendEntry<PlanState>(STATE, state);
 	}
 
-	function setupSteward(ctx: ExtensionContext): void {
-		stewardRegistration?.dispose();
-		stewardRegistration = null;
-		stewardRegistrationError = null;
+	function setupWorker(ctx: ExtensionContext): void {
+		workerRegistration?.dispose();
+		workerRegistration = null;
+		workerRegistrationError = null;
 		try {
-			stewardRegistration = registerStewardAgent(pi.events, state.stewardModel);
+			workerRegistration = registerGoalWorker(pi.events, state.workerModel);
 		} catch (error) {
-			stewardRegistrationError = error instanceof Error ? error.message : String(error);
-			if (state.phase === "working") ctx.ui.notify(`Goal steward unavailable: ${stewardRegistrationError}`, "warning");
+			workerRegistrationError = error instanceof Error ? error.message : String(error);
+			if (state.phase === "working") ctx.ui.notify(`Goal worker unavailable: ${workerRegistrationError}`, "warning");
 		}
 	}
 
-	function rememberStewardRun(runId: string): void {
-		state = { ...state, stewardRunId: runId, stewardPending: true };
+	function rememberWorkerRun(runId: string): void {
+		state = { ...state, workerRunId: runId, workerPending: !workerCompletionsDuringLaunch.delete(runId) };
 		persist();
 	}
 
-	async function reviewInBackground(ctx: ExtensionContext, task: string): Promise<void> {
-		if (!stewardRegistration) {
-			ctx.ui.notify(`Goal steward unavailable: ${stewardRegistrationError ?? "pi-subagents is not ready"}. Install pi-subagents and reload Pi.`, "warning");
-			return;
-		}
-		if (state.stewardPending) return;
+	async function startOrResumeWorker(ctx: ExtensionContext, task: string, signal?: AbortSignal): Promise<string> {
+		if (workerLaunchPending) throw new Error("A goal-worker launch is already in progress.");
+		if (!workerRegistration) setupWorker(ctx);
+		if (!workerRegistration) throw new Error(`Goal worker unavailable: ${workerRegistrationError ?? "pi-subagents is not ready"}.`);
+		workerLaunchPending = true;
+		workerCompletionsDuringLaunch.clear();
 		try {
-			const runId = state.stewardRunId
-				? await resumeSteward(pi.events, state.stewardRunId, task)
-				: await startSteward(pi.events, ctx.cwd, task);
-			rememberStewardRun(runId);
-		} catch (error) {
-			ctx.ui.notify(`Goal steward could not start: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			const runId = state.workerRunId
+				? await resumeGoalWorker(pi.events, state.workerRunId, task, signal)
+				: await startGoalWorker(pi.events, ctx.cwd, task, signal);
+			rememberWorkerRun(runId);
+			return runId;
+		} finally {
+			workerLaunchPending = false;
+			workerCompletionsDuringLaunch.clear();
 		}
 	}
 
-	function watchStewardCompletion(): void {
-		unsubscribeStewardCompletion?.();
-		unsubscribeStewardCompletion = pi.events.on("subagent:async-complete", (raw) => {
-			if (!raw || typeof raw !== "object" || (raw as { runId?: string }).runId !== state.stewardRunId) return;
-			state = { ...state, stewardPending: false };
+	function watchWorkerCompletion(): void {
+		unsubscribeWorkerCompletion?.();
+		unsubscribeWorkerCompletion = pi.events.on("subagent:async-complete", (raw) => {
+			if (!raw || typeof raw !== "object") return;
+			const runId = (raw as { runId?: string }).runId;
+			if (!runId) return;
+			if (runId !== state.workerRunId) {
+				if (workerLaunchPending) workerCompletionsDuringLaunch.add(runId);
+				return;
+			}
+			state = { ...state, workerPending: false };
 			persist();
 		});
 	}
@@ -203,49 +197,42 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return scanGoals(readPlan(ctx)).some((goal) => goal.status === "active" || goal.status === "open");
 	}
 
-	function scheduleAutoContinue(ctx: ExtensionContext, delayMs = state.autoIntervalMs): void {
-		clearAutoTimer();
-		if (delayMs === null || state.phase !== "working" || state.autoIntervalMs === null || state.autoPaused || !activeGoals(ctx)) return;
+	function wakeSupervisor(ctx: ExtensionContext, reason: string): void {
+		if (supervisorWakePending || state.phase !== "working" || !activeGoals(ctx)) return;
+		supervisorWakePending = true;
+		pi.sendUserMessage(
+			`<system-reminder>${reason}\nYou are the goal supervisor. Read ${planRel(ctx)} and inspect the cited evidence. Use CheckGoalWork before concluding that work stopped, and GuideGoalWorker to steer or resume the cheaper worker. Sign off a goal only after its discriminator is positively proved. Do not perform implementation work yourself.</system-reminder>`,
+			{ deliverAs: "followUp" },
+		);
+	}
+
+	function scheduleSupervisorCheck(ctx: ExtensionContext): void {
+		if (autoTimer !== null || state.phase !== "working" || state.autoIntervalMs === null || !activeGoals(ctx)) return;
 		autoTimer = setTimeout(() => {
 			autoTimer = null;
-			if (state.phase !== "working" || state.autoPaused || !ctx.isIdle() || !activeGoals(ctx)) return;
-			autoWakeInFlight = true;
-			pi.sendUserMessage(
-				`<system-reminder>Auto-continue is enabled by the human. Continue the active goal in ${planRel(ctx)}. Work from the open subtasks and observed artifacts. Keep the plan current, including useful Log entries. If you need a human decision, ask one direct question and leave the goal active.</system-reminder>`,
-				{ deliverAs: "followUp" },
-			);
-		}, delayMs);
+			scheduleSupervisorCheck(ctx);
+			wakeSupervisor(ctx, `The ${state.autoIntervalMs! / 60_000}-minute supervisor check is due.`);
+		}, state.autoIntervalMs);
 		autoTimer.unref();
 	}
 
-	function settleAuto(ctx: ExtensionContext): void {
-		if (state.phase !== "working" || state.autoIntervalMs === null || state.autoPaused || !activeGoals(ctx)) return;
-		const workingSet = foldPlan(readPlan(ctx));
-		const changed = workingSet !== autoLastWorkingSet;
-		if (changed) {
-			autoLastWorkingSet = workingSet;
-			autoWakesWithoutProgress = 0;
-			autoImmediateUsed = false;
-		}
-		if (autoWakeInFlight) {
-			autoWakeInFlight = false;
-			if (!changed) autoWakesWithoutProgress++;
-			if (autoWakesWithoutProgress >= AUTO_MAX_WAKES_WITHOUT_PROGRESS) {
-				state = { ...state, autoPaused: true };
-				persist();
-				updateWidget(ctx);
-				ctx.ui.notify("Goal auto-continue paused; waiting for user after two wakes without working-plan progress.", "warning");
-				return;
-			}
-			scheduleAutoContinue(ctx);
-			return;
-		}
-		if (!runStartedBackgroundWork && !autoImmediateUsed) {
-			autoImmediateUsed = true;
-			scheduleAutoContinue(ctx, 0);
-			return;
-		}
-		scheduleAutoContinue(ctx);
+	function compactSupervisor(ctx: ExtensionContext): void {
+		const usage = ctx.getContextUsage();
+		if (supervisorCompactionPending || usage?.tokens === null || usage?.tokens === undefined || usage.tokens < SUPERVISOR_COMPACT_TOKENS) return;
+		supervisorCompactionPending = true;
+		ctx.compact({
+			customInstructions: "__pi_vcc__ keep:1",
+			onComplete: (result) => {
+				supervisorCompactionPending = false;
+				if ((result.details as { compactor?: string } | undefined)?.compactor !== "pi-vcc") {
+					ctx.ui.notify("Goal supervisor compaction did not use pi-vcc. Install and load @sting8k/pi-vcc.", "warning");
+				}
+			},
+			onError: (error) => {
+				supervisorCompactionPending = false;
+				ctx.ui.notify(`Goal supervisor compaction failed: ${error.message}`, "warning");
+			},
+		});
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
@@ -261,15 +248,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		const done = goals.filter((g) => g.status === "done").length;
-		const auto = state.autoPaused ? " · waiting for user" : state.autoIntervalMs === null ? "" : ` · auto ${state.autoIntervalMs / 60_000}m`;
+		const auto = state.autoIntervalMs === null ? "" : ` · supervise ${state.autoIntervalMs / 60_000}m`;
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${auto}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
-		// No path line: the session id makes it 47 chars, too long to be worth a widget row. The
-		// human opens the file from the Ready menu, and every injected reminder still names it.
+		// No path line: the session id makes it too long to be useful in the widget.
 		const plan = readPlan(ctx);
-		const lines: string[] = state.autoPaused ? [ctx.ui.theme.fg("warning", "⏸ waiting for user")] : [];
+		const lines: string[] = [];
 		for (const g of goals.filter((g) => g.status === "active" || g.status === "open")) {
 			lines.push(`${mark[g.status]} ${g.subject}`);
 			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
@@ -277,7 +263,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		ctx.ui.setWidget(WIDGET_KEY, lines);
 	}
 
-	// --- /goals: enter plan mode (or clear / configure the steward) — Pi/Codex ---------------------
+	// --- /goals: enter plan mode or configure supervision -- Pi/Codex -----------------------------
 
 	pi.registerCommand("goals", {
 		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals model <model>`,
@@ -290,7 +276,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				}
 				const currentPlan = planRel(ctx);
 				clearAutoTimer();
-				state = { ...state, phase: null, stewardRunId: null, stewardPending: false, planVersion: null, autoIntervalMs: null, autoPaused: false };
+				state = { ...state, phase: null, workerRunId: null, workerPending: false, planVersion: null, autoIntervalMs: null };
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
@@ -300,14 +286,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				const value = arg.slice("auto".length).trim();
 				if (value === "off") {
 					clearAutoTimer();
-					state = { ...state, autoIntervalMs: null, autoPaused: false };
+					state = { ...state, autoIntervalMs: null };
 					persist();
 					updateWidget(ctx);
-					ctx.ui.notify("Goal auto-continue disabled.", "info");
+					ctx.ui.notify("Hourly goal supervision disabled.", "info");
 					return;
 				}
 				if (state.phase !== "working") {
-					ctx.ui.notify("Approve a plan with Ready before enabling auto-continue.", "warning");
+					ctx.ui.notify("Approve a plan with Ready before enabling supervision.", "warning");
 					return;
 				}
 				const minutes = value ? Number(value) : AUTO_DEFAULT_INTERVAL_MS / 60_000;
@@ -315,25 +301,23 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify("Use /goals auto [whole minutes], or /goals auto off.", "warning");
 					return;
 				}
-				autoWakeInFlight = false;
-				autoWakesWithoutProgress = 0;
-				autoLastWorkingSet = foldPlan(readPlan(ctx));
-				state = { ...state, autoIntervalMs: minutes * 60_000, autoPaused: false };
+				clearAutoTimer();
+				state = { ...state, autoIntervalMs: minutes * 60_000 };
 				persist();
 				updateWidget(ctx);
-				scheduleAutoContinue(ctx);
-				ctx.ui.notify(`Goal auto-continue enabled every ${minutes}m.`, "info");
+				scheduleSupervisorCheck(ctx);
+				ctx.ui.notify(`Goal supervision will check every ${minutes}m.`, "info");
 				return;
 			}
 			if (arg === "model" || arg.startsWith("model ")) {
 				const ref = arg.slice("model".length).trim();
-				state = { ...state, stewardModel: ref || null, stewardRunId: null, stewardPending: false };
+				state = { ...state, workerModel: ref || null, workerRunId: null, workerPending: false };
 				persist();
-				setupSteward(ctx);
-				ctx.ui.notify(ref ? `Goal-steward model set to ${ref}` : "Goal-steward model reset to pi-subagents default", "info");
+				setupWorker(ctx);
+				ctx.ui.notify(ref ? `Goal-worker model set to ${ref}` : "Goal-worker model reset to pi-subagents default", "info");
 				return;
 			}
-			state = { ...state, phase: "planning", stewardRunId: null, stewardPending: false, planVersion: nextVersion(ctx) };
+			state = { ...state, phase: "planning", workerRunId: null, workerPending: false, planVersion: nextVersion(ctx), autoIntervalMs: null };
 			planningContextPending = true;
 			resyncReason = null;
 			writePlan(ctx, "");
@@ -351,31 +335,23 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// --- hooks --------------------------------------------------------------------------------------
 
-	/** What this LLM call should carry, if anything: a one-shot resync, or a staleness reminder. */
+	/** Restore the complete plan once after session start or compaction. */
 	function dueInjection(ctx: ExtensionContext, plan: string): string | null {
-		const drainResync = (): string | null => {
-			const why = resyncReason;
-			resyncReason = null;
-			return why;
-		};
-		if (state.phase === "planning") return null;
-		if (!plan.trim()) return null;
-		const why = drainResync();
-		if (why) return resync(plan, planRel(ctx), why);
-		if (turnsStale < STALE_TURNS) return null;
-		const goals = scanGoals(plan);
-		if (goals.length === 0) {
-			// Non-empty plan but no recognizable goal line: the harness would go silently inert (no
-			// widget, no injection, no reminders). Say so instead -- cooperative but confused.
-			return `<system-reminder>\n${planRel(ctx)} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat it if it's meant to be the plan.\n</system-reminder>`;
-		}
-		if (!goals.some((g) => g.status === "active" || g.status === "open")) return null;
-		return reminder(foldPlan(plan), planRel(ctx));
+		if (state.phase === "planning" || !plan.trim() || !resyncReason) return null;
+		const why = resyncReason;
+		resyncReason = null;
+		return resync(plan, planRel(ctx), why);
 	}
 
 	// The phase snapshot enters context only when planning starts or context was lost.
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if (state.phase !== "planning" || !planningContextPending) return;
+		supervisorWakePending = false;
+		if (state.phase === "working") {
+			return {
+				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the research supervisor for ${planRel(ctx)}. Keep the high-level goal and the human's intent stable. The retained goal-worker owns implementation and plan updates; direct it with GuideGoalWorker instead of implementing work yourself. Read cited artifacts before calling CompleteGoal. A pi-subagents completion can wake you while nested subagents or managed processes are still running, so call CheckGoalWork before concluding that work stopped. At hourly checks, inspect progress and steer the worker only when a concrete correction is useful. Keep work going until all goals are proved or the human stops it. -- Pi/Codex`,
+			};
+		}
+		if (!planningContextPending) return;
 		planningContextPending = false;
 		return { message: { customType: PLANNING_CONTEXT, content: planningState(planPath(ctx)), display: false } };
 	});
@@ -384,50 +360,26 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// before_agent_start, so context restores the planning snapshot exactly once in that path.
 	pi.on("context", async (event, ctx) => {
 		const messages = state.phase === "planning" ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
+		const removedPlanningContext = messages.length !== event.messages.length;
 		if (state.phase === "planning" && planningContextPending) {
 			planningContextPending = false;
 			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: planningState(planPath(ctx)) }], timestamp: Date.now() }] };
 		}
 		const text = dueInjection(ctx, readPlan(ctx));
-		if (!text) return messages === event.messages ? undefined : { messages };
-		turnsStale = 0;
+		if (!text) return removedPlanningContext ? { messages } : undefined;
 		return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
 	});
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
-		if (event.source !== "extension") {
-			clearAutoTimer();
-			autoImmediateUsed = false;
-			if (state.autoPaused) {
-				state = { ...state, autoPaused: false };
-				persist();
-				updateWidget(ctx);
-			}
-		}
 		if (state.phase === "planning" && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
 	});
 
-	// The staleness clock sees only the working set. Log updates are durable evidence, not progress.
 	pi.on("turn_end", async (_event, ctx) => {
-		const workingSet = foldPlan(readPlan(ctx));
-		if (workingSet === lastSeenWorkingSet) {
-			turnsStale++;
-			return;
-		}
-		lastSeenWorkingSet = workingSet;
-		turnsStale = 0;
 		updateWidget(ctx);
 	});
 
-	pi.on("agent_start", async () => {
-		runStartedBackgroundWork = false;
-	});
-
 	pi.on("tool_call", async (event, ctx) => {
-		if (state.phase === "working" && (event.toolName === "subagent" || (event.toolName === "process" && (event.input as { action?: string }).action === "start"))) {
-			runStartedBackgroundWork = true;
-		}
 		if (state.phase !== "planning") return;
 		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
 			const target = (event.input as { path?: string }).path;
@@ -448,8 +400,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (state.phase === "working") {
-			if (turnsStale >= STALE_TURNS && activeGoals(ctx)) await reviewInBackground(ctx, checkpointReview(planRel(ctx), turnsStale));
-			settleAuto(ctx);
+			compactSupervisor(ctx);
+			scheduleSupervisorCheck(ctx);
 			return;
 		}
 		if (state.phase !== "planning" || !ctx.hasUI) return;
@@ -480,18 +432,24 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			}
 			if (choice === "Cancel") {
 				rmSync(planPath(ctx), { force: true });
-				state = { ...state, phase: null, stewardRunId: null, stewardPending: false, planVersion: null };
+				state = { ...state, phase: null, workerRunId: null, workerPending: false, planVersion: null, autoIntervalMs: null };
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify("Plan discarded.", "info");
 				return;
 			}
 			if (choice !== "Ready") return;
-			state = { ...state, phase: "working" };
+			state = { ...state, phase: "working", autoIntervalMs: AUTO_DEFAULT_INTERVAL_MS };
+			resyncReason = "The plan was approved.";
 			persist();
 			updateWidget(ctx);
-			await reviewInBackground(ctx, readyReview(planRel(ctx)));
-			pi.sendUserMessage(`Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`, { deliverAs: "followUp" });
+			try {
+				await startOrResumeWorker(ctx, `Work the goals in ${planRel(ctx)}. Mark one open goal active, execute its subtasks, and record exact evidence in the plan Log. Report progress and evidence to the main research supervisor. Do not sign off goals.`);
+				scheduleSupervisorCheck(ctx);
+			} catch (error) {
+				ctx.ui.notify(`Goal worker could not start: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				wakeSupervisor(ctx, "The approved goal worker failed to start.");
+			}
 			return;
 		}
 	});
@@ -503,32 +461,66 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			.pop() as { data?: PlanState } | undefined;
 		state = {
 			phase: last?.data?.phase ?? null,
-			stewardModel: last?.data?.stewardModel ?? null,
-			stewardRunId: last?.data?.stewardRunId ?? null,
-			stewardPending: last?.data?.stewardPending ?? false,
+			workerModel: last?.data?.workerModel ?? null,
+			workerRunId: last?.data?.workerRunId ?? null,
+			workerPending: last?.data?.workerPending ?? false,
 			planVersion: last?.data?.planVersion ?? null,
 			autoIntervalMs: last?.data?.autoIntervalMs ?? null,
-			autoPaused: last?.data?.autoPaused ?? false,
 		};
-		watchStewardCompletion();
-		setupSteward(ctx);
-		lastSeenWorkingSet = foldPlan(readPlan(ctx));
-		autoLastWorkingSet = lastSeenWorkingSet;
+		watchWorkerCompletion();
+		setupWorker(ctx);
 		planningContextPending = state.phase === "planning";
 		resyncReason = state.phase === "working" ? "New session." : null;
 		updateWidget(ctx);
-		scheduleAutoContinue(ctx);
+		scheduleSupervisorCheck(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
 		clearAutoTimer();
-		stewardRegistration?.dispose();
-		stewardRegistration = null;
-		unsubscribeStewardCompletion?.();
-		unsubscribeStewardCompletion = null;
+		workerRegistration?.dispose();
+		workerRegistration = null;
+		unsubscribeWorkerCompletion?.();
+		unsubscribeWorkerCompletion = null;
 	});
 
-	// --- the one blessed tool: CompleteGoal ---------------------------------------------------------
+	pi.registerTool({
+		name: "CheckGoalWork",
+		label: "Check goal work",
+		description: "Check whether pi-subagents or pi-processes still has active work before deciding that the goal worker stopped.",
+		parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _onUpdate, _ctx) {
+			try {
+				const [subagents, processes] = await Promise.all([subagentWorkState(pi.events), Promise.resolve(processWorkState(pi.events))]);
+				const unknown = subagents === "unknown" || processes === "unknown";
+				return result(`subagents=${subagents}; processes=${processes}`, unknown);
+			} catch (error) {
+				return result(`Goal work status failed: ${error instanceof Error ? error.message : String(error)}`, true);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "GuideGoalWorker",
+		label: "Guide goal worker",
+		description: "Send one concrete instruction to the retained goal-worker. A live worker is steered; a completed worker is resumed with its saved context.",
+		parameters: Type.Object({
+			instruction: Type.String({ description: "The next research or implementation action, with the evidence that should distinguish success from failure." }),
+		}),
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			if (state.phase !== "working") return result("Approve a plan with Ready before directing the goal worker.", true);
+			try {
+				if (state.workerPending) {
+					if (!state.workerRunId) throw new Error("Goal-worker state says running but has no run ID.");
+					await steerGoalWorker(pi.events, state.workerRunId, params.instruction, signal);
+					return result(`Instruction delivered to live goal worker ${state.workerRunId}.`);
+				}
+				const runId = await startOrResumeWorker(ctx, params.instruction, signal);
+				return result(`Goal worker resumed as ${runId}.`);
+			} catch (error) {
+				return result(`Goal-worker guidance failed: ${error instanceof Error ? error.message : String(error)}`, true);
+			}
+		},
+	});
 
 	pi.registerTool({
 		name: "CompleteGoal",
@@ -537,54 +529,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
-		async execute(_id, params, signal, onUpdate, ctx) {
-			if (state.phase === "planning") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (state.phase !== "working") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
-
-			if (!stewardRegistration) {
-				return result(`Goal steward unavailable: ${stewardRegistrationError ?? "pi-subagents is not ready"}. Install pi-subagents and reload Pi.`, true);
-			}
-			if (state.stewardPending) return result("The goal steward is still reviewing the previous checkpoint. Retry CompleteGoal after its result arrives.", true);
-			onUpdate?.({ content: [{ type: "text", text: `Persistent goal steward inspecting: ${params.goal}` }], details: {} });
-			let reviewRunId = "";
-			let decision: StewardDecision;
-			try {
-				const review = await runStewardReview(
-					pi.events,
-					ctx.cwd,
-					state.stewardRunId,
-					signoffReview(planRel(ctx), params.goal),
-					signal,
-					600_000,
-					rememberStewardRun,
-				);
-				reviewRunId = review.runId;
-				decision = review.decision;
-			} catch (error) {
-				return result(`Goal-steward review failed: ${error instanceof Error ? error.message : String(error)}`, true);
-			}
-			state = { ...state, stewardPending: false };
-			persist();
-			const outcome = decideStewardSignOff(params.goal, decision, reviewRunId);
-			if (outcome.logEntry) {
-				// Sign-off write: tick the goal [x] (exact-subject match; dogfood showed agent bookkeeping
-				// is the drift point) and append the audit log line, one write. On wording drift the tick
-				// falls to the agent and the result says so -- both paths are explicit, never silent.
-				let updated = readPlan(ctx);
-				let tickNote = "";
-				if (outcome.logEntry.startsWith("signed off")) {
-					const ticked = tickGoal(updated, params.goal);
-					updated = ticked ?? updated;
-					tickNote = ticked
-						? `\n\nGoal ticked [x] in ${planRel(ctx)}.`
-						: `\n\nNo exact goal line matched your wording -- tick it [x] in ${planRel(ctx)} yourself.`;
-				}
-				writePlan(ctx, appendLog(updated, `${stamp()} ${outcome.logEntry}`));
-				updateWidget(ctx);
-				return result(outcome.resultText + tickNote, outcome.isError);
-			}
-			return result(outcome.resultText, outcome.isError);
+			const ticked = tickGoal(plan, params.goal);
+			if (!ticked) return result(`No unique exact goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
+			writePlan(ctx, appendLog(ticked, `${stamp()} signed off "${params.goal}" by the main research supervisor`));
+			updateWidget(ctx);
+			return result(`Sign-off accepted. Goal ticked [x] in ${planRel(ctx)}.`);
 		},
 	});
 }
@@ -608,39 +561,8 @@ function stamp(): string {
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function oneLine(s: string): string {
-	return s.replace(/\s+/g, " ").trim().slice(0, 200);
-}
-
-export interface SignOffOutcome {
-	resultText: string;
-	isError: boolean;
-	logEntry: string;
-}
-
-export function decideStewardSignOff(goal: string, decision: StewardDecision, runId: string): SignOffOutcome {
-	if (decision.verdict === "accept") {
-		return {
-			resultText: `Sign-off ACCEPTED.\n\nGoal steward: ${decision.summary}\nRun: ${runId}`,
-			isError: false,
-			logEntry: `signed off "${goal}" (steward accept; run ${runId})`,
-		};
-	}
-	const missing = decision.verdict === "reject"
-		? decision.missingEvidence?.join("; ") || decision.summary
-		: decision.verdict === "redirect"
-			? decision.nextAction ?? decision.summary
-			: `The steward returned let_run instead of a sign-off verdict: ${decision.summary}`;
-	return {
-		resultText: `Sign-off REJECTED. Missing:\n${missing}\n\nGoal steward: ${decision.summary}\nRun: ${runId}`,
-		isError: true,
-		logEntry: `reject "${goal}": ${oneLine(missing)} (steward run ${runId})`,
-	};
-}
-
 /** Tick the goal line whose subject exactly matches `goal` (trimmed, case-insensitive) to [x].
- *  Null when there is no unique exact match (wording drift / duplicates) -- the caller then asks the
- *  agent to tick it itself. Reuses GOAL_LINE; deliberately not fuzzy; the steward reads prose. */
+ *  Null when there is no unique exact match. Reuses GOAL_LINE and is deliberately not fuzzy. */
 export function tickGoal(plan: string, goal: string): string | null {
 	const lines = plan.split("\n");
 	const want = goal.trim().toLowerCase();

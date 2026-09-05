@@ -1,71 +1,67 @@
-# Supervisor through pi-subagents
+# Main-agent supervisor with a retained pi-subagents worker
 
-User, this session: "Another take on my pi-intercom-supervisor but using pi-subagents not a seperate user started terminal. I want to keep it simple by using pi-vcc pi-subagents where possibe"
-
-Branch: `experiment/subagent-supervisor`. Supersedes the custom session-switching plan. Authored by Pi/Codex.
+The main Pi session keeps the high-level research context and uses the stronger model. A cheaper `goal-worker` child implements the plan. pi-subagents owns the child fork, continuation, background completion, and Fleet visibility. pi-vcc compacts long context.
 
 ## User-visible result
 
-The main agent is the cheaper worker. A stronger supervisor keeps the high-level intent and gives research direction from compressed context. It checks every 60 minutes and when the worker settles without background work, and judges goal sign-off against the plan and work history. Inspect and guide it through normal pi-subagents controls. No new terminal or custom session-switch command.
+After Ready, the main session supervises a retained worker: it reviews every 60 minutes, responds when the worker finishes and no other work remains, and signs off goals from inspected evidence.
 
-- [ ] goal: Keep supervisor context through ordinary pi-subagents continuation
-  - [ ] At Ready, fork the approved-plan conversation and compact the supervisor's copy before its first review. Leave worker context unchanged. Keep runtime registration and a separately selected supervisor model; retain the latest run ID and reconcile on reload.
-  - [ ] Resume that supervisor with VCC summaries of worker updates, current work status, and the full plan path. Include the worker compaction summary when an update crosses a compaction boundary; do not replay raw worker turns at check-ins.
-  - [ ] Compact supervisor context at about 100k tokens, earlier if its model requires it. Preserve human intent, research decisions, rejected ideas and reasons, unresolved questions, and evidence references. Prefer package compaction support; verify the child-specific API before implementation.
-  - [ ] Preserve supervisor decisions through continuation; avoid duplicate worker snapshots. Reuse relevant pi-supervise view logic, not its intercom transport or process scan.
-  - [ ] Enable normal progress visibility; remove the bespoke visit/role-restoration design and arbitrary read-tool cap.
-  - failure modes: fresh reviews forget earlier corrections; stale snapshots hide a human correction; review instructions start another supervisor.
-  - deliverable: a real resumed child refers to an earlier correction and a later worker update in its next decision, visible through Fleet.
+## User voice
 
-- [ ] goal: Use one supervisor check path for hourly and idle checks
-  - [ ] Replace direct auto-continue and stale-turn review dispatch with an hourly timer plus settled/background-completion events.
-  - [ ] Query pi-subagents status and pi-processes' request/reply protocol; do not infer activity from tool names, elapsed time, or missing results.
-  - [ ] Exclude the supervisor itself; include nested work and queued completion delivery. Unknown status is an error, not proof of idle.
-  - [ ] Serialize checks; recheck idle before dispatch and before waking the worker. Apply redirects once to the owning worker session.
-  - [ ] Remove the two-wake pause. Human messages do not disable supervision. Keep the hourly check armed while the worker is stopped or busy; explicit off/clear or completed goals end checks.
-  - failure modes: duplicate supervisors; normal async waiting mistaken for abandonment; supervisor completion triggers an endless self-review loop.
-  - deliverable: hourly checks while busy, idle checks only without remaining work, and a supervisor redirect that actually restarts a stopped worker.
+- > “Another take on my pi-intercom-supervisor but using pi-subagents not a seperate user started terminal. I want to keep it simple by using pi-vcc pi-subagents where possibe”
+- > “fork and compact because I hope to use a smarter model for the supervisor with better research taste.”
+- > “only check in sees a summary, and ideally compacts at 100k”
 
-- [ ] goal: Sign off from the same informed supervisor
-  - [ ] Route CompleteGoal through the same serialized check path with explicit sign-off mode; retain existing plan evidence and ticking behavior.
-  - [ ] Only accept/reject decides sign-off; checkpoint advice cannot tick a goal. A failed review cannot approve anything.
-  - failure modes: the supervisor accepts the worker's claim without reading the cited artifacts; a sign-off request received during a checkpoint is never processed.
-  - deliverable: reject a plausible claim without evidence, then accept its proven result using the retained supervisor context.
+## Goals
+
+1. [x] goal: Keep the stronger main session as supervisor and retain a cheaper child worker
+   - subtle failure mode: each instruction starts a fresh child that forgets earlier work.
+   - discriminator: a real Ready flow forks `goal-worker`; later guidance resumes its latest run ID and Fleet shows the child.
+   - tasks:
+     1. [x] register `goal-worker` through the pi-subagents runtime API with a separate `/goals model` setting
+     2. [x] fork on Ready and store each replacement run ID returned by resume
+     3. [x] keep implementation and plan edits in the child; keep evidence review and `CompleteGoal` in the main session
+   - evidence:
+     - `slop/audits/20260905_goal-worker-runtime-proof.json`: a real Ready flow created a child fork and wrote `"reason": "below-compactable-size"`.
+     - `slop/audits/20260905_subagent-supervisor-validation.txt`: `Tests  37 passed (37)`, including spawn, continuation, steering, and a completion-before-RPC-reply race.
+
+2. [x] goal: Compact context without adding a custom transport
+   - subtle failure mode: the worker inherits the full expensive transcript, or a different compactor silently handles it.
+   - discriminator: the child runtime records either pi-vcc compaction or that the exact fork is below Pi's compaction minimum; the main session requests pi-vcc near 100k tokens.
+   - tasks:
+     1. [x] load pi-vcc in the child and compact the initial fork before its first turn
+     2. [x] fail if a different child compactor reports success
+     3. [x] compact the main supervisor near 100k and warn if pi-vcc did not handle it
+   - evidence:
+     - `slop/audits/20260905_goal-worker-runtime-proof.json`: the real child runtime recorded its explicit below-minimum outcome rather than silently claiming compaction.
+     - `test/worker-runtime.test.ts` covers pi-vcc success, below-minimum context, retained resume, and wrong-compactor failure; `test/goals-flow.test.ts` covers the 100k main-session request.
+
+3. [x] goal: Check hourly and after worker completion without a self-review loop
+   - subtle failure mode: each supervisor settle schedules a new immediate review, or a child completion is mistaken for all work being idle.
+   - discriminator: one timer keeps its original hourly cadence; pi-subagents completion wakes the main session once; `CheckGoalWork` reports exact subagent and process state before a restart decision.
+   - tasks:
+     1. [x] keep one 60-minute timer active until goals close, auto is disabled, or the plan is cleared
+     2. [x] use native pi-subagents completion delivery instead of a second idle wake
+     3. [x] query public pi-subagents and pi-processes status; treat omitted or missing status as unknown
+   - evidence:
+     - `test/goals-flow.test.ts` keeps the first timer deadline across an intervening settle and checks idle status after native completion.
+     - `test/worker.test.ts` distinguishes active, nested-active, idle, omitted/unknown, and missing pi-processes status.
+     - `slop/audits/20260905_subagent-supervisor-validation.txt`: typecheck, lint, whitespace check, and package dry-run passed.
 
 ## UAT / verification
 
-- Context: verify the first review receives a compacted fork, later checks receive summaries, and supervisor compaction occurs near 100k tokens. Success retains earlier corrections through both agents' compactions; likely failure forgets them; subtle failure retains the plan but omits a newer user correction. Inspect actual model context, not just the saved transcript.
-- Cost and usefulness: record worker/supervisor input, cached input, output, compaction usage, and cost separately. Test the hypothesis of roughly 10x lower supervisor token use; do not infer it from context size alone. Record concrete supervisor corrections and worker outcomes. A cheaper run alone does not demonstrate better research decisions.
-- Triggers: fake-clock tests exercise 60 minutes during busy work and after repeated stops. Success also waits for an already-running child/process; likely failure never wakes; subtle failure counts its own supervisor or treats a completed launch call as finished work. Test nested work, completion delivery, overlap, reload, off, and all-goals-done.
-- Sign-off: exercise missing evidence, positive artifact evidence, and concurrent checkpoint/sign-off. Check the saved decision and actual plan checkbox, not only mocked helper output.
-- Run repo tests, typecheck, lint, and a real spawn/resume/redirect/sign-off test with normal Fleet visibility. Save local run artifacts outside tracked research/source files. If a check fails, inspect its source events and fix the cause; do not substitute a separate terminal.
+- Run `npm test`, `npm run typecheck`, `npm run lint`, `git diff --check`, and `npm pack --dry-run`; save exact output.
+- Real runtime: load pi-goals with pi-subagents and pi-vcc, approve a plan, observe a real `goal-worker` fork and the fork-preparation record, then stop the test run.
+- Inspect the final diff for duplicate wake paths, silent status fallbacks, and instructions that tell the main supervisor to implement worker tasks.
 
-## Appendix: ownership and flow
+## Appendix (context, not approved)
 
-```text
-Ready: fork approved-plan conversation -> compact child copy -> stronger supervisor
-Every 60 minutes: request checkpoint, even if worker has been busy
-Worker settled / background work finished: reconcile; request idle check if no work remains
-CompleteGoal: request sign-off with claim + plan + VCC worker view
+A normal Pi TUI cannot switch into the child's full interactive session. Fleet can inspect and steer it. This design keeps the visitable persistent context in the main session and uses retained child continuation for implementation.
 
-One check at a time -> resume with VCC update -> store latest run ID
-Supervisor context near 100k tokens -> compact its context, retaining decisions
-  checkpoint/idle -> let_run or redirect worker with one concrete next action
-  sign-off        -> reject with missing evidence, or accept and tick goal
-```
+pi-subagents always sends an async completion to the parent. Therefore worker completion is the idle-review wake. Adding another `agent_settled` wake would create a completion → supervisor → settle loop.
 
-User clarification: "fork and compact because I hope to use a smarter model for the supervisor with better research taste." The initial supervisor input must be compacted, even if the worker has not compacted. Do not compact the worker as a side effect. Verify that inherited extension state does not start nested supervision.
+`CheckGoalWork` sees parent-process pi-processes state. A process started inside the worker remains covered indirectly because the top-level worker run stays active while its child work runs.
 
-Cost hypothesis, not an observed result: roughly one tenth of the token use could fund a model with roughly ten times the per-token price at comparable total cost. Measure cache pricing, output, and compaction separately. The intended benefit is better worker research decisions, not merely fewer supervisor tokens.
+Sources read: pi-subagents `README.md`, `docs/extension-api.md`, `docs/observability.md`, `docs/workflows.md`, execution controls; pi-processes request/list client; pi-vcc package behavior; `pi-supervise/RESEARCH_JOURNAL.md`.
 
-These are conceptual operations, not invented package API names. The parent extension supplies triggers and context; pi-subagents owns child execution, persistence, resume, control, and UI. The supervisor judges direction and evidence. It may finish each review turn; the next check continues its stored context. No claim that the same child process stays running.
-
-Use a small parent-session timer: installed RPC `manage` does not expose schedule creation, and package schedules launch fresh workflows without automatically capturing current parent context. Do not use the package's budget-bound mission goal loop for this unlimited-duration supervision policy.
-
-Sources read for this plan:
-- [Supervisor research journal](../../../pi-supervise/RESEARCH_JOURNAL.md): user preferences, premature-stop bug, VCC context, stale-snapshot accumulation.
-- [pi-subagents extension API](/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/extension-api.md): runtime registration, RPC spawn/resume/status, exact-session completions.
-- [Execution controls](/home/code/.pi/agent/npm/node_modules/pi-subagents/skills/pi-subagents/references/execution-controls.md): retained continuation, latest run identity, schedules, native parent contact.
-- [Observability](/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/observability.md): Fleet transcripts, `s` guidance to live async children. Enter opens an optional Herdr inspector, not a TUI session switch.
-- [Process client](/home/code/.pi/agent/npm/node_modules/@aliou/pi-processes/extensions/processes/client.ts): existing request/reply list protocol. Verify ownership/scope in the handler before integrating; never silently interpret a missing reply as an empty list.
-- [Existing VCC view](/home/code/.pi/agent/git/github.com/wassname/pi-supervise/src/view.ts): reuse context construction selectively; its process scan and intercom byte limits do not belong in this branch.
+-- Pi/Codex

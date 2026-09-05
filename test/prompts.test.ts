@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { planDrafting, planningState, reminder, resync } from "../src/prompts.js";
-import { stewardSystemPrompt } from "../src/steward.js";
+import { completeGoalDescription, planDrafting, planningState, resync } from "../src/prompts.js";
+import { workerSystemPrompt } from "../src/worker.js";
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
@@ -23,9 +23,9 @@ describe("planning prompt", () => {
 		expect(planDrafting).toContain("## User-visible result");
 		expect(planDrafting).toContain("Take it from the original request, not from your implementation plan");
 		expect(planDrafting).toContain("Future work may not defer any artifact or action named there");
-		expect(reminder("plan", ".pi/plan/test.md")).toContain("latest message outranks this plan");
 		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
-		expect(stewardSystemPrompt).toContain("Treat User-visible result and User voice as the authority");
-		expect(stewardSystemPrompt).toContain("Do not accept a confident summary as evidence");
+		expect(workerSystemPrompt).toContain("latest message outranks the plan");
+		expect(workerSystemPrompt).toContain("main Pi agent is the research supervisor");
+		expect(completeGoalDescription).toContain("inspect the live working tree");
 	});
 });

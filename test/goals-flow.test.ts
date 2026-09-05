@@ -9,6 +9,8 @@ function setup(
 	selectChoices: Array<string | undefined>,
 	editorChoices: Array<string | undefined> = [],
 	editPlan?: () => Promise<string | undefined>,
+	contextTokens = 0,
+	completeWorkerBeforeReply = false,
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-flow-"));
 	const commands = new Map<string, any>();
@@ -18,6 +20,7 @@ function setup(
 	const eventLog: string[] = [];
 	const messages: Array<{ content: string; display?: boolean }> = [];
 	const rpcRequests: any[] = [];
+	const compactCalls: any[] = [];
 	const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
 	const eventBus = {
 		on(name: string, handler: (data: unknown) => void) {
@@ -37,13 +40,33 @@ function setup(
 	eventBus.on("subagents:rpc:v1:request", (raw) => {
 		const request = raw as any;
 		rpcRequests.push(request);
+		if (request.method === "status") {
+			eventBus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+				success: true,
+				data: {
+					text: "status",
+					asyncSnapshot: { kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 0, children: 0, byteLimitExceeded: false }, runs: [] },
+				},
+			});
+			return;
+		}
 		asyncRun++;
-		eventBus.emit(`subagents:rpc:v1:reply:${request.requestId}`, { success: true, data: { text: "started", details: { asyncId: `steward-${asyncRun}` } } });
+		if (completeWorkerBeforeReply) eventBus.emit("subagent:async-complete", { runId: `worker-${asyncRun}`, results: [{ success: true }] });
+		eventBus.emit(`subagents:rpc:v1:reply:${request.requestId}`, { success: true, data: { text: "started", details: { asyncId: `worker-${asyncRun}` } } });
+	});
+	eventBus.on("processes:request:list", (raw) => {
+		(raw as { reply(value: object[]): void }).reply([]);
 	});
 	const ctx = {
 		cwd,
 		hasUI: true,
 		isIdle: () => true,
+		getContextUsage: () => ({ tokens: contextTokens }),
+		compact: (options: any) => {
+			compactCalls.push(options);
+			options.onComplete?.({ summary: "summary", details: { compactor: "pi-vcc" } });
+		},
+		getSystemPrompt: () => "base prompt",
 		sessionManager: { getSessionId: () => "session-a", getEntries: () => entries },
 		ui: {
 			theme: { fg: (_kind: string, text: string) => text },
@@ -73,7 +96,7 @@ function setup(
 		sendUserMessage: (message: string) => messages.push({ content: message }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, entries, events: eventLog, eventBus, hooks, messages, rpcRequests, tools };
+	return { commands, compactCalls, ctx, cwd, entries, events: eventLog, eventBus, hooks, messages, rpcRequests, tools };
 }
 
 describe("/goals draft flow", () => {
@@ -169,10 +192,10 @@ describe("/goals draft flow", () => {
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 
 			expect(flow.events).toEqual(["display", "select"]);
-			expect(flow.messages.filter((message) => !message.display)).toHaveLength(2);
-			expect(flow.messages.at(-1)?.content).toContain("Work the goals");
-			await flow.hooks.get("session_start")({}, flow.ctx);
-			expect(await flow.hooks.get("before_agent_start")({}, flow.ctx)).toBeUndefined();
+			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-worker", context: "fork" } });
+			expect(flow.messages.filter((message) => !message.display)).toHaveLength(1);
+			const supervisor = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+			expect(supervisor.systemPrompt).toContain("research supervisor");
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -197,34 +220,24 @@ describe("/goals draft flow", () => {
 		}
 	});
 
-	it("reminds every eight unchanged working-set turns, ignoring log-only edits", async () => {
+	it("resyncs the whole plan once without telling the supervisor to implement it", async () => {
 		const flow = setup(["Ready"]);
 		try {
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n- worker evidence\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 
-			await flow.hooks.get("turn_end")({}, flow.ctx);
-			for (let turn = 0; turn < 3; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n- checked input\n");
-			for (let turn = 0; turn < 5; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
-
-			const reminder = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
-			expect(reminder.messages.at(-1).content[0].text).toContain(".pi/plan/session-a-v1.md");
-
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n  - [x] inspect input\n\n## Log\n- checked input\n");
-			await flow.hooks.get("turn_end")({}, flow.ctx);
-			for (let turn = 0; turn < 7; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
-			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages).toHaveLength(0);
-			await flow.hooks.get("turn_end")({}, flow.ctx);
-			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages.at(-1).content[0].text).toContain("make the output");
+			const resync = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
+			expect(resync.messages.at(-1).content[0].text).toContain("worker evidence");
+			expect(resync.messages.at(-1).content[0].text).not.toContain("Keep it current as you work");
+			expect(await flow.hooks.get("context")({ messages: [] }, flow.ctx)).toBeUndefined();
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("auto-continues once on stop, then pauses after two no-progress wakes", async () => {
+	it("checks every interval without pausing after unchanged work", async () => {
 		vi.useFakeTimers();
 		const flow = setup(["Ready"]);
 		try {
@@ -233,43 +246,56 @@ describe("/goals draft flow", () => {
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			await flow.commands.get("goals").handler("auto 1", flow.ctx);
+			const checks = () => flow.messages.filter((message) => message.content.includes("supervisor check is due"));
 
+			await vi.advanceTimersByTimeAsync(30_000);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await vi.advanceTimersByTimeAsync(0);
-			const autoMessages = () => flow.messages.filter((message) => message.content.includes("Auto-continue is enabled"));
-			expect(autoMessages()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(checks()).toHaveLength(1);
+			await flow.hooks.get("before_agent_start")({}, flow.ctx);
 
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await vi.advanceTimersByTimeAsync(60_000);
-			expect(autoMessages()).toHaveLength(2);
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await vi.advanceTimersByTimeAsync(60_000);
-			expect(autoMessages()).toHaveLength(2);
+			for (let n = 2; n <= 3; n++) {
+				await vi.advanceTimersByTimeAsync(60_000);
+				expect(checks()).toHaveLength(n);
+				await flow.hooks.get("before_agent_start")({}, flow.ctx);
+				await flow.hooks.get("agent_settled")({}, flow.ctx);
+			}
 		} finally {
 			vi.useRealTimers();
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("delays auto-continuation after a known background start", async () => {
-		vi.useFakeTimers();
-		const flow = setup(["Ready"]);
+	it("compacts the main supervisor with pi-vcc near 100k tokens", async () => {
+		const flow = setup(["Ready"], [], undefined, 100_000);
 		try {
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await flow.commands.get("goals").handler("auto 1", flow.ctx);
-			await flow.hooks.get("agent_start")({}, flow.ctx);
-			await flow.hooks.get("tool_call")({ toolName: "process", input: { action: "start" } }, flow.ctx);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await vi.advanceTimersByTimeAsync(0);
-			const autoMessages = () => flow.messages.filter((message) => message.content.includes("Auto-continue is enabled"));
-			expect(autoMessages()).toHaveLength(0);
-			await vi.advanceTimersByTimeAsync(60_000);
-			expect(autoMessages()).toHaveLength(1);
+			expect(flow.compactCalls).toHaveLength(1);
+			expect(flow.compactCalls[0].customInstructions).toBe("__pi_vcc__ keep:1");
 		} finally {
-			vi.useRealTimers();
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("checks exact subagent and process status after native worker completion", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			flow.eventBus.emit("subagent:async-complete", { runId: "worker-1", results: [{ success: true }] });
+
+			const status = await flow.tools.get("CheckGoalWork").execute("", {}, undefined, undefined, flow.ctx);
+			expect(status.isError).toBe(false);
+			expect(status.content[0].text).toBe("subagents=idle; processes=idle");
+			expect(flow.messages.some((message) => message.content.includes("worker stopped"))).toBe(false);
+		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
@@ -282,7 +308,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: produce report\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			flow.eventBus.emit("subagent:async-complete", { runId: "steward-1" });
+			flow.eventBus.emit("subagent:async-complete", { runId: "worker-1" });
 
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [x] goal: produce report\n");
 			await flow.hooks.get("turn_end")({}, flow.ctx);
@@ -295,7 +321,23 @@ describe("/goals draft flow", () => {
 		}
 	});
 
-	it("resumes the same steward lineage for sign-off and persists the latest run", async () => {
+	it("records a worker that completes before its launch RPC reply as stopped", async () => {
+		const flow = setup(["Ready"], [], undefined, 0, true);
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: finish quickly\n");
+
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+
+			expect(flow.entries.at(-1)?.data).toMatchObject({ workerRunId: "worker-1", workerPending: false });
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("resumes the retained worker and lets the main supervisor sign off", async () => {
 		const flow = setup(["Ready"]);
 		try {
 			await flow.hooks.get("session_start")({}, flow.ctx);
@@ -303,34 +345,22 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: produce report\n  - discriminator: report.txt contains PASS\n  - evidence:\n    - report.txt: `PASS`\n\n## Log\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-steward" } });
-			flow.eventBus.emit("subagent:async-complete", {
-				runId: "steward-1",
-				results: [{ success: true, structuredOutput: { verdict: "let_run", summary: "Start work." } }],
-			});
+			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-worker", context: "fork" } });
+			flow.eventBus.emit("subagent:async-complete", { runId: "worker-1", results: [{ success: true }] });
 
-			const signoff = flow.tools.get("CompleteGoal").execute("", { goal: "produce report" }, undefined, undefined, flow.ctx);
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.rpcRequests[1]).toMatchObject({ method: "resume", params: { id: "steward-1" } });
-			flow.eventBus.emit("subagent:async-complete", {
-				runId: "steward-2",
-				results: [{ success: true, structuredOutput: { verdict: "accept", summary: "report.txt contains PASS." } }],
-			});
-			const outcome = await signoff;
+			const resumed = await flow.tools.get("GuideGoalWorker").execute("", { instruction: "Verify report.txt." }, undefined, undefined, flow.ctx);
+			expect(resumed.isError).toBe(false);
+			expect(flow.rpcRequests[1]).toMatchObject({ method: "resume", params: { id: "worker-1", message: "Verify report.txt." } });
+			expect(flow.entries.at(-1)?.data).toMatchObject({ workerRunId: "worker-2", workerPending: true });
 
-			expect(outcome.isError).toBe(false);
+			const signoff = await flow.tools.get("CompleteGoal").execute("", { goal: "produce report" }, undefined, undefined, flow.ctx);
+			expect(signoff.isError).toBe(false);
 			expect(readFileSync(planPath, "utf-8")).toContain("1. [x] goal: produce report");
-			expect(flow.entries.at(-1)?.data).toMatchObject({ stewardRunId: "steward-2", stewardPending: false });
+			expect(readFileSync(planPath, "utf-8")).toContain("signed off \"produce report\" by the main research supervisor");
 
 			await flow.hooks.get("session_start")({}, flow.ctx);
-			const afterReload = flow.tools.get("CompleteGoal").execute("", { goal: "produce report" }, undefined, undefined, flow.ctx);
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.rpcRequests[2]).toMatchObject({ method: "resume", params: { id: "steward-2" } });
-			flow.eventBus.emit("subagent:async-complete", {
-				runId: "steward-3",
-				results: [{ success: true, structuredOutput: { verdict: "reject", summary: "Already complete.", missingEvidence: ["No second sign-off needed"] } }],
-			});
-			expect((await afterReload).isError).toBe(true);
+			await flow.tools.get("GuideGoalWorker").execute("", { instruction: "Report current status." }, undefined, undefined, flow.ctx);
+			expect(flow.rpcRequests.at(-1)).toMatchObject({ method: "steer", params: { id: "worker-2", message: "Report current status." } });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}

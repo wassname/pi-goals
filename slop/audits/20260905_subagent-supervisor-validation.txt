@@ -1,0 +1,45 @@
+$ npm test
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+ Test Files  8 passed (8)
+      Tests  37 passed (37)
+   Start at  17:10:33
+   Duration  1.55s (transform 942ms, setup 0ms, import 1.95s, tests 1.35s, environment 1ms)
+
+$ npm run typecheck
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
+$ npm run lint
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 13 files in 20ms. No fixes applied.
+
+$ git diff --check
+
+$ npm pack --dry-run
+npm notice 📦  @wassname2/pi-goals@0.2.2
+npm notice Tarball Contents
+npm notice 4.1kB README.md
+npm notice 1.5kB package.json
+npm notice 27.3kB src/index.ts
+npm notice 13.3kB src/prompts.ts
+npm notice 1.2kB src/worker-runtime.ts
+npm notice 6.2kB src/worker.ts
+npm notice Tarball Details
+npm notice name: @wassname2/pi-goals
+npm notice version: 0.2.2
+npm notice filename: wassname2-pi-goals-0.2.2.tgz
+npm notice package size: 18.0 kB
+npm notice unpacked size: 53.5 kB
+npm notice shasum: e90e0986903238e68218ea42dd0e00fec6c56ddd
+npm notice integrity: sha512-CpJr+pjGMxZ0v[...]vSTliF8yvr+Rg==
+npm notice total files: 6
+wassname2-pi-goals-0.2.2.tgz

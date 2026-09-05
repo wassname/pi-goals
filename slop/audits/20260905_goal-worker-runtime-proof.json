@@ -1,0 +1,9 @@
+{
+  "childSession": "/tmp/pi-goals-worker-runtime-wLPtUJ/.agent/sessions/--tmp-pi-goals-worker-runtime-wLPtUJ--/2026-09-05T09-09-45-566Z_01a070d4-bdda-7529-be64-eb1ecc38c053/forks/2026-09-05T09-10-07-859Z_01a070d5-14f3-7529-be64-eb21d70ab321.jsonl",
+  "marker": {
+    "version": 1,
+    "compacted": false,
+    "reason": "below-compactable-size"
+  },
+  "cwd": "/tmp/pi-goals-worker-runtime-wLPtUJ"
+}
