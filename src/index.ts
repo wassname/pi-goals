@@ -676,7 +676,7 @@ function isPlanningReadOnlyCommand(command: string): boolean {
 	});
 }
 
-/** This blocks direct writes, not side effects hidden in allowed project scripts or custom tools. */
+/** This blocks direct writes, not side effects hidden in allowed project scripts or custom tools. -- PI[gpt-5.6-sol] */
 export function isSupervisorReadOnlyCommand(command: string): boolean {
 	if (/[|><`$\n\r]/.test(command)) return false;
 	const safeArgs = "(?:\\s+[A-Za-z0-9_./:=,'\"@+%-]+)*";
