@@ -5,8 +5,10 @@ import {
 	resumeGoalSupervisor,
 	startGoalSupervisor,
 	steerGoalSupervisor,
+	stopGoalSupervisor,
 	subagentWorkState,
 	supervisorSystemPrompt,
+	terminalSteerError,
 } from "../src/worker.js";
 
 class Events {
@@ -47,6 +49,7 @@ describe("goal hierarchy registration", () => {
 		expect(definition?.defaultContext).toBe("fork");
 		expect(definition?.defaultProgress).toBe(true);
 		expect(definition?.allowNestedSubagents).toBe(true);
+		expect(definition?.tools).toEqual(["read", "grep", "find", "ls", "bash", "subagent", "subagent_supervisor", "ApproveGoal"]);
 		expect(definition?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
 		expect(supervisorSystemPrompt).toContain("nested goal-worker");
 		expect(supervisorSystemPrompt).toContain("ApproveGoal");
@@ -65,10 +68,13 @@ describe("goal worker RPC", () => {
 		await expect(startGoalSupervisor(events, "/repo", "start")).resolves.toBe("run-1");
 		await expect(resumeGoalSupervisor(events, "run-1", "continue")).resolves.toBe("run-2");
 		await steerGoalSupervisor(events, "run-2", "report");
+		await stopGoalSupervisor(events, "run-2");
 
 		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", cwd: "/repo", context: "fork", async: true } });
 		expect(requests[1]).toMatchObject({ method: "resume", params: { id: "run-1", message: "continue" } });
 		expect(requests[2]).toMatchObject({ method: "steer", params: { id: "run-2", message: "report", mode: "steer" } });
+		expect(requests[3]).toMatchObject({ method: "stop", params: { id: "run-2" } });
+		expect(terminalSteerError(new Error("Async run is completed"))).toBe(true);
 	});
 
 	it("reports active, idle, and incomplete status snapshots", async () => {
@@ -91,10 +97,12 @@ describe("managed process status", () => {
 	});
 
 	it("uses pi-processes live statuses", () => {
-		const events = new Events();
-		events.on("processes:request:list", (raw) => {
-			(raw as { reply(value: object[]): void }).reply([{ status: "terminate_timeout" }]);
-		});
-		expect(processWorkState(events)).toBe("active");
+		for (const [status, expected] of [["finished", "idle"], ["running", "active"], ["terminate_timeout", "active"], ["new-status", "active"]] as const) {
+			const events = new Events();
+			events.on("processes:request:list", (raw) => {
+				(raw as { reply(value: object[]): void }).reply([{ status }]);
+			});
+			expect(processWorkState(events)).toBe(expected);
+		}
 	});
 });

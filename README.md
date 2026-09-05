@@ -89,16 +89,17 @@ pi -e npm:pi-subagents -e ./src/index.ts
    `.pi/pi-goals/approvals/`. The worker is the implementation writer. Main and supervisor block direct
    `edit`, `write`, and write-like shell commands, but can inspect and run standard verification
    commands. This is not a filesystem sandbox: allowed scripts and custom tools can still mutate.
-   `CompleteGoal` is mechanical. It checks that worker/supervisor work is idle and that the approval
-   record still matches the exact goal block, clean worktree, and committed HEAD/tree before ticking.
+   `CompleteGoal` is mechanical. It checks that worker/supervisor/process work is idle and that the
+   latest review ID, goal block, clean worktree, and committed HEAD/tree still match. The review ID
+   prevents stale approval; it is not a security boundary against a worker that deliberately writes Pi state.
    `CheckGoalWork`, FleetView, and `/subagents-fleet` inspect the retained tree and transcripts. Every
    human reply and Refine note in plan mode is saved verbatim under `## Interview`. Pi and pi-subagents
    own normal compaction and retained-run recovery.
 
-Other commands: `/goals clear` disconnects this session from its active plan, preserving the
-versioned file on disk. `/goals auto [minutes|off]` changes the supervisor check interval; Ready
-enables a 60-minute interval. `/goals model <model-ref>` picks the retained supervisor model. Checks
-continue until all goals close, the human uses `auto off`, or the plan is cleared.
+Other commands: `/goals clear` stops the retained tree and disconnects the active plan, preserving
+its file. `/goals auto [minutes|off]` changes the check interval; Ready enables 60 minutes.
+`/goals model <model-ref>` sets the supervisor model; `/goals worker-model <model-ref>` separately
+sets the implementation-worker model. Checks continue until all goals close, `auto off`, or clear.
 
 ## Prompts
 

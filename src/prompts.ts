@@ -159,10 +159,11 @@ Ready.`;
 export function resync(plan: string, planRel: string, why: string): string {
 	return `\
 <system-reminder>
-${why} This is the whole plan file (${planRel}), appendix included. You are the main research
-supervisor. Keep the high-level goal and human intent stable; direct the retained goal-worker rather
-than doing its implementation. The human's latest message outranks the plan: if it corrects the
-deliverable or scope, direct the worker to amend the plan rather than preserving an obsolete decision.
+${why} This is the whole plan file (${planRel}), appendix included. You are the main coordinator.
+Keep the high-level goal and human intent stable; direct the retained goal-supervisor through
+GuideGoalWorker rather than doing implementation. The supervisor directs and approves the nested
+worker. The human's latest message outranks the plan: if it changes scope, direct the supervisor to
+have the worker amend the plan rather than preserving an obsolete decision.
 
 ${plan}
 </system-reminder>`;

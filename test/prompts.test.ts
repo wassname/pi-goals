@@ -27,7 +27,7 @@ describe("planning prompt", () => {
 		expect(planDrafting).toContain("Future work may not defer any artifact or action named there");
 		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
 		expect(workerSystemPrompt).toContain("human's latest message outranks the plan");
-		expect(workerSystemPrompt).toContain("main Pi agent is the research supervisor");
+		expect(workerSystemPrompt).toContain("retained goal supervisor owns direction and approval");
 		expect(completeGoalDescription).toContain("approval checkpoint only after it inspected");
 	});
 });

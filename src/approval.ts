@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*goal:\s*(.*)$/i;
 
 export interface ApprovalRecord {
-	version: 1;
+	version: 2;
 	verdict: "accept";
+	approvalId: string;
 	goal: string;
 	planPath: string;
 	goalBlockHash: string;
@@ -28,7 +29,13 @@ export function repositoryState(cwd: string): { repoRoot: string; head: string; 
 	const repoRoot = command(cwd, ["rev-parse", "--show-toplevel"]);
 	const head = command(repoRoot, ["rev-parse", "HEAD"]);
 	const tree = command(repoRoot, ["rev-parse", "HEAD^{tree}"]);
-	const cleanWorktree = command(repoRoot, ["status", "--porcelain=v1"]) === "";
+	const prefix = relative(repoRoot, resolve(cwd)).replaceAll("\\", "/");
+	const owned = prefix ? `${prefix}/.pi` : ".pi";
+	const cleanWorktree = command(repoRoot, [
+		"status", "--porcelain=v1", "--untracked-files=all", "--", ".",
+		`:(exclude,glob)${owned}/plan/*.md`,
+		`:(exclude,glob)${owned}/pi-goals/approvals/*`,
+	]) === "";
 	return { repoRoot, head, tree, cleanWorktree };
 }
 
@@ -80,9 +87,19 @@ export function readApproval(path: string): ApprovalRecord | null {
 	}
 }
 
-export function approvalMatches(record: ApprovalRecord | null, input: { goal: string; planPath: string; goalBlockHash: string; repoRoot: string; head: string; tree: string; cleanWorktree: boolean }): boolean {
-	return record?.version === 1
+export function approvalMatches(record: ApprovalRecord | null, input: {
+	approvalId: string;
+	goal: string;
+	planPath: string;
+	goalBlockHash: string;
+	repoRoot: string;
+	head: string;
+	tree: string;
+	cleanWorktree: boolean;
+}): boolean {
+	return record?.version === 2
 		&& record.verdict === "accept"
+		&& record.approvalId === input.approvalId
 		&& record.goal === input.goal
 		&& resolve(record.planPath) === resolve(input.planPath)
 		&& record.goalBlockHash === input.goalBlockHash

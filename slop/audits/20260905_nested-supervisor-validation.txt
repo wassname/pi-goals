@@ -1,25 +1,7 @@
 # Nested supervisor validation
-2026-09-05T18:16:51+08:00
+2026-09-05T19:31:55+08:00
 
-$ rg installed pi-subagents API declarations
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:261:subagentOnlyExtensions: ./tools/child-only-search.ts
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:282:allowNestedSubagents: true
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:288:Simple-scalar list fields accept either a comma-separated form or a newline block list with one `- item` per line. This applies to `tools`, `excludeTools`, `defaultReads`, `skill`/`skills`, `skillPath`, `fallbackModels`, `extensions`, and `subagentOnlyExtensions`:
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:307:| `allowNestedSubagents` | Set `true` to authorize the child-safe nested `subagent` runtime without making omitted `tools` an allowlist. Inherited depth and capability ceilings remain authoritative. |
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:309:| `subagentOnlyExtensions` | Extension paths loaded only in this agent's child sessions. Tools registered there are unavailable to the main agent unless also installed through normal Pi extension configuration. |
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:389:- `allowNestedSubagents: true`: explicitly enables child-safe nested fanout without turning omitted `tools` into an allowlist. Depth and inherited capability ceilings still apply.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:393:An allowlisted name does not load the extension that registers it. Load that provider through `extensions`, `subagentOnlyExtensions`, a path-like `tools` entry, or (background children only) normal Pi extension discovery.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:411:- `allowNestedSubagents: true` with `tools` omitted: normal builtin tools (and, for background children, ambient extensions) remain inherited, and the child-safe nested `subagent` runtime is added.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:412:- `tools: read, fixture_search` plus `subagentOnlyExtensions: ./tools/fixture-search.ts`: the provider loads only in this agent's child sessions, and the registered `fixture_search` name survives the strict allowlist.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:414:Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot (registered at runtime, not persisted) cannot be provided to a child: children are pi sessions inside the parent or the runner process, not `pi` processes that could receive an MCP config argument, so such a launch fails with an error saying that MCP tools must come from an ambient adapter extension in a background child. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:428:When `extensions` is present, normal discovered extensions are disabled. The listed extensions, path-like `tools` entries, required pi-subagents runtime extensions, and `subagentOnlyExtensions` still load.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:430:Use `subagentOnlyExtensions` when a custom extension tool should exist only inside child sessions. It is scoped by agent config: every run of that agent receives those extension paths, while other agents do not unless they declare the same field. The current model does not have a separate named-subagent audience inside one agent definition.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/agents.md:434:Before the first model turn, the child runtime compares every explicit tool name with Pi's final filtered registry. A missing provider fails the run with the unavailable names and concrete `subagentOnlyExtensions`/`extensions` guidance, instead of letting a direct or chained child silently continue without its requested tools.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/extension-api.md:67:An independently installed Pi extension can register an agent with the installed `pi-subagents` owner through the process-local `pi-subagents:runtime-agent-register:v1` event. Emit after extension setup, such as during `session_start`. Event delivery is synchronous, so the owner writes the result onto the request before `emit()` returns.
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/extension-api.md:91:pi.events.emit("pi-subagents:runtime-agent-register:v1", request);
-/home/code/.pi/agent/npm/node_modules/pi-subagents/docs/extension-api.md:312:Children do not gain provider tools or extensions automatically. Add `bg_wait` to the child agent's `tools` allowlist and load each provider through `extensions` or `subagentOnlyExtensions`. The parent's effective `waitTool` setting reaches every child through its typed runtime config; `PI_SUBAGENT_WAIT_TOOL_ENABLED` keeps precedence in the parent.
-
-$ env -u PI_SUBAGENT_CHILD npm test
+$ npm test
 
 > @wassname2/pi-goals@0.2.2 test
 > vitest run
@@ -28,52 +10,69 @@ $ env -u PI_SUBAGENT_CHILD npm test
  RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
 
 
- Test Files  8 passed (8)
-      Tests  41 passed (41)
-   Start at  18:16:52
-   Duration  1.48s (transform 906ms, setup 0ms, import 2.21s, tests 1.78s, environment 1ms)
+ Test Files  9 passed (9)
+      Tests  43 passed (43)
+   Start at  19:31:56
+   Duration  1.60s (transform 709ms, setup 0ms, import 1.64s, tests 1.76s, environment 1ms)
 
 
-$ env -u PI_SUBAGENT_CHILD npm run typecheck
+$ npm run typecheck
 
 > @wassname2/pi-goals@0.2.2 typecheck
 > tsc --noEmit
 
 
-$ env -u PI_SUBAGENT_CHILD npm run lint
+$ npm run lint
 
 > @wassname2/pi-goals@0.2.2 lint
 > biome check src/ test/
 
-Checked 14 files in 65ms. No fixes applied.
+Checked 15 files in 29ms. No fixes applied.
 
 $ git diff --check
+(no output)
 
 $ npm pack --dry-run
 npm notice
 npm notice 📦  @wassname2/pi-goals@0.2.2
 npm notice Tarball Contents
-npm notice 5.6kB README.md
-npm notice 1.4kB package.json
-npm notice 3.6kB src/approval.ts
-npm notice 31.4kB src/index.ts
-npm notice 13.5kB src/prompts.ts
-npm notice 4.2kB src/supervisor-runtime.ts
-npm notice 8.0kB src/worker.ts
+npm notice 5.8kB README.md
+npm notice 1.1kB agents/goal-worker.md
+npm notice 1.5kB package.json
+npm notice 4.0kB src/approval.ts
+npm notice 34.6kB src/index.ts
+npm notice 13.6kB src/prompts.ts
+npm notice 5.9kB src/supervisor-runtime.ts
+npm notice 7.3kB src/worker.ts
 npm notice Tarball Details
 npm notice name: @wassname2/pi-goals
 npm notice version: 0.2.2
 npm notice filename: wassname2-pi-goals-0.2.2.tgz
-npm notice package size: 21.3 kB
-npm notice unpacked size: 67.6 kB
-npm notice shasum: 339a8e72bf68600fc6033c3feda3c0c0581f147d
-npm notice integrity: sha512-8mpaKrYqBa4RN[...]+zW55PiHKifPw==
-npm notice total files: 7
+npm notice package size: 23.1 kB
+npm notice unpacked size: 73.7 kB
+npm notice shasum: 579debe3de67b56116e51da6cac46c14511bdd07
+npm notice integrity: sha512-f5S39K2J3kjIX[...]cuwx2WFIeBBAQ==
+npm notice total files: 8
 npm notice
 wassname2-pi-goals-0.2.2.tgz
 
-## Live nested-runtime probe
+$ git diff --stat 2852432
+ README.md                                          |  13 +-
+ agents/goal-worker.md                              |   2 +-
+ .../20260905_nested-supervisor-validation.txt      |  70 ++++------
+ src/approval.ts                                    |  27 +++-
+ src/index.ts                                       | 153 +++++++++++++++------
+ src/prompts.ts                                     |   9 +-
+ src/supervisor-runtime.ts                          |  81 ++++++++---
+ src/worker.ts                                      |  36 +++--
+ test/goals-flow.test.ts                            |  54 +++++++-
+ test/prompts.test.ts                               |   2 +-
+ test/supervisor-runtime.test.ts                    |  32 ++++-
+ test/worker.test.ts                                |  18 ++-
+ 12 files changed, 354 insertions(+), 143 deletions(-)
 
-Not run. A real `goal-supervisor` → `goal-worker` probe requires an interactive Pi session with an available model and pi-subagents loaded. This non-interactive repository environment can validate registration and RPC payloads, but cannot prove that a model launches and directs the nested run. The README manual check remains required for that observation.
+## Runtime boundary
 
--- PI[goal-worker]
+No model-backed Ready -> goal-supervisor -> goal-worker run was executed here. Unit tests cover the package-discovery contract, nested tool restrictions, review freshness, clean-state filtering, stop dispatch, stale-run recovery, and mechanical sign-off. The README manual check is the user acceptance test.
+
+-- PI[gpt-5.6-sol]

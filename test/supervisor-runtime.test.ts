@@ -23,9 +23,9 @@ class Events {
 
 function setup() {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
-	writeFileSync(join(cwd, ".gitignore"), ".pi/\n");
+	writeFileSync(join(cwd, "README.md"), "test\n");
 	execFileSync("git", ["init", "-q"], { cwd });
-	execFileSync("git", ["add", ".gitignore"], { cwd });
+	execFileSync("git", ["add", "README.md"], { cwd });
 	execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd });
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
@@ -37,6 +37,9 @@ function setup() {
 			data: { text: "idle", asyncSnapshot: { kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 0, children: 0, byteLimitExceeded: false }, runs: [] } },
 		});
 	});
+	events.on("processes:request:list", (raw) => {
+		(raw as { reply(value: object[]): void }).reply([]);
+	});
 	const ctx = {
 		cwd,
 		sessionManager: { getSessionId: () => "supervisor-session" },
@@ -45,10 +48,11 @@ function setup() {
 	const pi = {
 		events,
 		on: (name: string, handler: any) => hooks.set(name, handler),
+		appendEntry() {},
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 	};
 	supervisorRuntime(pi as any);
-	return { cwd, ctx, hooks, tools };
+	return { cwd, ctx, events, hooks, tools };
 }
 
 describe("supervisor-only runtime", () => {
@@ -56,7 +60,22 @@ describe("supervisor-only runtime", () => {
 		const runtime = setup();
 		try {
 			expect((await runtime.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git branch new-name" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "worker" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx))).toBeUndefined();
 			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status && npm test" } }, runtime.ctx))).toBeUndefined();
+		} finally {
+			rmSync(runtime.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("blocks approval while its retained worker is pending", async () => {
+		const runtime = setup();
+		try {
+			runtime.events.emit("subagent:async-started", { id: "nested-1", agent: "goal-worker" });
+			const blocked = await runtime.tools.get("ApproveGoal").execute("", {}, undefined, undefined, runtime.ctx);
+			expect(blocked.isError).toBe(true);
+			expect(blocked.content[0].text).toContain("retained worker is pending");
 		} finally {
 			rmSync(runtime.cwd, { recursive: true, force: true });
 		}
@@ -64,12 +83,15 @@ describe("supervisor-only runtime", () => {
 
 	it("writes an approval only after inspecting the plan and confirming a clean worktree at a commit", async () => {
 		const runtime = setup();
+		const previousRunId = process.env.PI_SUBAGENT_RUN_ID;
+		process.env.PI_SUBAGENT_RUN_ID = "supervisor-run";
 		try {
 			const planPath = join(runtime.cwd, ".pi/plan/session-a-v1.md");
 			mkdirSync(join(runtime.cwd, ".pi/plan"), { recursive: true });
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: ship it\n  - evidence: verify.log: PASS\n");
 			const checkpoint = approvalPath(runtime.cwd, "main-session", "ship it");
 			const accepted = await runtime.tools.get("ApproveGoal").execute("", {
+				approvalId: "review-1",
 				goal: "ship it",
 				planPath,
 				checkpointPath: checkpoint,
@@ -80,9 +102,11 @@ describe("supervisor-only runtime", () => {
 			}, undefined, undefined, runtime.ctx);
 
 			expect(accepted.isError).toBe(false);
-			expect(readApproval(checkpoint)).toMatchObject({ version: 1, verdict: "accept", goal: "ship it", supervisor: { sessionId: "supervisor-session" } });
+			expect(readApproval(checkpoint)).toMatchObject({ version: 2, approvalId: "review-1", goal: "ship it", supervisor: { sessionId: "supervisor-session", runId: "supervisor-run" } });
 			expect(readFileSync(checkpoint, "utf8")).toContain('"goalBlockHash"');
 		} finally {
+			if (previousRunId === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+			else process.env.PI_SUBAGENT_RUN_ID = previousRunId;
 			rmSync(runtime.cwd, { recursive: true, force: true });
 		}
 	});

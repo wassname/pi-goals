@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -115,10 +115,12 @@ function writeSupervisorApproval(flow: ReturnType<typeof setup>, goal: string): 
 	const plan = readFileSync(planPath, "utf8");
 	const block = goalBlock(plan, goal);
 	if (!block) throw new Error("test plan has no open goal");
+	const state = flow.entries.at(-1)?.data as { approvalId: string; workerRunId: string };
 	const repository = repositoryState(flow.cwd);
 	writeApproval(approvalPath(flow.cwd, "session-a", goal), {
-		version: 1,
+		version: 2,
 		verdict: "accept",
+		approvalId: state.approvalId,
 		goal,
 		planPath,
 		goalBlockHash: hashGoalBlock(block),
@@ -127,7 +129,7 @@ function writeSupervisorApproval(flow: ReturnType<typeof setup>, goal: string): 
 		tree: repository.tree,
 		cleanWorktree: true,
 		inspected: { plan: true, repository: true, evidence: true, verifyOutput: true },
-		supervisor: { sessionId: "supervisor-session", runId: "supervisor-run" },
+		supervisor: { sessionId: "supervisor-session", runId: state.workerRunId },
 		timestamp: "2026-09-05T00:00:00.000Z",
 	});
 }
@@ -187,6 +189,34 @@ describe("/goals draft flow", () => {
 
 			await flow.commands.get("goals").handler("next objective", flow.ctx);
 			expect(readFileSync(join(flow.cwd, ".pi/plan/session-a-v2.md"), "utf-8")).toBe("");
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps supervisor and implementation-worker models separate", async () => {
+		const flow = setup([]);
+		try {
+			await flow.commands.get("goals").handler("model provider/supervisor", flow.ctx);
+			await flow.commands.get("goals").handler("worker-model provider/worker", flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ supervisorModel: "provider/supervisor", workerModel: "provider/worker" });
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("stops the retained supervisor before clearing an active plan", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			writeFileSync(join(flow.cwd, ".pi/plan/session-a-v1.md"), "# Plan\n\n## Goals\n\n1. [/] goal: work\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+
+			await flow.commands.get("goals").handler("clear", flow.ctx);
+
+			expect(flow.rpcRequests.at(-1)).toMatchObject({ method: "stop", params: { id: "worker-1" } });
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, workerRunId: null, workerPending: false });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -408,6 +438,7 @@ describe("/goals draft flow", () => {
 			expect(flow.rpcRequests[1]).toMatchObject({ method: "resume", params: { id: "worker-1", message: expect.stringContaining("Verify report.txt.") } });
 			expect(flow.entries.at(-1)?.data).toMatchObject({ workerRunId: "worker-2", workerPending: true });
 
+			flow.eventBus.emit("subagent:async-complete", { runId: "worker-2", results: [{ success: true }] });
 			writeSupervisorApproval(flow, "produce report");
 			const signoff = await flow.tools.get("CompleteGoal").execute("", { goal: "produce report" }, undefined, undefined, flow.ctx);
 			expect(signoff.isError).toBe(false);
@@ -416,7 +447,8 @@ describe("/goals draft flow", () => {
 
 			await flow.hooks.get("session_start")({}, flow.ctx);
 			await flow.tools.get("GuideGoalWorker").execute("", { instruction: "Report current status." }, undefined, undefined, flow.ctx);
-			expect(flow.rpcRequests.at(-1)).toMatchObject({ method: "steer", params: { id: "worker-2", message: expect.stringContaining("Report current status.") } });
+			expect(flow.rpcRequests.at(-1)).toMatchObject({ method: "resume", params: { id: "worker-2", message: expect.stringContaining("Report current status.") } });
+			expect(existsSync(approvalPath(flow.cwd, "session-a", "produce report"))).toBe(false);
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -425,6 +457,7 @@ describe("/goals draft flow", () => {
 	it("blocks main implementation while allowing supervisor inspection, control, and sign-off", async () => {
 		const flow = setup(["Ready"]);
 		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n");
@@ -433,16 +466,27 @@ describe("/goals draft flow", () => {
 			const edit = await flow.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, flow.ctx);
 			const write = await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "README.md" } }, flow.ctx);
 			const shellWrite = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "printf changed > README.md" } }, flow.ctx);
+			const findDelete = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "find . -delete" } }, flow.ctx);
+			const gitOutput = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff --output=README.md" } }, flow.ctx);
+			const gitBranch = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "git branch new-name" } }, flow.ctx);
+			const sibling = await flow.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "worker" } }, flow.ctx);
+			const status = await flow.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status", view: "fleet" } }, flow.ctx);
 			const inspect = await flow.hooks.get("tool_call")({ toolName: "read", input: { path: "README.md" } }, flow.ctx);
 			const verify = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status && npm test && npm run typecheck && npm run lint" } }, flow.ctx);
 			const work = await flow.tools.get("CheckGoalWork").execute("", {}, undefined, undefined, flow.ctx);
 			const guide = await flow.tools.get("GuideGoalWorker").execute("", { instruction: "Save the verification output." }, undefined, undefined, flow.ctx);
+			flow.eventBus.emit("subagent:async-complete", { runId: "worker-1", results: [{ success: true }] });
 			writeSupervisorApproval(flow, "make the output");
 			const signoff = await flow.tools.get("CompleteGoal").execute("", { goal: "make the output" }, undefined, undefined, flow.ctx);
 
 			expect(edit?.block).toBe(true);
 			expect(write?.block).toBe(true);
 			expect(shellWrite?.block).toBe(true);
+			expect(findDelete?.block).toBe(true);
+			expect(gitOutput?.block).toBe(true);
+			expect(gitBranch?.block).toBe(true);
+			expect(sibling?.block).toBe(true);
+			expect(status).toBeUndefined();
 			expect(inspect).toBeUndefined();
 			expect(verify).toBeUndefined();
 			expect(work.isError).toBe(false);
@@ -457,10 +501,12 @@ describe("/goals draft flow", () => {
 	it("fails closed without a matching supervisor approval checkpoint", async () => {
 		const flow = setup(["Ready"]);
 		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n  - evidence: verify.log: PASS\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			flow.eventBus.emit("subagent:async-complete", { runId: "worker-1", results: [{ success: true }] });
 
 			const missing = await flow.tools.get("CompleteGoal").execute("", { goal: "make the output" }, undefined, undefined, flow.ctx);
 			expect(missing.isError).toBe(true);

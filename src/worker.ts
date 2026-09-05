@@ -41,12 +41,12 @@ export type WorkState = "active" | "idle" | "unknown";
 export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session is a thin human-facing coordinator.
 You own the current plan review and the retained implementation worker. At every review, reread the full
 current plan named in your task, identify the exact goal block, inspect the repository, cited artifacts, and
-saved verification output, then launch, resume, or steer the nested goal-worker as needed. Do not edit project
-files. Use read/search and standard verification commands only. The worker is the sole implementation writer and
-must commit its changes before you consider approval. When no nested work is active, HEAD is committed, the worktree
-is clean, and you have explicitly inspected the plan, repository, evidence, and verification output, call ApproveGoal.
-Otherwise return continue or redirect the worker. Do not claim acceptance in prose: only ApproveGoal creates the durable
-approval checkpoint. -- Pi/Codex`;
+saved verification output, then launch, resume, or steer the one nested goal-worker as needed. Use the worker model
+named in each direction when spawning it; resume the retained worker after that. Do not edit project files. Use
+read/search and standard verification commands only. Keep approval IDs and checkpoint paths from the worker. The worker
+must commit its changes before approval. When no nested work is active, HEAD is committed, the worktree is clean, and
+you inspected the plan, repository, evidence, and saved verification output, call ApproveGoal with the current approval
+ID. Otherwise continue or redirect the worker. Only ApproveGoal creates acceptance. -- Pi/Codex`;
 
 export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
 	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
@@ -56,6 +56,7 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 		definition: {
 			description: "Read-only supervisor that owns a nested retained implementation worker.",
 			systemPrompt: supervisorSystemPrompt,
+			tools: ["read", "grep", "find", "ls", "bash", "subagent", "subagent_supervisor", "ApproveGoal"],
 			allowNestedSubagents: true,
 			subagentOnlyExtensions: [supervisorRuntime],
 			...(model ? { model } : {}),
@@ -75,7 +76,7 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 	return result.registration;
 }
 
-async function rpc(events: EventBus, method: "spawn" | "resume" | "steer" | "status", params: Record<string, unknown>, signal?: AbortSignal): Promise<RpcData> {
+async function rpc(events: EventBus, method: "spawn" | "resume" | "steer" | "status" | "stop", params: Record<string, unknown>, signal?: AbortSignal): Promise<RpcData> {
 	if (signal?.aborted) throw new Error("Goal-worker request aborted.");
 	const requestId = randomUUID();
 	return new Promise((resolve, reject) => {
@@ -132,8 +133,22 @@ export async function steerGoalSupervisor(events: EventBus, runId: string, task:
 	await rpc(events, "steer", { id: runId, message: task, mode: "steer" }, signal);
 }
 
+export async function stopGoalSupervisor(events: EventBus, runId: string): Promise<void> {
+	try {
+		await rpc(events, "stop", { id: runId });
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (!/not found|already completed|\bis (?:complete|completed|failed|partial|paused|stopped|rejected)\b/i.test(message)) throw error;
+	}
+}
+
+export function terminalSteerError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /not found|already completed|not running|\bis (?:complete|completed|failed|partial|paused|stopped|rejected)\b/i.test(message);
+}
+
 function activeNode(node: AsyncNode): boolean {
-	return node.state === "queued" || node.state === "running" || Boolean(node.children?.some(activeNode));
+	return node.state === "queued" || node.state === "running" || node.state === "stopping" || Boolean(node.children?.some(activeNode));
 }
 
 export async function subagentWorkState(events: EventBus): Promise<WorkState> {
@@ -156,6 +171,7 @@ export function processWorkState(events: EventBus): WorkState {
 			processes = value;
 		},
 	});
-	if (!replied) return "unknown";
-	return processes.some((process) => process.status === "running" || process.status === "terminating" || process.status === "terminate_timeout") ? "active" : "idle";
+	if (!replied || !Array.isArray(processes)) return "unknown";
+	const terminal = new Set(["finished", "failed", "exited", "killed"]);
+	return processes.every((process) => terminal.has(process.status)) ? "idle" : "active";
 }
