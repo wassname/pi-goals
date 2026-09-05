@@ -124,7 +124,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: preserve this\n");
 
-			await flow.commands.get("goals").handler("--clear", flow.ctx);
+			await flow.commands.get("goals").handler("clear", flow.ctx);
 
 			expect(readFileSync(planPath, "utf-8")).toContain("goal: preserve this");
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null });
@@ -232,7 +232,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await flow.commands.get("goals").handler("--auto 1", flow.ctx);
+			await flow.commands.get("goals").handler("auto 1", flow.ctx);
 
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			await vi.advanceTimersByTimeAsync(0);
@@ -259,7 +259,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await flow.commands.get("goals").handler("--auto 1", flow.ctx);
+			await flow.commands.get("goals").handler("auto 1", flow.ctx);
 			await flow.hooks.get("agent_start")({}, flow.ctx);
 			await flow.hooks.get("tool_call")({ toolName: "process", input: { action: "start" } }, flow.ctx);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
@@ -270,6 +270,27 @@ describe("/goals draft flow", () => {
 			expect(autoMessages()).toHaveLength(1);
 		} finally {
 			vi.useRealTimers();
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("does not checkpoint after every goal is closed", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: produce report\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			flow.eventBus.emit("subagent:async-complete", { runId: "steward-1" });
+
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [x] goal: produce report\n");
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			for (let turn = 0; turn < 8; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+
+			expect(flow.rpcRequests).toHaveLength(1);
+		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});

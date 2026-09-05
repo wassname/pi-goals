@@ -280,10 +280,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- /goals: enter plan mode (or clear / configure the steward) — Pi/Codex ---------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals --clear | /goals --auto [minutes|off] | /goals --steward-model <model>`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals model <model>`,
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (arg === "--clear") {
+			if (arg === "clear") {
 				if (state.planVersion === null) {
 					ctx.ui.notify("No active plan to disconnect.", "info");
 					return;
@@ -296,8 +296,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
 				return;
 			}
-			if (arg === "--auto" || arg.startsWith("--auto ")) {
-				const value = arg.slice("--auto".length).trim();
+			if (arg === "auto" || arg.startsWith("auto ")) {
+				const value = arg.slice("auto".length).trim();
 				if (value === "off") {
 					clearAutoTimer();
 					state = { ...state, autoIntervalMs: null, autoPaused: false };
@@ -312,7 +312,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				}
 				const minutes = value ? Number(value) : AUTO_DEFAULT_INTERVAL_MS / 60_000;
 				if (!Number.isInteger(minutes) || minutes < 1) {
-					ctx.ui.notify("Use /goals --auto [whole minutes], or /goals --auto off.", "warning");
+					ctx.ui.notify("Use /goals auto [whole minutes], or /goals auto off.", "warning");
 					return;
 				}
 				autoWakeInFlight = false;
@@ -325,8 +325,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Goal auto-continue enabled every ${minutes}m.`, "info");
 				return;
 			}
-			if (arg === "--steward-model" || arg.startsWith("--steward-model ")) {
-				const ref = arg.slice("--steward-model".length).trim();
+			if (arg === "model" || arg.startsWith("model ")) {
+				const ref = arg.slice("model".length).trim();
 				state = { ...state, stewardModel: ref || null, stewardRunId: null, stewardPending: false };
 				persist();
 				setupSteward(ctx);
@@ -448,7 +448,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (state.phase === "working") {
-			if (turnsStale >= STALE_TURNS) await reviewInBackground(ctx, checkpointReview(planRel(ctx), turnsStale));
+			if (turnsStale >= STALE_TURNS && activeGoals(ctx)) await reviewInBackground(ctx, checkpointReview(planRel(ctx), turnsStale));
 			settleAuto(ctx);
 			return;
 		}

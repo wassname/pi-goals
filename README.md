@@ -82,11 +82,11 @@ pi -e npm:pi-subagents -e ./src/index.ts
    turns without a change above `## Log`, the worker gets a reminder and the steward gets a progress
    checkpoint.
 
-Other commands: `/goals --clear` disconnects this session from its active plan, preserving the
-versioned file on disk; `/goals --auto [minutes|off]` continues active goals after the agent settles
+Other commands: `/goals clear` disconnects this session from its active plan, preserving the
+versioned file on disk; `/goals auto [minutes|off]` continues active goals after the agent settles
 and then on that interval. It pauses after two automatic wakes with no working-plan change; `/goals
---steward-model <model-ref>` picks the steward model (default: the pi-subagents agent model). The `--` prefix
-keeps ordinary objectives such as `judge model quality` from being parsed as commands.
+model <model-ref>` picks the steward model (default: the pi-subagents agent model). These are TUI
+subcommands, not CLI flags.
 
 ## Prompts
 
