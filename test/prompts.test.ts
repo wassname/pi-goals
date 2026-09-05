@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { judgeSystem, planDrafting, planningState, reminder, resync } from "../src/prompts.js";
+import { planDrafting, planningState, reminder, resync } from "../src/prompts.js";
+import { stewardSystemPrompt } from "../src/steward.js";
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
@@ -24,7 +25,7 @@ describe("planning prompt", () => {
 		expect(planDrafting).toContain("Future work may not defer any artifact or action named there");
 		expect(reminder("plan", ".pi/plan/test.md")).toContain("latest message outranks this plan");
 		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
-		expect(judgeSystem).toContain("Task fidelity?");
-		expect(judgeSystem).toContain("Agent-inferred scope is not authority");
+		expect(stewardSystemPrompt).toContain("Treat User-visible result and User voice as the authority");
+		expect(stewardSystemPrompt).toContain("Do not accept a confident summary as evidence");
 	});
 });

@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.2.2",
-  "description": "One plan file per session: set goals in plan mode, work them, sign off only when a read-only judge checks the evidence.",
+  "description": "One plan file per session with a persistent read-only goal steward powered by pi-subagents.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,8 @@
     "proof",
     "uat",
     "evidence",
-    "judge"
+    "steward",
+    "subagent"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

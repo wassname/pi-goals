@@ -3,9 +3,9 @@
  *
  * Design: the plan file is for LLMs and the human, not for TypeScript. No parser and no schema;
  * the skeleton below is a convention the drafting prompt teaches, the working agent maintains with
- * its normal Edit tool, and the judge reads natively. The harness does three things for a
+ * its normal Edit tool, and the goal steward reads natively. The harness does three things for a
  * cooperative-but-confused model: memory (a transient re-send of the plan when it goes stale),
- * format guidance (the skeleton), and fresh eyes (the read-only judge in CompleteGoal).
+ * format guidance (the skeleton), and supervision (a persistent read-only pi-subagents child).
  *
  * THE FOLD: everything above "## Log" is the working set (title, user voice, goals,
  * discriminators) and is what gets re-sent on the reminder cadence. Everything below it (Log,
@@ -17,7 +17,7 @@
  *   EXEC, on cadence      2. reminder       — the folded plan + upkeep nudge when it went stale
  *   EXEC, after compact   3. resync         — the WHOLE file back, once
  *   SIGN-OFF, agent-side  4. completeGoal*  — the one blessed tool's description
- *   SIGN-OFF, judge-side  5. judgeSystem/judgeUser — the one rigorous check
+ *   SUPERVISION            steward.ts       — persistent review and sign-off prompts
  *
  * The goal's test is the DISCRIMINATOR: the concrete observation that tells real success from the
  * named subtle failure mode. Evidence is empty at planning and filled at sign-off.
@@ -58,13 +58,13 @@ Detail that doesn't change a goal or a discriminator belongs in the appendix, no
 Right-size it:
 - One goal per distinct judgeable outcome. Group related goals when it helps judge them together
   and readability. The count flows from the outcomes.
-- Describe outcomes in qualitative terms the judge and user can discriminate. 
+- Describe outcomes in qualitative terms the steward and user can discriminate.
 	- Use the users language or more precise don't transform "MV" into "knob" as it looses precision and is overloaded
-	- Don't invent metrics or thresholds for problems you haven't explored yet — the judge should hopefully know it when it sees the outcome.
+	- Don't invent metrics or thresholds for problems you haven't explored yet — the steward should know it when it sees the outcome.
   	- Quantitative gates are fine only when you are certain they survive contact with reality.
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
 - Two goals that share one discriminator are one goal. Merge them.
-- Keep the goal subject short. Put its important scope, failure modes, discriminator, tasks, and evidence in the indented block beneath it. The judge reads the whole block and the whole plan.
+- Keep the goal subject short. Put its important scope, failure modes, discriminator, tasks, and evidence in the indented block beneath it. The steward reads the whole block and the whole plan.
 - Keep the working set under 50 lines, excluding ## User voice. ## User voice has no line limit: quote
   the human fully rather than shorten or paraphrase them. Everything below "## Log" is unlimited.
 
@@ -72,7 +72,7 @@ Style: Make it easy for a busy and forgetfull user to review. Use ASD-STE100 Sim
 the same word for the same thing, and define a new terms at first use. Use redundant context for skim readers e.g. "our output - the cells, CV tag" is easy to read and reminds context. This covers the context
 paragraph and the appendix too, not just the checklist. No all-caps headers and no bold spam. Just write less, add your voice less, persuade less, and burden the reader less.
 
-Write the plan file in roughly this shape -- the file is read directly by the human and a judge model, so clarity beats conformance; small deviations are fine):
+Write the plan file in roughly this shape -- the file is read directly by the human and the goal steward, so clarity beats conformance; small deviations are fine):
 
 # <short plan title>
 
@@ -92,7 +92,7 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
   - subtle failure mode: <a way this could look done but isn't>
   - discriminator: <the concrete observation that tells real success from that failure>
   - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not
-    testable. YOU run it at sign-off time and save its output as evidence; the judge only reads>
+    testable. YOU run it at sign-off time and save its output as evidence; the steward only reads>
   - tasks:
     1. [ ] <subtask>
   - evidence: (empty until sign-off)
@@ -122,9 +122,9 @@ Conventions:
   none of the failure modes could fake. Ruling out failures is necessary, not sufficient.
 - Make the discriminator a concrete, checkable observation about a real artifact (a file, a test
   result, a committed diff, a metric), never about the plan file's own checkbox.
-- evidence stays empty at planning; you fill it at sign-off and a fresh read-only judge checks it.
+- evidence stays empty at planning; you fill it at sign-off and the read-only goal steward checks it.
   Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
-  usually gitignored, so files there prove things only at judge time, not in history.
+  usually gitignored, so files there prove things only at steward review time, not in history.
 - User-visible result: restate the original deliverable, not the proposed implementation. Every goal
   must contribute to it. Future work may not defer any artifact or action named there.
 - User voice: quote the human word for word, one line per requirement, as they say it. Never
@@ -207,69 +207,13 @@ export const completeGoalDescription =
 	"output you actually observed; never reconstruct numbers from memory. If you couldn't see an " +
 	"output, rerun it or write that you couldn't -- an honest gap beats a plausible fabrication. If " +
 	"the goal names a verify: command, run it yourself first and save its output to a file cited in " +
-	"the evidence: the judge cannot execute anything and will reject a claimed pass with no saved " +
+	"the evidence: the goal steward cannot execute anything and will reject a claimed pass with no saved " +
 	"output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
 	"Check that the claimed result uses the artifact and outcome named in User-visible result and does " +
 	"not substitute an agent-inferred deliverable. Then call this with the goal's text (the line after " +
-	"'goal:'; small wording drift is fine). A " +
-	"fresh strictly-read-only judge inspects the LIVE WORKING TREE (uncommitted changes included; " +
-	"committing first is for durability, not visibility) and returns accept or reject with what's " +
-	"missing. On accept (or if the judge itself failed), a sign-off line is appended to ## Log " +
-	"and the goal is ticked [x] for you; the result says if you must tick it yourself. On reject the " +
-	"goal stays open.";
+	"'goal:'; small wording drift is fine). The persistent read-only goal steward rereads the complete " +
+	"plan, inspects the LIVE WORKING TREE (uncommitted changes included), and returns accept or reject " +
+	"with what is missing. On accept, a sign-off line is appended to ## Log and the goal is ticked [x] " +
+	"for you; the result says if you must tick it yourself. On reject or steward failure, the goal stays open.";
 
 export const completeGoalParamDescription = "The goal's text: the line after 'goal:' in the plan file.";
-
-/* ─────────────────────────────────────────────────────────────────────────
- * 5. judge — SIGN-OFF, judge-side: the one rigorous check. Runs on a fresh
- *    read-only pi subprocess (--no-session) so it never sees the working
- *    agent's transcript. It gets the WHOLE plan file: it finds the goal,
- *    reads discriminator/failure modes/evidence itself (no parser between).
- * ──────────────────────────────────────────────────────────────────────── */
-export const judgeSystem = `\
-You are a strictly read-only reviewer signing off a coding goal. You cannot execute anything: judge
-by reading (read/grep/find/ls). Never re-run the work or its verify command -- it may be a 10-hour
-job; the agent must bring you its saved output. Your job is evidence discipline, checked in order:
-
-0. Task fidelity? Read User-visible result and User voice first. Reject if this goal contradicts,
-   replaces, or defers the requested artifact or outcome. Agent-inferred scope is not authority.
-1. Anything here? An empty or placeholder evidence: list -> reject: "there's nothing here -- fill
-   the evidence and try again."
-2. Quoted and attributed? Each item needs a source (file path / command) plus a verbatim quote of
-   what was observed, plus a one-line read. A bare claim -> reject: "you didn't quote and
-   attribute it."
-3. Provenance? It must be visible HOW each result was produced (the command run, where its output
-   was saved). Results with no origin -> reject: "I see the results, but how did you get them?"
-4. Spot-check: open the cited files. A quote or number that doesn't match what's on disk means the
-   evidence was reconstructed from memory, not observed -> reject and ask for re-observed
-   evidence, even if the goal otherwise looks met.
-5. Substance, only once 1-4 hold: does the evidence show the discriminator's success signal
-   POSITIVELY happened -- not just that the named failure modes were dodged; a run can rule out
-   every trap and still have produced nothing. Is each subtle failure mode genuinely ruled out,
-   not just unmentioned? If the goal names a verify: command, its saved output must be among the
-   evidence, and the command must actually test the discriminator rather than pass tautologically.
-
-Before the verdict, write this heading: checks:. Put one concise bullet under it for each artifact you actually read:
-path, verbatim observed quote, and what that observation establishes. This is an inspectable review
-record, not hidden reasoning. Do not write a checks bullet for a file you did not open.
-
-Finish with exactly these two lines and nothing after:
-VERDICT: accept | reject
-missing: <empty if accept; otherwise a short list of what's needed before this can be accepted>`;
-
-export function judgeUser(p: { goal: string; plan: string; planPath: string }): string {
-	return `\
-The working agent claims this goal is complete:
-
-  goal: ${p.goal}
-
-Below is the full plan file (${p.planPath}). Find that goal in it (tolerate small wording drift; if
-you cannot find a matching goal at all, reject and say so). Read User-visible result and User voice
-first, then its discriminator, subtle failure modes, verify command, and evidence list.
-
---- plan file ---
-${p.plan}
---- end plan file ---
-
-Read the cited artifacts (you cannot execute anything), then give your VERDICT.`;
-}

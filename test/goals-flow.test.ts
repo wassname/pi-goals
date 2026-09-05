@@ -15,8 +15,31 @@ function setup(
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
-	const events: string[] = [];
+	const eventLog: string[] = [];
 	const messages: Array<{ content: string; display?: boolean }> = [];
+	const rpcRequests: any[] = [];
+	const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
+	const eventBus = {
+		on(name: string, handler: (data: unknown) => void) {
+			const handlers = eventHandlers.get(name) ?? new Set();
+			handlers.add(handler);
+			eventHandlers.set(name, handlers);
+			return () => handlers.delete(handler);
+		},
+		emit(name: string, data: unknown) {
+			for (const handler of [...(eventHandlers.get(name) ?? [])]) handler(data);
+		},
+	};
+	let asyncRun = 0;
+	eventBus.on("pi-subagents:runtime-agent-register:v1", (raw) => {
+		(raw as any).result = { ok: true, registration: { dispose() {} } };
+	});
+	eventBus.on("subagents:rpc:v1:request", (raw) => {
+		const request = raw as any;
+		rpcRequests.push(request);
+		asyncRun++;
+		eventBus.emit(`subagents:rpc:v1:reply:${request.requestId}`, { success: true, data: { text: "started", details: { asyncId: `steward-${asyncRun}` } } });
+	});
 	const ctx = {
 		cwd,
 		hasUI: true,
@@ -28,28 +51,29 @@ function setup(
 			setWidget: () => {},
 			notify: () => {},
 			select: async () => {
-				events.push("select");
+				eventLog.push("select");
 				return selectChoices.shift();
 			},
 			editor: async () => {
-				events.push("editor");
+				eventLog.push("editor");
 				return editPlan ? editPlan() : editorChoices.shift();
 			},
 		},
 	};
 	const pi = {
+		events: eventBus,
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		sendMessage: (message: { content: string; display?: boolean }) => {
-			events.push("display");
+			eventLog.push("display");
 			messages.push(message);
 		},
 		sendUserMessage: (message: string) => messages.push({ content: message }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, entries, events, hooks, messages, tools };
+	return { commands, ctx, cwd, entries, events: eventLog, eventBus, hooks, messages, rpcRequests, tools };
 }
 
 describe("/goals draft flow", () => {
@@ -246,6 +270,47 @@ describe("/goals draft flow", () => {
 			expect(autoMessages()).toHaveLength(1);
 		} finally {
 			vi.useRealTimers();
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("resumes the same steward lineage for sign-off and persists the latest run", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: produce report\n  - discriminator: report.txt contains PASS\n  - evidence:\n    - report.txt: `PASS`\n\n## Log\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(flow.rpcRequests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-steward" } });
+			flow.eventBus.emit("subagent:async-complete", {
+				runId: "steward-1",
+				results: [{ success: true, structuredOutput: { verdict: "let_run", summary: "Start work." } }],
+			});
+
+			const signoff = flow.tools.get("CompleteGoal").execute("", { goal: "produce report" }, undefined, undefined, flow.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(flow.rpcRequests[1]).toMatchObject({ method: "resume", params: { id: "steward-1" } });
+			flow.eventBus.emit("subagent:async-complete", {
+				runId: "steward-2",
+				results: [{ success: true, structuredOutput: { verdict: "accept", summary: "report.txt contains PASS." } }],
+			});
+			const outcome = await signoff;
+
+			expect(outcome.isError).toBe(false);
+			expect(readFileSync(planPath, "utf-8")).toContain("1. [x] goal: produce report");
+			expect(flow.entries.at(-1)?.data).toMatchObject({ stewardRunId: "steward-2", stewardPending: false });
+
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			const afterReload = flow.tools.get("CompleteGoal").execute("", { goal: "produce report" }, undefined, undefined, flow.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(flow.rpcRequests[2]).toMatchObject({ method: "resume", params: { id: "steward-2" } });
+			flow.eventBus.emit("subagent:async-complete", {
+				runId: "steward-3",
+				results: [{ success: true, structuredOutput: { verdict: "reject", summary: "Already complete.", missingEvidence: ["No second sign-off needed"] } }],
+			});
+			expect((await afterReload).isError).toBe(true);
+		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
