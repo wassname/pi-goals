@@ -3,8 +3,8 @@
  *
  * Design: the plan file is for LLMs and the human, not for TypeScript. No parser and no schema;
  * the skeleton below is a convention the drafting prompt teaches, the worker maintains with its
- * normal Edit tool, and the main research supervisor reads natively. The harness provides format
- * guidance, one full-plan resync after context loss, and a retained pi-subagents worker.
+ * normal Edit tool, and the retained goal-supervisor reads natively. The harness provides format
+ * guidance, one full-plan resync after context loss, and retained pi-subagents supervisor and worker sessions.
  *
  * THE FOLD: everything above "## Log" is the short current-goal section. Everything below it
  * (Log, Learnings, Appendix) is durable memory: unlimited, read on demand, and sent in full at
@@ -69,7 +69,7 @@ Style: Make it easy for a busy and forgetfull user to review. Use ASD-STE100 Sim
 the same word for the same thing, and define a new terms at first use. Use redundant context for skim readers e.g. "our output - the cells, CV tag" is easy to read and reminds context. This covers the context
 paragraph and the appendix too, not just the checklist. No all-caps headers and no bold spam. Just write less, add your voice less, persuade less, and burden the reader less.
 
-Write the plan file in roughly this shape -- the file is read directly by the human and the main supervisor, so clarity beats conformance; small deviations are fine):
+Write the plan file in roughly this shape -- the file is read directly by the human and the retained supervisor, so clarity beats conformance; small deviations are fine):
 
 # <short plan title>
 
@@ -89,7 +89,7 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
   - subtle failure mode: <a way this could look done but isn't>
   - discriminator: <the concrete observation that tells real success from that failure>
   - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not
-    testable. The worker runs it and saves its output; the main supervisor reads the evidence>
+    testable. The worker runs it and saves its output; the retained supervisor reads the evidence>
   - tasks:
     1. [ ] <subtask>
   - evidence: (empty until sign-off)
@@ -119,7 +119,7 @@ Conventions:
   none of the failure modes could fake. Ruling out failures is necessary, not sufficient.
 - Make the discriminator a concrete, checkable observation about a real artifact (a file, a test
   result, a committed diff, a metric), never about the plan file's own checkbox.
-- evidence stays empty at planning; the worker fills it and the main research supervisor checks it.
+- evidence stays empty at planning; the worker fills it and the retained supervisor checks it.
   Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
   usually gitignored, so files there prove things only at supervisor review time, not in history.
 - User-visible result: restate the original deliverable, not the proposed implementation. Every goal
@@ -177,13 +177,14 @@ export const completeGoalDescription =
 	"table plus how to read it, a metric plus what it shows -- not a bare claim). Quote verbatim from " +
 	"output you actually observed; never reconstruct numbers from memory. If you couldn't see an " +
 	"output, rerun it or write that you couldn't -- an honest gap beats a plausible fabrication. If " +
-	"the goal names a verify: command, run it yourself first and save its output to a file cited in " +
-	"the evidence. The main research supervisor must reject a claimed pass with no saved " +
-	"output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
-	"Check that the claimed result uses the artifact and outcome named in User-visible result and does " +
-	"not substitute an agent-inferred deliverable. Then call this with the goal's text (the line after " +
-	"'goal:'). You are the main research supervisor: reread the complete plan and inspect the live " +
-	"working tree, including uncommitted changes, before calling. The tool appends the sign-off to ## Log " +
-	"and ticks the goal [x]. If the evidence is missing, direct the goal-worker to obtain it instead.";
+	"the goal names a verify: command, direct the worker to run it and save its output to a file cited " +
+	"in the evidence. The supervisor may run an allowed read-only verification command, but must not " +
+	"create the evidence file itself. The retained goal-supervisor must reject a claimed pass with no " +
+	"saved output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
+	"The supervisor records an approval checkpoint only after it inspected the current plan, repository, " +
+	"evidence, and verify output with no active nested worker and a clean committed worktree. Then the main " +
+	"coordinator calls this tool with the exact goal text. This tool independently checks that checkpoint " +
+	"against the exact current goal block, HEAD/tree, and clean worktree before it appends the sign-off to " +
+	"## Log and ticks the goal [x]. If any check differs, it fails closed and requires a fresh supervisor review.";
 
 export const completeGoalParamDescription = "The goal's text: the line after 'goal:' in the plan file.";

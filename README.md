@@ -1,6 +1,6 @@
 # pi-goals
 
-Make a short list of goals in one Markdown plan file. The main Pi agent supervises a cheaper retained worker through pi-subagents.
+Make a short list of goals in one Markdown plan file. The main Pi agent is a thin coordinator for a retained supervisor, which controls a nested retained implementation worker through pi-subagents.
 
 The plan file looks like this:
 
@@ -47,12 +47,11 @@ plan resync after compaction follows [tmonk/pi-goal-x](https://github.com/tmonk/
 
 ## Install
 
-Requires `pi-subagents` 0.65.1 or newer. Install `pi-processes` so the supervisor can check managed processes. Install `pi-vcc` as a Pi extension for main-session compaction; pi-goals also loads its package in the worker.
+Requires `pi-subagents` 0.65.1 or newer. Install `pi-processes` so the supervisor can check managed processes.
 
 ```bash
 pi install npm:pi-subagents
 pi install npm:@aliou/pi-processes
-pi install npm:@sting8k/pi-vcc
 pi install npm:@wassname2/pi-goals
 ```
 
@@ -60,7 +59,7 @@ Or for development:
 
 ```bash
 git clone https://github.com/wassname/pi-goals && cd pi-goals && npm install
-pi -e npm:pi-subagents -e npm:@sting8k/pi-vcc -e ./src/index.ts
+pi -e npm:pi-subagents -e ./src/index.ts
 ```
 
 ## Use
@@ -73,31 +72,57 @@ pi -e npm:pi-subagents -e npm:@sting8k/pi-vcc -e ./src/index.ts
 
 1. Plan. The agent explores read-only and drafts the plan.
 2. Review. After Pi settles, the full plan is printed in the transcript. Check that User-visible
-   result names the final artifact or behavior you expect. The menu offers Ready, Refine, Edit, or
-   Cancel. Refine collects short notes. Edit opens the full plan in Pi's editor.
-3. Work. Ready forks the approved-plan conversation into a cheaper `goal-worker`. pi-vcc compacts
-   inherited context before the first worker turn when there is enough context to compact; a small
-   exact fork is recorded as already below the compaction minimum. The main agent becomes the research
-   supervisor. Worker completion wakes it through pi-subagents. It calls `CheckGoalWork` before deciding
-   that all subagents and managed processes stopped, steers or resumes the retained worker with
-   `GuideGoalWorker`, reads the evidence, and calls `CompleteGoal` to sign off. FleetView and
-   `/subagents-fleet` show the worker. Every human reply and Refine note in plan mode is saved verbatim
-   under `## Interview`.
+   result names the final artifact or behavior you expect. Ready forks the retained supervisor and
+   preserves the main context. Ready (compact) first forks that supervisor from the full main context,
+   then requests Pi's normal compaction of the main session only. It never compacts the retained
+   supervisor or worker. Refine collects short notes. Edit opens the full plan in Pi's editor.
+3. Work. The topology is:
+
+   ```text
+   main coordinator
+   └── retained supervisor
+       └── retained implementation worker
+   ```
+
+   The retained `goal-supervisor` rereads the full current plan on each direction or review, controls
+   the nested `goal-worker`, inspects the actual repository and saved evidence, then writes a private approval checkpoint in
+   `.pi/pi-goals/approvals/`. The worker is the implementation writer. Main and supervisor block direct
+   `edit`, `write`, and write-like shell commands, but can inspect and run standard verification
+   commands. This is not a filesystem sandbox: allowed scripts and custom tools can still mutate.
+   `CompleteGoal` is mechanical. It checks that worker/supervisor work is idle and that the approval
+   record still matches the exact goal block, clean worktree, and committed HEAD/tree before ticking.
+   `CheckGoalWork`, FleetView, and `/subagents-fleet` inspect the retained tree and transcripts. Every
+   human reply and Refine note in plan mode is saved verbatim under `## Interview`. Pi and pi-subagents
+   own normal compaction and retained-run recovery.
 
 Other commands: `/goals clear` disconnects this session from its active plan, preserving the
 versioned file on disk. `/goals auto [minutes|off]` changes the supervisor check interval; Ready
-enables a 60-minute interval. `/goals model <model-ref>` picks the cheaper worker model. Select the
-stronger supervisor with Pi's normal `/model` command. Checks continue until all goals close, the
-human uses `auto off`, or the plan is cleared.
+enables a 60-minute interval. `/goals model <model-ref>` picks the retained supervisor model. Checks
+continue until all goals close, the human uses `auto off`, or the plan is cleared.
 
 ## Prompts
 
-Planning and sign-off prompts live in [`src/prompts.ts`](src/prompts.ts). Worker registration and pi-subagents RPC calls live in [`src/worker.ts`](src/worker.ts). [`src/worker-runtime.ts`](src/worker-runtime.ts) compacts the initial fork with pi-vcc.
+Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts.ts). Runtime-agent registration and RPC calls live in [`src/worker.ts`](src/worker.ts). The supervisor-only nested-worker registration and approval tool live in [`src/supervisor-runtime.ts`](src/supervisor-runtime.ts).
+
+## Manual check
+
+1. Reload pi-goals with pi-subagents, create a small plan, and choose **Ready**. Open FleetView or run
+   `subagent({ action: "status", view: "fleet" })`. It should show `goal-supervisor` and its nested
+   `goal-worker`, not sibling runs from the main session.
+2. Ask the main session to edit a project file. Its direct `edit`, `write`, or shell redirection call
+   should be blocked. Call `CompleteGoal` before a supervisor review. It should fail because no matching
+   private approval exists.
+3. Let the worker implement, commit, and save verify output. Ask the supervisor to inspect the plan,
+   repository, evidence, and output. Its nested worker instruction should appear in the nested
+   transcript. After it calls `ApproveGoal`, inspect the JSON under `.pi/pi-goals/approvals/`.
+4. Call `CompleteGoal` with the exact goal text. It should tick only while the checkpoint's goal-block
+   hash and committed clean repository still match. Change the plan block or worktree and retry; it
+   should fail closed until a new supervisor review.
 
 ## Develop
 
 ```bash
-pi -e npm:pi-subagents -e npm:@sting8k/pi-vcc -e ./src/index.ts  # load locally
+pi -e npm:pi-subagents -e ./src/index.ts  # load locally
 npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck

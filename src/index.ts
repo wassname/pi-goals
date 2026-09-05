@@ -1,14 +1,14 @@
 /**
- * PI: pi-goals owns one versioned plan per session. The main agent supervises a cheaper retained
- * pi-subagents worker, reviews progress, and decides CompleteGoal sign-off.
+ * PI: pi-goals owns one versioned plan per session. The main agent is a thin coordinator for a
+ * retained pi-subagents supervisor, which owns a nested retained implementation worker and approval.
  *
  * Each /goals call makes `.pi/plan/<session_id>-vN.md`. The selected version survives resume and
  * compaction. Old plans stay on disk but inactive. A session with no selected plan has no widget,
  * supervision, worker, or CompleteGoal sign-off.
  *
  * TypeScript reads only goal checkbox lines for the widget. Models read the plan as prose. The
- * worker edits the project and records evidence. The main agent keeps the high-level context and
- * directs the worker. pi-subagents owns the worker session, fork, persistence, resume, events,
+ * worker edits the project and records evidence. The supervisor inspects it and writes a private
+ * approval checkpoint. pi-subagents owns the supervisor and worker sessions, forks, resume, events,
  * and Fleet controls.
  *
  * -- Pi/Codex
@@ -18,13 +18,14 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { approvalMatches, approvalPath, goalBlock, hashGoalBlock, readApproval, repositoryState } from "./approval.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
 import {
 	processWorkState,
-	registerGoalWorker,
-	resumeGoalWorker,
-	startGoalWorker,
-	steerGoalWorker,
+	registerGoalSupervisor,
+	resumeGoalSupervisor,
+	startGoalSupervisor,
+	steerGoalSupervisor,
 	subagentWorkState,
 } from "./worker.js";
 
@@ -38,7 +39,6 @@ const PLAN_SHAPE = `${PLAN_DIR}/<session_id>-vN.md`;
 // Plan mode blocks edit/write except for its plan file. bash remains available for read-only inspection. -- Pi/Codex
 const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
 const AUTO_DEFAULT_INTERVAL_MS = 60 * 60 * 1_000;
-const SUPERVISOR_COMPACT_TOKENS = 100_000;
 
 // A checkbox line beginning "goal:", used by the widget and supervisor scheduling.
 // Everything else reads the file as prose.
@@ -90,6 +90,11 @@ export function nextPlanVersion(planNames: string[], sessionId: string): number 
 
 type Phase = "planning" | "working" | null;
 
+/** Goal workers run in child Pi sessions, so they must not receive the main coordinator's tool gate. */
+export function isSupervisorProcess(isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1"): boolean {
+	return !isSubagentChild;
+}
+
 interface PlanState {
 	phase: Phase;
 	workerModel: string | null;
@@ -100,7 +105,7 @@ interface PlanState {
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
-	if (process.env.PI_SUBAGENT_CHILD === "1") return;
+	if (!isSupervisorProcess()) return;
 	let state: PlanState = {
 		phase: null,
 		workerModel: null,
@@ -112,7 +117,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	let planningContextPending = false;
 	let autoTimer: ReturnType<typeof setTimeout> | null = null;
 	let supervisorWakePending = false;
-	let supervisorCompactionPending = false;
 	let workerRegistration: { dispose(): void } | null = null;
 	let workerRegistrationError: string | null = null;
 	let unsubscribeWorkerCompletion: (() => void) | null = null;
@@ -143,10 +147,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		workerRegistration = null;
 		workerRegistrationError = null;
 		try {
-			workerRegistration = registerGoalWorker(pi.events, state.workerModel);
+			workerRegistration = registerGoalSupervisor(pi.events, state.workerModel);
 		} catch (error) {
 			workerRegistrationError = error instanceof Error ? error.message : String(error);
-			if (state.phase === "working") ctx.ui.notify(`Goal worker unavailable: ${workerRegistrationError}`, "warning");
+			if (state.phase === "working") ctx.ui.notify(`Goal supervisor unavailable: ${workerRegistrationError}`, "warning");
 		}
 	}
 
@@ -163,8 +167,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		workerCompletionsDuringLaunch.clear();
 		try {
 			const runId = state.workerRunId
-				? await resumeGoalWorker(pi.events, state.workerRunId, task, signal)
-				: await startGoalWorker(pi.events, ctx.cwd, task, signal);
+				? await resumeGoalSupervisor(pi.events, state.workerRunId, task, signal)
+				: await startGoalSupervisor(pi.events, ctx.cwd, task, signal);
 			rememberWorkerRun(runId);
 			return runId;
 		} finally {
@@ -197,13 +201,29 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return scanGoals(readPlan(ctx)).some((goal) => goal.status === "active" || goal.status === "open");
 	}
 
+	function supervisorTask(ctx: ExtensionContext, instruction: string): string {
+		const plan = readPlan(ctx);
+		const checkpoints = scanGoals(plan)
+			.filter((goal) => goal.status === "active" || goal.status === "open")
+			.map((goal) => `- ${JSON.stringify(goal.subject)}: ${approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), goal.subject)}`)
+			.join("\n");
+		return `${instruction}\n\nYou are the retained goal-supervisor. Here is the complete current plan; inspect its exact goal blocks and cited evidence before directing or approving work.\nPlan path: ${planPath(ctx)}\nPrivate approval checkpoints, one per current goal:\n${checkpoints || "(no open goals)"}\n\n${plan}`;
+	}
+
 	function wakeSupervisor(ctx: ExtensionContext, reason: string): void {
 		if (supervisorWakePending || state.phase !== "working" || !activeGoals(ctx)) return;
 		supervisorWakePending = true;
-		pi.sendUserMessage(
-			`<system-reminder>${reason}\nYou are the goal supervisor. Read ${planRel(ctx)} and inspect the cited evidence. Use CheckGoalWork before concluding that work stopped, and GuideGoalWorker to steer or resume the cheaper worker. Sign off a goal only after its discriminator is positively proved. Do not perform implementation work yourself.</system-reminder>`,
-			{ deliverAs: "followUp" },
-		);
+		void (async () => {
+			try {
+				const task = supervisorTask(ctx, `${reason}\nReview the current goal and either continue, redirect, or approve it through ApproveGoal.`);
+				if (state.workerPending && state.workerRunId) await steerGoalSupervisor(pi.events, state.workerRunId, task);
+				else await startOrResumeWorker(ctx, task);
+			} catch (error) {
+				ctx.ui.notify(`Goal supervisor check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			} finally {
+				supervisorWakePending = false;
+			}
+		})();
 	}
 
 	function scheduleSupervisorCheck(ctx: ExtensionContext): void {
@@ -214,25 +234,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			wakeSupervisor(ctx, `The ${state.autoIntervalMs! / 60_000}-minute supervisor check is due.`);
 		}, state.autoIntervalMs);
 		autoTimer.unref();
-	}
-
-	function compactSupervisor(ctx: ExtensionContext): void {
-		const usage = ctx.getContextUsage();
-		if (supervisorCompactionPending || usage?.tokens === null || usage?.tokens === undefined || usage.tokens < SUPERVISOR_COMPACT_TOKENS) return;
-		supervisorCompactionPending = true;
-		ctx.compact({
-			customInstructions: "__pi_vcc__ keep:1",
-			onComplete: (result) => {
-				supervisorCompactionPending = false;
-				if ((result.details as { compactor?: string } | undefined)?.compactor !== "pi-vcc") {
-					ctx.ui.notify("Goal supervisor compaction did not use pi-vcc. Install and load @sting8k/pi-vcc.", "warning");
-				}
-			},
-			onError: (error) => {
-				supervisorCompactionPending = false;
-				ctx.ui.notify(`Goal supervisor compaction failed: ${error.message}`, "warning");
-			},
-		});
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
@@ -248,16 +249,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		const done = goals.filter((g) => g.status === "done").length;
-		const auto = state.autoIntervalMs === null ? "" : ` · supervise ${state.autoIntervalMs / 60_000}m`;
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${auto}`));
+		const liveGoals = goals.filter((g) => g.status === "active" || g.status === "open");
+		const stateLabel = liveGoals.length > 0 ? " · supervising…" : " · complete";
+		const auto = liveGoals.length > 0 && state.autoIntervalMs !== null ? ` · supervise ${state.autoIntervalMs / 60_000}m` : "";
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${stateLabel}${auto}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
 		// No path line: the session id makes it too long to be useful in the widget.
 		const plan = readPlan(ctx);
-		const lines: string[] = [];
-		for (const g of goals.filter((g) => g.status === "active" || g.status === "open")) {
-			lines.push(`${mark[g.status]} ${g.subject}`);
+		const lines: string[] = liveGoals.length === 0 ? ["✔ complete"] : [];
+		for (const g of liveGoals) {
+			lines.push(`${mark[g.status]} ${g.status === "active" ? "supervising… " : ""}${g.subject}`);
 			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
 		}
 		ctx.ui.setWidget(WIDGET_KEY, lines);
@@ -314,7 +317,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				state = { ...state, workerModel: ref || null, workerRunId: null, workerPending: false };
 				persist();
 				setupWorker(ctx);
-				ctx.ui.notify(ref ? `Goal-worker model set to ${ref}` : "Goal-worker model reset to pi-subagents default", "info");
+				ctx.ui.notify(ref ? `Goal-supervisor model set to ${ref}` : "Goal-supervisor model reset to pi-subagents default", "info");
 				return;
 			}
 			state = { ...state, phase: "planning", workerRunId: null, workerPending: false, planVersion: nextVersion(ctx), autoIntervalMs: null };
@@ -348,7 +351,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		supervisorWakePending = false;
 		if (state.phase === "working") {
 			return {
-				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the research supervisor for ${planRel(ctx)}. Keep the high-level goal and the human's intent stable. The retained goal-worker owns implementation and plan updates; direct it with GuideGoalWorker instead of implementing work yourself. Read cited artifacts before calling CompleteGoal. A pi-subagents completion can wake you while nested subagents or managed processes are still running, so call CheckGoalWork before concluding that work stopped. At hourly checks, inspect progress and steer the worker only when a concrete correction is useful. Keep work going until all goals are proved or the human stops it. -- Pi/Codex`,
+				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the thin human-facing coordinator for ${planRel(ctx)}. The retained goal-supervisor owns nested-worker control and acceptance. Keep the human intent stable, inspect progress with read-only tools, and direct the supervisor through GuideGoalWorker. Built-in edit/write and write-like shell commands are blocked. CompleteGoal is a mechanical sign-off only: it fails closed unless the supervisor's private approval checkpoint still matches the exact goal, plan block, committed HEAD/tree, and clean worktree. This is not a filesystem sandbox: allowed verification scripts and other custom tools can still mutate. Do not approve implementation by prose alone. -- Pi/Codex`,
 			};
 		}
 		if (!planningContextPending) return;
@@ -380,14 +383,24 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (state.phase !== "planning") return;
-		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
-			const target = (event.input as { path?: string }).path;
-			if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
-			return { block: true, reason: `Planning is read-only: only ${planRel(ctx)} may be written. Agree the plan, then choose Ready.` };
+		if (state.phase === "planning") {
+			if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
+				const target = (event.input as { path?: string }).path;
+				if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
+				return { block: true, reason: `Planning is read-only: only ${planRel(ctx)} may be written. Agree the plan, then choose Ready.` };
+			}
+			if (event.toolName === "bash" && !isPlanningReadOnlyCommand(String((event.input as { command?: string }).command))) {
+				return { block: true, reason: "Planning is read-only: inspect facts without writes or pipes, then put the change in the plan." };
+			}
+			return;
 		}
-		if (event.toolName === "bash" && !isPlanningReadOnlyCommand(String((event.input as { command?: string }).command))) {
-			return { block: true, reason: "Planning is read-only: inspect facts without writes or pipes, then put the change in the plan." };
+		if (state.phase === "working") {
+			if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
+				return { block: true, reason: "Working supervision is read-only: direct implementation and evidence writes to GuideGoalWorker. CompleteGoal is the explicit sign-off control." };
+			}
+			if (event.toolName === "bash" && !isSupervisorReadOnlyCommand(String((event.input as { command?: string }).command))) {
+				return { block: true, reason: "Working supervision allows inspection and standard verification commands only. Direct file changes belong to GuideGoalWorker; this is not a full sandbox for custom tools or allowed scripts." };
+			}
 		}
 	});
 
@@ -400,7 +413,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (state.phase === "working") {
-			compactSupervisor(ctx);
 			scheduleSupervisorCheck(ctx);
 			return;
 		}
@@ -416,7 +428,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				printed = plan;
 				pi.sendMessage({ customType: "plan", content: plan, display: true });
 			}
-			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Refine", "Edit", "Cancel"]);
+			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Ready (compact)", "Refine", "Edit", "Cancel"]);
 			if (choice === "Refine") {
 				const notes = await ctx.ui.editor("What should change about the plan?", "");
 				if (!notes?.trim()) continue;
@@ -438,18 +450,35 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Plan discarded.", "info");
 				return;
 			}
-			if (choice !== "Ready") return;
-			state = { ...state, phase: "working", autoIntervalMs: AUTO_DEFAULT_INTERVAL_MS };
-			resyncReason = "The plan was approved.";
-			persist();
-			updateWidget(ctx);
-			try {
-				await startOrResumeWorker(ctx, `Work the goals in ${planRel(ctx)}. Mark one open goal active, execute its subtasks, and record exact evidence in the plan Log. Report progress and evidence to the main research supervisor. Do not sign off goals.`);
-				scheduleSupervisorCheck(ctx);
-			} catch (error) {
-				ctx.ui.notify(`Goal worker could not start: ${error instanceof Error ? error.message : String(error)}`, "warning");
-				wakeSupervisor(ctx, "The approved goal worker failed to start.");
-			}
+			if (choice !== "Ready" && choice !== "Ready (compact)") return;
+			const startWorking = async (): Promise<boolean> => {
+				state = { ...state, phase: "working", autoIntervalMs: AUTO_DEFAULT_INTERVAL_MS };
+				resyncReason = "The plan was approved.";
+				persist();
+				updateWidget(ctx);
+				try {
+					await startOrResumeWorker(ctx, supervisorTask(ctx, "Start by launching or resuming the nested goal-worker. Then supervise the current plan."));
+					scheduleSupervisorCheck(ctx);
+					return true;
+				} catch (error) {
+					ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)}`, "warning");
+					state = { ...state, phase: "planning", autoIntervalMs: null };
+					persist();
+					updateWidget(ctx);
+					return false;
+				}
+			};
+			const started = await startWorking();
+			if (!started || choice === "Ready") return;
+			ctx.compact({
+				onComplete: () => {
+					resyncReason = "The main coordinator was compacted after the retained supervisor started.";
+					ctx.ui.notify("Main-session compaction completed; the retained supervisor and worker kept their contexts.", "info");
+				},
+				onError: (error) => {
+					ctx.ui.notify(`Main-session compaction failed; the retained supervisor continues: ${error.message}`, "warning");
+				},
+			});
 			return;
 		}
 	});
@@ -501,23 +530,24 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "GuideGoalWorker",
-		label: "Guide goal worker",
-		description: "Send one concrete instruction to the retained goal-worker. A live worker is steered; a completed worker is resumed with its saved context.",
+		label: "Guide goal supervisor",
+		description: "Send one concrete instruction to the retained goal-supervisor. A live supervisor is steered; a completed supervisor is resumed with its saved context and the full current plan.",
 		parameters: Type.Object({
 			instruction: Type.String({ description: "The next research or implementation action, with the evidence that should distinguish success from failure." }),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (state.phase !== "working") return result("Approve a plan with Ready before directing the goal worker.", true);
+			if (state.phase !== "working") return result("Approve a plan with Ready before directing the goal supervisor.", true);
+			const task = supervisorTask(ctx, params.instruction);
 			try {
 				if (state.workerPending) {
-					if (!state.workerRunId) throw new Error("Goal-worker state says running but has no run ID.");
-					await steerGoalWorker(pi.events, state.workerRunId, params.instruction, signal);
-					return result(`Instruction delivered to live goal worker ${state.workerRunId}.`);
+					if (!state.workerRunId) throw new Error("Goal-supervisor state says running but has no run ID.");
+					await steerGoalSupervisor(pi.events, state.workerRunId, task, signal);
+					return result(`Instruction delivered to live goal supervisor ${state.workerRunId}.`);
 				}
-				const runId = await startOrResumeWorker(ctx, params.instruction, signal);
-				return result(`Goal worker resumed as ${runId}.`);
+				const runId = await startOrResumeWorker(ctx, task, signal);
+				return result(`Goal supervisor resumed as ${runId}.`);
 			} catch (error) {
-				return result(`Goal-worker guidance failed: ${error instanceof Error ? error.message : String(error)}`, true);
+				return result(`Goal-supervisor guidance failed: ${error instanceof Error ? error.message : String(error)}`, true);
 			}
 		},
 	});
@@ -531,11 +561,32 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (state.phase !== "working") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
+			const workState = await subagentWorkState(pi.events);
+			if (workState !== "idle") return result(`Goal sign-off blocked while supervisor work is ${workState}.`, true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
+			const block = goalBlock(plan, params.goal);
+			if (!block) return result(`No unique open goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
+			let repository: ReturnType<typeof repositoryState>;
+			try {
+				repository = repositoryState(ctx.cwd);
+			} catch (error) {
+				return result(`Goal sign-off could not inspect the repository: ${error instanceof Error ? error.message : String(error)}`, true);
+			}
+			if (!repository.cleanWorktree) return result("Goal sign-off blocked: worktree is dirty.", true);
+			const approval = readApproval(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), params.goal));
+			if (!approvalMatches(approval, {
+				goal: params.goal,
+				planPath: planPath(ctx),
+				goalBlockHash: hashGoalBlock(block),
+				repoRoot: repository.repoRoot,
+				head: repository.head,
+				tree: repository.tree,
+				cleanWorktree: repository.cleanWorktree,
+			})) return result("Goal sign-off blocked: no matching supervisor approval checkpoint. Request a fresh supervisor review.", true);
 			const ticked = tickGoal(plan, params.goal);
 			if (!ticked) return result(`No unique exact goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
-			writePlan(ctx, appendLog(ticked, `${stamp()} signed off "${params.goal}" by the main research supervisor`));
+			writePlan(ctx, appendLog(ticked, `${stamp()} mechanically signed off "${params.goal}" after matching supervisor approval`));
 			updateWidget(ctx);
 			return result(`Sign-off accepted. Goal ticked [x] in ${planRel(ctx)}.`);
 		},
@@ -551,6 +602,18 @@ function result(text: string, isError = false) {
 function isPlanningReadOnlyCommand(command: string): boolean {
 	if (/[|>]/.test(command)) return false;
 	return command.split(/&&|;/).every((part) => /^(?:cd\b|pwd|ls\b|git\s+(?:status|log|diff|show|branch)\b|rg\b|grep\b|find\b|head\b|tail\b|wc\b|stat\b|test\b)\b/.test(part.trim()));
+}
+
+/** The supervisor may inspect and use ordinary project checks. It is not a shell sandbox: package
+ * scripts and custom tools retain their normal process permissions, so implementation still belongs
+ * to the worker by contract as well as this direct-tool gate. */
+export function isSupervisorReadOnlyCommand(command: string): boolean {
+	if (/[|><`$]/.test(command)) return false;
+	const safeArgs = "(?:\\s+[A-Za-z0-9_./:=,'\"@+%-]+)*";
+	const inspection = new RegExp(`^(?:cd|pwd|ls|rg|grep|find|head|tail|wc|stat|test)${safeArgs}$`);
+	const git = new RegExp(`^git\\s+(?:status|log|diff|show|branch|ls-files|grep|check-ignore)${safeArgs}$`);
+	const verification = new RegExp(`^(?:npm\\s+test|npm\\s+run\\s+(?:test|typecheck|lint)|npx\\s+tsc\\s+--noEmit)${safeArgs}$`);
+	return command.split(/&&|;/).every((part) => inspection.test(part.trim()) || git.test(part.trim()) || verification.test(part.trim()));
 }
 
 /** Local time, not UTC: agents freehand-stamp their manual ## Log lines from the local clock they

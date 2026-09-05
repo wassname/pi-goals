@@ -6,6 +6,7 @@ const RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
 const RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
 const RPC_VERSION = 1;
 const RPC_TIMEOUT_MS = 15_000;
+export const SUPERVISOR_AGENT = "goal-supervisor";
 export const WORKER_AGENT = "goal-worker";
 
 interface EventBus {
@@ -38,26 +39,56 @@ interface AsyncSnapshot {
 
 export type WorkState = "active" | "idle" | "unknown";
 
-export const workerSystemPrompt = `You are the implementation worker for one supervised Pi session.
-Work autonomously from the approved plan. Keep the plan current, run the real checks, and leave
-specific evidence in its Log. The human's latest message outranks the plan; update affected goals
-instead of defending an obsolete decision. The main Pi agent is the research supervisor and owns
-direction and goal sign-off. Send contact_supervisor progress updates when evidence changes the research direction,
-when an hourly check asks for one, or when you need a decision. Do not claim a goal is complete;
-report the evidence and let the supervisor decide. Continue until the plan is complete or the human
-stops the session. -- Pi/Codex`;
+export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session is a thin human-facing coordinator.
+You own the current plan review and the retained implementation worker. At every review, reread the full
+current plan named in your task, identify the exact goal block, inspect the repository, cited artifacts, and
+saved verification output, then launch, resume, or steer the nested goal-worker as needed. Do not edit project
+files. Use read/search and standard verification commands only. The worker is the sole implementation writer and
+must commit its changes before you consider approval. When no nested work is active, HEAD is committed, the worktree
+is clean, and you have explicitly inspected the plan, repository, evidence, and verification output, call ApproveGoal.
+Otherwise return continue or redirect the worker. Do not claim acceptance in prose: only ApproveGoal creates the durable
+approval checkpoint. -- Pi/Codex`;
+
+export const workerSystemPrompt = `You are the retained implementation worker for one goal supervisor.
+Work autonomously from the approved plan. The latest human message outranks the plan. Keep the plan current, run the real checks, commit the implementation,
+and leave specific evidence in its Log. Your goal supervisor owns direction and approval. Send contact_supervisor
+progress updates when evidence changes the research direction, when an hourly check asks for one, or when you need a
+decision. Do not claim a goal is complete; report the evidence and let the supervisor decide. -- Pi/Codex`;
+
+export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
+	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
+	const request: Record<string, unknown> = {
+		version: 1,
+		name: SUPERVISOR_AGENT,
+		definition: {
+			description: "Read-only supervisor that owns a nested retained implementation worker.",
+			systemPrompt: supervisorSystemPrompt,
+			allowNestedSubagents: true,
+			subagentOnlyExtensions: [supervisorRuntime],
+			...(model ? { model } : {}),
+			systemPromptMode: "replace",
+			inheritProjectContext: true,
+			inheritGlobalContext: true,
+			inheritSkills: true,
+			defaultContext: "fork",
+			defaultAsync: true,
+			defaultProgress: true,
+		},
+	};
+	events.emit(REGISTER_EVENT, request);
+	const result = request.result as { ok?: boolean; registration?: Registration; error?: Error } | undefined;
+	if (!result) throw new Error("pi-subagents is not installed or not ready.");
+	if (!result.ok || !result.registration) throw result.error ?? new Error("pi-subagents rejected the goal-supervisor agent.");
+	return result.registration;
+}
 
 export function registerGoalWorker(events: EventBus, model: string | null): Registration {
-	const runtimeExtension = fileURLToPath(new URL("./worker-runtime.ts", import.meta.url));
-	const piVccExtension = fileURLToPath(import.meta.resolve("@sting8k/pi-vcc"));
 	const request: Record<string, unknown> = {
 		version: 1,
 		name: WORKER_AGENT,
 		definition: {
-			description: "Implementation worker directed by the main goal supervisor.",
+			description: "Implementation worker directed by the retained goal supervisor.",
 			systemPrompt: workerSystemPrompt,
-			allowNestedSubagents: true,
-			subagentOnlyExtensions: [piVccExtension, runtimeExtension],
 			...(model ? { model } : {}),
 			systemPromptMode: "replace",
 			inheritProjectContext: true,
@@ -112,9 +143,9 @@ function asyncRunId(data: RpcData): string {
 	return runId;
 }
 
-export async function startGoalWorker(events: EventBus, cwd: string, task: string, signal?: AbortSignal): Promise<string> {
+export async function startGoalSupervisor(events: EventBus, cwd: string, task: string, signal?: AbortSignal): Promise<string> {
 	const data = await rpc(events, "spawn", {
-		agent: WORKER_AGENT,
+		agent: SUPERVISOR_AGENT,
 		task,
 		cwd,
 		context: "fork",
@@ -124,11 +155,11 @@ export async function startGoalWorker(events: EventBus, cwd: string, task: strin
 	return asyncRunId(data);
 }
 
-export async function resumeGoalWorker(events: EventBus, runId: string, task: string, signal?: AbortSignal): Promise<string> {
+export async function resumeGoalSupervisor(events: EventBus, runId: string, task: string, signal?: AbortSignal): Promise<string> {
 	return asyncRunId(await rpc(events, "resume", { id: runId, message: task }, signal));
 }
 
-export async function steerGoalWorker(events: EventBus, runId: string, task: string, signal?: AbortSignal): Promise<void> {
+export async function steerGoalSupervisor(events: EventBus, runId: string, task: string, signal?: AbortSignal): Promise<void> {
 	await rpc(events, "steer", { id: runId, message: task, mode: "steer" }, signal);
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.2.2",
-  "description": "One plan file per session with a main research supervisor and retained pi-subagents worker.",
+  "description": "One plan file per session with a main coordinator, retained supervisor, and nested pi-subagents worker.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
@@ -21,9 +21,6 @@
     "supervisor",
     "subagent"
   ],
-  "dependencies": {
-    "@sting8k/pi-vcc": "^0.6.0"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
@@ -46,11 +43,11 @@
     "lint:fix": "biome check --fix src/ test/"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.8",
     "@earendil-works/pi-coding-agent": "^0.84.1",
     "@types/node": "^20.0.0",
     "typebox": "^1.3.7",
     "typescript": "^5.0.0",
-    "@biomejs/biome": "^2.4.8",
     "vitest": "^4.0.18"
   },
   "pi": {

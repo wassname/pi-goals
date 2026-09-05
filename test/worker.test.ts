@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
 	processWorkState,
+	registerGoalSupervisor,
 	registerGoalWorker,
-	resumeGoalWorker,
-	startGoalWorker,
-	steerGoalWorker,
+	resumeGoalSupervisor,
+	startGoalSupervisor,
+	steerGoalSupervisor,
 	subagentWorkState,
+	supervisorSystemPrompt,
 	workerSystemPrompt,
 } from "../src/worker.js";
 
@@ -31,8 +33,8 @@ function replyToRpc(events: Events, inspect: (request: any) => object): void {
 	});
 }
 
-describe("goal worker registration", () => {
-	it("registers one retained implementation worker", () => {
+describe("goal hierarchy registration", () => {
+	it("registers a retained supervisor that can load the worker-only runtime", () => {
 		const events = new Events();
 		let definition: Record<string, unknown> | undefined;
 		events.on("pi-subagents:runtime-agent-register:v1", (raw) => {
@@ -41,17 +43,30 @@ describe("goal worker registration", () => {
 			request.result = { ok: true, registration: { dispose() {} } };
 		});
 
-		registerGoalWorker(events, "provider/cheap-model");
+		registerGoalSupervisor(events, "provider/cheap-model");
 
 		expect(definition?.model).toBe("provider/cheap-model");
 		expect(definition?.defaultContext).toBe("fork");
 		expect(definition?.defaultProgress).toBe(true);
 		expect(definition?.allowNestedSubagents).toBe(true);
-		expect(definition?.subagentOnlyExtensions).toEqual([
-			expect.stringContaining("pi-vcc"),
-			expect.stringContaining("worker-runtime.ts"),
-		]);
-		expect(workerSystemPrompt).toContain("main Pi agent is the research supervisor");
+		expect(definition?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
+		expect(supervisorSystemPrompt).toContain("nested goal-worker");
+		expect(supervisorSystemPrompt).toContain("ApproveGoal");
+		expect(workerSystemPrompt).toContain("retained implementation worker");
+	});
+
+	it("registers the implementation worker without nested supervisor tools", () => {
+		const events = new Events();
+		let definition: Record<string, unknown> | undefined;
+		events.on("pi-subagents:runtime-agent-register:v1", (raw) => {
+			const request = raw as { definition: Record<string, unknown>; result?: unknown };
+			definition = request.definition;
+			request.result = { ok: true, registration: { dispose() {} } };
+		});
+
+		registerGoalWorker(events, null);
+		expect(definition?.allowNestedSubagents).toBeUndefined();
+		expect(definition).not.toHaveProperty("subagentOnlyExtensions");
 	});
 
 	it("fails clearly when pi-subagents is absent", () => {
@@ -68,11 +83,11 @@ describe("goal worker RPC", () => {
 			return { text: "ok", details: { asyncId: `run-${requests.length}` } };
 		});
 
-		await expect(startGoalWorker(events, "/repo", "start")).resolves.toBe("run-1");
-		await expect(resumeGoalWorker(events, "run-1", "continue")).resolves.toBe("run-2");
-		await steerGoalWorker(events, "run-2", "report");
+		await expect(startGoalSupervisor(events, "/repo", "start")).resolves.toBe("run-1");
+		await expect(resumeGoalSupervisor(events, "run-1", "continue")).resolves.toBe("run-2");
+		await steerGoalSupervisor(events, "run-2", "report");
 
-		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-worker", cwd: "/repo", context: "fork", async: true } });
+		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", cwd: "/repo", context: "fork", async: true } });
 		expect(requests[1]).toMatchObject({ method: "resume", params: { id: "run-1", message: "continue" } });
 		expect(requests[2]).toMatchObject({ method: "steer", params: { id: "run-2", message: "report", mode: "steer" } });
 	});
