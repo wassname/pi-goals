@@ -29,7 +29,7 @@ Git-tracked non-image files counted on 2026-09-05. `media/screenshot.png` is exc
 | `slop/audits/20260905_goal-steward-validation.md` | 31 |
 | `slop/audits/20260905_pi-goals-file-types.txt` | 42 |
 | `slop/audits/20260905_pi-goals-line-count-table.md` | 48 |
-| `slop/audits/20260905_pi-goals-text-line-counts.txt` | 25 |
+| `slop/audits/20260905_pi-goals-text-line-counts.txt` | 42 |
 | `slop/audits/20260905_steward-probe.json` | 15 |
 | `slop/plans/20260905_goal-steward.md` | 37 |
 | `src/index.ts` | 678 |
@@ -45,4 +45,4 @@ Git-tracked non-image files counted on 2026-09-05. `media/screenshot.png` is exc
 | `test/steward.test.ts` | 133 |
 | `test/tick-goal.test.ts` | 32 |
 | `tsconfig.json` | 15 |
-| **Total** | **6804** |
+| **Total** | **6821** |
