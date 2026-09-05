@@ -6,12 +6,13 @@ Branch: `experiment/subagent-supervisor`. Supersedes the custom session-switchin
 
 ## User-visible result
 
-One supervisor keeps the high-level intent, checks every 60 minutes and when the worker settles without background work, and judges goal sign-off against the plan and work history. Inspect and guide it through normal pi-subagents controls. No new terminal or custom session-switch command.
+The main agent is the cheaper worker. A stronger supervisor keeps the high-level intent and gives research direction from compressed context. It checks every 60 minutes and when the worker settles without background work, and judges goal sign-off against the plan and work history. Inspect and guide it through normal pi-subagents controls. No new terminal or custom session-switch command.
 
 - [ ] goal: Keep supervisor context through ordinary pi-subagents continuation
-  - [ ] At Ready, fork the supervisor from the approved-plan conversation using pi-subagents. Keep runtime agent registration; retain the latest returned run ID and reconcile on reload.
-  - [ ] Resume that supervisor for later checks with the full plan path, VCC-compiled worker updates, and current work status. Include the worker compaction summary when the update crosses a compaction boundary.
-  - [ ] Preserve supervisor decisions through continuation; avoid accumulating duplicate worker snapshots. Reuse the relevant pi-supervise view logic, not its intercom transport or process scan.
+  - [ ] At Ready, fork the approved-plan conversation and compact the supervisor's copy before its first review. Leave worker context unchanged. Keep runtime registration and a separately selected supervisor model; retain the latest run ID and reconcile on reload.
+  - [ ] Resume that supervisor with VCC summaries of worker updates, current work status, and the full plan path. Include the worker compaction summary when an update crosses a compaction boundary; do not replay raw worker turns at check-ins.
+  - [ ] Compact supervisor context at about 100k tokens, earlier if its model requires it. Preserve human intent, research decisions, rejected ideas and reasons, unresolved questions, and evidence references. Prefer package compaction support; verify the child-specific API before implementation.
+  - [ ] Preserve supervisor decisions through continuation; avoid duplicate worker snapshots. Reuse relevant pi-supervise view logic, not its intercom transport or process scan.
   - [ ] Enable normal progress visibility; remove the bespoke visit/role-restoration design and arbitrary read-tool cap.
   - failure modes: fresh reviews forget earlier corrections; stale snapshots hide a human correction; review instructions start another supervisor.
   - deliverable: a real resumed child refers to an earlier correction and a later worker update in its next decision, visible through Fleet.
@@ -33,7 +34,8 @@ One supervisor keeps the high-level intent, checks every 60 minutes and when the
 
 ## UAT / verification
 
-- Context: success retains an earlier correction after resume and worker compaction; likely failure forgets it; subtle failure reads the plan but misses a newer user correction. Check both in the actual child transcript.
+- Context: verify the first review receives a compacted fork, later checks receive summaries, and supervisor compaction occurs near 100k tokens. Success retains earlier corrections through both agents' compactions; likely failure forgets them; subtle failure retains the plan but omits a newer user correction. Inspect actual model context, not just the saved transcript.
+- Cost and usefulness: record worker/supervisor input, cached input, output, compaction usage, and cost separately. Test the hypothesis of roughly 10x lower supervisor token use; do not infer it from context size alone. Record concrete supervisor corrections and worker outcomes. A cheaper run alone does not demonstrate better research decisions.
 - Triggers: fake-clock tests exercise 60 minutes during busy work and after repeated stops. Success also waits for an already-running child/process; likely failure never wakes; subtle failure counts its own supervisor or treats a completed launch call as finished work. Test nested work, completion delivery, overlap, reload, off, and all-goals-done.
 - Sign-off: exercise missing evidence, positive artifact evidence, and concurrent checkpoint/sign-off. Check the saved decision and actual plan checkbox, not only mocked helper output.
 - Run repo tests, typecheck, lint, and a real spawn/resume/redirect/sign-off test with normal Fleet visibility. Save local run artifacts outside tracked research/source files. If a check fails, inspect its source events and fix the cause; do not substitute a separate terminal.
@@ -41,17 +43,20 @@ One supervisor keeps the high-level intent, checks every 60 minutes and when the
 ## Appendix: ownership and flow
 
 ```text
-Ready: register supervisor and fork the worker's approved-plan conversation
+Ready: fork approved-plan conversation -> compact child copy -> stronger supervisor
 Every 60 minutes: request checkpoint, even if worker has been busy
 Worker settled / background work finished: reconcile; request idle check if no work remains
 CompleteGoal: request sign-off with claim + plan + VCC worker view
 
-One check at a time -> resume latest supervisor -> store latest run ID
+One check at a time -> resume with VCC update -> store latest run ID
+Supervisor context near 100k tokens -> compact its context, retaining decisions
   checkpoint/idle -> let_run or redirect worker with one concrete next action
   sign-off        -> reject with missing evidence, or accept and tick goal
 ```
 
-The initial fork inherits existing compaction history; do not force worker compaction. Verify that inherited extension state does not start nested supervision.
+User clarification: "fork and compact because I hope to use a smarter model for the supervisor with better research taste." The initial supervisor input must be compacted, even if the worker has not compacted. Do not compact the worker as a side effect. Verify that inherited extension state does not start nested supervision.
+
+Cost hypothesis, not an observed result: roughly one tenth of the token use could fund a model with roughly ten times the per-token price at comparable total cost. Measure cache pricing, output, and compaction separately. The intended benefit is better worker research decisions, not merely fewer supervisor tokens.
 
 These are conceptual operations, not invented package API names. The parent extension supplies triggers and context; pi-subagents owns child execution, persistence, resume, control, and UI. The supervisor judges direction and evidence. It may finish each review turn; the next check continues its stored context. No claim that the same child process stays running.
 
