@@ -59,7 +59,7 @@ Or for development:
 
 ```bash
 git clone https://github.com/wassname/pi-goals && cd pi-goals && npm install
-pi -e npm:pi-subagents -e ./src/index.ts
+pi -e npm:pi-subagents -e .
 ```
 
 ## Use
@@ -123,7 +123,7 @@ Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts
 ## Develop
 
 ```bash
-pi -e npm:pi-subagents -e ./src/index.ts  # load locally
+pi -e npm:pi-subagents -e .  # load the extension and packaged worker locally
 npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck
