@@ -1,4 +1,4 @@
-16	AGENTS.md
+24	AGENTS.md
 22	agents/pi-goals-worker-v1.md
 3	ARCHIVED.md
 23	biome.json
@@ -22,7 +22,7 @@
 30	scripts/stale-fixme-removal.diff
 31	slop/audits/20260905_goal-steward-validation.md
 91	slop/audits/20260905_nested-supervisor-validation.txt
-42	slop/audits/20260905_pi-goals-file-types.txt
+51	slop/audits/20260905_pi-goals-file-types.txt
 66	slop/audits/20260905_pi-goals-line-count-table.md
 50	slop/audits/20260905_pi-goals-text-line-counts.txt
 15	slop/audits/20260905_steward-probe.json
@@ -47,4 +47,4 @@
 32	test/tick-goal.test.ts
 119	test/worker.test.ts
 15	tsconfig.json
-total	4299
+total	4316

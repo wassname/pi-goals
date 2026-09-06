@@ -12,7 +12,7 @@ git ls-files -z | while IFS= read -r -d '' f; do case "$f" in media/screenshot.p
 
 | File | Lines |
 | --- | ---: |
-| `AGENTS.md` | 16 |
+| `AGENTS.md` | 24 |
 | `agents/pi-goals-worker-v1.md` | 22 |
 | `ARCHIVED.md` | 3 |
 | `biome.json` | 23 |
@@ -36,7 +36,7 @@ git ls-files -z | while IFS= read -r -d '' f; do case "$f" in media/screenshot.p
 | `scripts/stale-fixme-removal.diff` | 30 |
 | `slop/audits/20260905_goal-steward-validation.md` | 31 |
 | `slop/audits/20260905_nested-supervisor-validation.txt` | 91 |
-| `slop/audits/20260905_pi-goals-file-types.txt` | 42 |
+| `slop/audits/20260905_pi-goals-file-types.txt` | 51 |
 | `slop/audits/20260905_pi-goals-line-count-table.md` | 66 |
 | `slop/audits/20260905_pi-goals-text-line-counts.txt` | 50 |
 | `slop/audits/20260905_steward-probe.json` | 15 |
@@ -61,6 +61,6 @@ git ls-files -z | while IFS= read -r -d '' f; do case "$f" in media/screenshot.p
 | `test/tick-goal.test.ts` | 32 |
 | `test/worker.test.ts` | 119 |
 | `tsconfig.json` | 15 |
-| **Total** | **4299** |
+| **Total** | **4316** |
 
 -- PI[gpt-5.6]
