@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
 import { isSupervisorReadOnlyCommand } from "./index.js";
-import { processWorkState } from "./worker.js";
+import { processWorkState, retainedRunState } from "./worker.js";
 
 const NESTED_STATE = "pi-goals-nested-worker";
 const COMPACTED_STATE = "pi-goals-supervisor-compacted";
@@ -71,6 +71,10 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 			.filter((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === NESTED_STATE)
 			.pop() as { data?: NestedState } | undefined;
 		nested = last?.data ?? nested;
+		if (nested.pending && nested.runId && (await retainedRunState(pi.events, nested.runId)) === "idle") {
+			nested = { ...nested, pending: false };
+			persist();
+		}
 		if (!compactPlanningRequested()) return;
 		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === COMPACTED_STATE)) return;
 		compacting = true;
@@ -104,12 +108,15 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 		const input = event.input as Record<string, unknown>;
 		const action = typeof input.action === "string" ? input.action : null;
 		if (!action) {
-			if (input.agent === "goal-worker" && !nested.runId && input.workflowScript === undefined && input.workflowScriptPath === undefined) return;
-			return { block: true, reason: nested.runId ? "Resume the retained goal-worker instead of starting another worker." : "The supervisor may start only goal-worker." };
+			if (input.agent === "goal-worker" && !nested.pending && input.workflowScript === undefined && input.workflowScriptPath === undefined) return;
+			return { block: true, reason: nested.pending ? "Wait for the retained goal-worker instead of starting another worker." : "The supervisor may start only goal-worker." };
 		}
 		if (action === "list") return;
 		if (action === "status") return { block: true, reason: "Do not poll the retained worker. Use its native progress and completion updates." };
-		if (["resume", "steer", "interrupt", "stop"].includes(action) && targetRun(input) === nested.runId) return;
+		if (["resume", "steer", "interrupt", "stop"].includes(action) && targetRun(input) === nested.runId) {
+			if (nested.pending) return;
+			return { block: true, reason: "The retained goal-worker is terminal; start a replacement worker for a correction." };
+		}
 		return { block: true, reason: "The supervisor may inspect or control only its retained goal-worker." };
 	});
 

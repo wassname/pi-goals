@@ -84,11 +84,11 @@ pi -e npm:pi-subagents -e .
        └── retained implementation worker
    ```
 
-   The retained `goal-supervisor` rereads the full current plan on each direction or review, controls
-   the nested `goal-worker`, inspects the actual repository and saved evidence, then writes a private approval checkpoint in
+   The retained `goal-supervisor` rereads the full current plan on each direction or review, waits for
+   its nested `goal-worker`, then inspects the actual repository and saved evidence before it writes a private approval checkpoint in
    `.pi/pi-goals/approvals/`. The worker is the implementation writer. Main and supervisor block direct
    `edit`, `write`, and write-like shell commands, but can inspect and run standard verification
-   commands. This is not a filesystem sandbox: allowed scripts and custom tools can still mutate.
+   commands. On revival, the supervisor checks the retained worker ID against Pi's run registry; a missing run is terminal and permits one replacement worker. This is not a filesystem sandbox: allowed scripts and custom tools can still mutate.
    `CompleteGoal` is mechanical. It checks that worker/supervisor/process work is idle and that the
    latest review ID, goal block, clean worktree, and committed HEAD/tree still match. The review ID
    prevents stale approval; it is not a security boundary against a worker that deliberately writes Pi state.

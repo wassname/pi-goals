@@ -39,13 +39,14 @@ interface AsyncSnapshot {
 export type WorkState = "active" | "idle" | "unknown";
 
 export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session only coordinates with the human.
-Your forked planning history is compacted before your first turn. Launch one goal-worker, then rely on native progress
-and completion updates. Do not poll status, wait, or repeatedly steer an active worker. Use CheckWorkerState once only
-after a needs-attention notice or a scheduled review. Read the current plan, repository, cited evidence, and saved verification output yourself after
-the worker finishes. Do not edit project files. Use read/search and standard verification commands only. The worker must
-commit its changes before approval. When no nested work is active, HEAD is committed, the worktree is clean, and the
-evidence proves the discriminator, call ApproveGoal with the current approval ID. Otherwise give the retained worker
-one concrete correction. Only ApproveGoal creates acceptance. -- Pi/Codex`;
+Your forked planning history is compacted before your first turn. Launch one goal-worker, then call bg_wait with its run ID
+so this supervisory turn stays alive until the worker completes or needs attention. Do not poll status or repeatedly steer
+an active worker. Use CheckWorkerState once only after a needs-attention notice or a scheduled review. If a terminal worker
+needs a correction, launch one replacement goal-worker instead of resuming its old run ID. Read the current plan, repository,
+cited evidence, and saved verification output yourself after the worker finishes. Do not edit project files. Use read/search
+and standard verification commands only. The worker must commit its changes before approval. When no nested work is active,
+HEAD is committed, the worktree is clean, and the evidence proves the discriminator, call ApproveGoal with the current
+approval ID. Otherwise give the retained worker one concrete correction. Only ApproveGoal creates acceptance. -- Pi/Codex`;
 
 export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
 	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
@@ -55,7 +56,7 @@ export function registerGoalSupervisor(events: EventBus, model: string | null): 
 		definition: {
 			description: "Read-only supervisor that owns a nested retained implementation worker.",
 			systemPrompt: supervisorSystemPrompt,
-			tools: ["read", "grep", "find", "ls", "bash", "subagent", "CheckWorkerState", "ApproveGoal"],
+			tools: ["read", "grep", "find", "ls", "bash", "subagent", "bg_wait", "CheckWorkerState", "ApproveGoal"],
 			allowNestedSubagents: true,
 			subagentOnlyExtensions: [supervisorRuntime],
 			...(model ? { model } : {}),
@@ -152,11 +153,34 @@ function activeNode(node: AsyncNode): boolean {
 	return node.state === "queued" || node.state === "running" || node.state === "stopping" || Boolean(node.children?.some(activeNode));
 }
 
+function validSnapshot(snapshot: AsyncSnapshot | undefined): snapshot is AsyncSnapshot {
+	return snapshot?.kind === "pi-subagents.async-status-snapshot" && snapshot.version === 1 && snapshot.omitted.runs === 0 && snapshot.omitted.children === 0 && !snapshot.omitted.byteLimitExceeded;
+}
+
+function findNode(nodes: AsyncNode[], runId: string): AsyncNode | undefined {
+	for (const node of nodes) {
+		if (node.id === runId) return node;
+		const child = node.children && findNode(node.children, runId);
+		if (child) return child;
+	}
+	return undefined;
+}
+
+async function asyncSnapshot(events: EventBus): Promise<AsyncSnapshot | undefined> {
+	return (await rpc(events, "status", {})).asyncSnapshot;
+}
+
 export async function subagentWorkState(events: EventBus): Promise<WorkState> {
-	const snapshot = (await rpc(events, "status", {})).asyncSnapshot;
-	if (snapshot?.kind !== "pi-subagents.async-status-snapshot" || snapshot.version !== 1) return "unknown";
-	if (snapshot.omitted.runs > 0 || snapshot.omitted.children > 0 || snapshot.omitted.byteLimitExceeded) return "unknown";
+	const snapshot = await asyncSnapshot(events);
+	if (!validSnapshot(snapshot)) return "unknown";
 	return snapshot.runs.some(activeNode) ? "active" : "idle";
+}
+
+export async function retainedRunState(events: EventBus, runId: string): Promise<WorkState> {
+	const snapshot = await asyncSnapshot(events);
+	if (!validSnapshot(snapshot)) return "unknown";
+	const node = findNode(snapshot.runs, runId);
+	return node && activeNode(node) ? "active" : "idle";
 }
 
 export interface ProcessInfo {

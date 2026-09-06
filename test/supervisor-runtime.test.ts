@@ -21,7 +21,7 @@ class Events {
 	}
 }
 
-function setup() {
+function setup(asyncSnapshot = { kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 0, children: 0, byteLimitExceeded: false }, runs: [] }) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 	writeFileSync(join(cwd, "README.md"), "test\n");
 	execFileSync("git", ["init", "-q"], { cwd });
@@ -36,7 +36,7 @@ function setup() {
 		const request = raw as any;
 		events.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
 			success: true,
-			data: { text: "idle", asyncSnapshot: { kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 0, children: 0, byteLimitExceeded: false }, runs: [] } },
+			data: { text: "idle", asyncSnapshot },
 		});
 	});
 	events.on("processes:request:list", (raw) => {
@@ -91,6 +91,51 @@ describe("supervisor-only runtime", () => {
 		} finally {
 			if (previous === undefined) delete process.env.PI_SUBAGENT_EXTENSION_BINDINGS;
 			else process.env.PI_SUBAGENT_EXTENSION_BINDINGS = previous;
+			rmSync(runtime.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("reconciles a missing retained worker and permits approval or one replacement", async () => {
+		const runtime = setup();
+		try {
+			runtime.entries.push({ type: "custom", customType: "pi-goals-nested-worker", data: { runId: "missing-worker", pending: true } });
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
+			expect(state.content[0].text).toBe("retained-worker=terminal; run=missing-worker");
+			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx)).toBeUndefined();
+			const blocked = await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { action: "resume", id: "missing-worker" } }, runtime.ctx);
+			expect(blocked?.reason).toContain("terminal");
+
+			const planPath = join(runtime.cwd, ".pi/plan/session-a-v1.md");
+			mkdirSync(join(runtime.cwd, ".pi/plan"), { recursive: true });
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: ship it\n  - evidence: verify.log: PASS\n");
+			const accepted = await runtime.tools.get("ApproveGoal").execute("", {
+				approvalId: "review-1",
+				goal: "ship it",
+				planPath,
+				checkpointPath: approvalPath(runtime.cwd, "main-session", "ship it"),
+				inspectedPlan: true,
+				inspectedRepository: true,
+				inspectedEvidence: true,
+				inspectedVerifyOutput: true,
+			}, undefined, undefined, runtime.ctx);
+			expect(accepted.isError).toBe(false);
+		} finally {
+			rmSync(runtime.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a revived worker pending when the run registry is incomplete", async () => {
+		const runtime = setup({ kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 1, children: 0, byteLimitExceeded: false }, runs: [] });
+		try {
+			runtime.entries.push({ type: "custom", customType: "pi-goals-nested-worker", data: { runId: "unknown-worker", pending: true } });
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
+			expect(state.content[0].text).toBe("retained-worker=active; run=unknown-worker");
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx))?.block).toBe(true);
+			const blocked = await runtime.tools.get("ApproveGoal").execute("", {}, undefined, undefined, runtime.ctx);
+			expect(blocked.content[0].text).toContain("retained worker is pending");
+		} finally {
 			rmSync(runtime.cwd, { recursive: true, force: true });
 		}
 	});

@@ -3,6 +3,7 @@ import {
 	processWorkState,
 	registerGoalSupervisor,
 	resumeGoalSupervisor,
+	retainedRunState,
 	startGoalSupervisor,
 	steerGoalSupervisor,
 	stopGoalSupervisor,
@@ -53,10 +54,11 @@ describe("goal hierarchy registration", () => {
 		expect(definition?.inheritSkills).toBe(false);
 		expect(definition?.defaultProgress).toBe(true);
 		expect(definition?.allowNestedSubagents).toBe(true);
-		expect(definition?.tools).toEqual(["read", "grep", "find", "ls", "bash", "subagent", "CheckWorkerState", "ApproveGoal"]);
+		expect(definition?.tools).toEqual(["read", "grep", "find", "ls", "bash", "subagent", "bg_wait", "CheckWorkerState", "ApproveGoal"]);
 		expect(definition?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
 		expect(supervisorSystemPrompt).toContain("Launch one goal-worker");
 		expect(supervisorSystemPrompt).toContain("Do not poll status");
+		expect(supervisorSystemPrompt).toContain("bg_wait");
 		expect(supervisorSystemPrompt).toContain("forked planning history is compacted");
 		expect(supervisorSystemPrompt).toContain("ApproveGoal");
 	});
@@ -94,6 +96,20 @@ describe("goal worker RPC", () => {
 			replyToRpc(events, () => ({ text: "status", asyncSnapshot: snapshot }));
 			await expect(subagentWorkState(events)).resolves.toBe(expected);
 		}
+	});
+
+	it("reconciles one retained run without treating other work as its worker", async () => {
+		const snapshot = {
+			kind: "pi-subagents.async-status-snapshot",
+			version: 1,
+			omitted: { runs: 0, children: 0, byteLimitExceeded: false },
+			runs: [{ id: "other", state: "running" }, { id: "finished", state: "complete" }, { id: "parent", state: "complete", children: [{ id: "nested", state: "running" }] }],
+		};
+		const events = new Events();
+		replyToRpc(events, () => ({ text: "status", asyncSnapshot: snapshot }));
+		await expect(retainedRunState(events, "missing")).resolves.toBe("idle");
+		await expect(retainedRunState(events, "finished")).resolves.toBe("idle");
+		await expect(retainedRunState(events, "nested")).resolves.toBe("active");
 	});
 });
 
