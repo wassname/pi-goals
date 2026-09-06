@@ -54,7 +54,7 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,
 	];
 	if (input.model) args.push("--model", input.model);
-	return ["env", ...env, ...args].map(shellQuote).join(" ");
+	return `env ${[...env, ...args].map(shellQuote).join(" ")}`;
 }
 
 export async function openSupervisorPane(input: LaunchSupervisorInput): Promise<string> {
