@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { completeGoalDescription, planDrafting, planningState, resync } from "../src/prompts.js";
 
@@ -25,9 +23,8 @@ describe("planning prompt", () => {
 		expect(planDrafting).toContain("Take it from the original request, not from your implementation plan");
 		expect(planDrafting).toContain("Future work may not defer any artifact or action named there");
 		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
-		const worker = readFileSync(resolve(import.meta.dirname, "../agents/pi-goals-worker-v1.md"), "utf8");
-		expect(worker).toContain("human's latest message outranks the plan");
-		expect(worker).toContain("retained goal supervisor owns direction and approval");
-		expect(completeGoalDescription).toContain("approval checkpoint only after it inspected");
+		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("implementation worker");
+		expect(completeGoalDescription).toContain("visible supervisor");
+		expect(completeGoalDescription).toContain("stopped worker view with no active work");
 	});
 });

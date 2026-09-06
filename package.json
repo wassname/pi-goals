@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.2.2",
-  "description": "One plan file per session with a main coordinator, retained supervisor, and nested pi-subagents worker.",
+  "description": "Plan in one Pi session, then work under a visible forked supervisor.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,8 @@
     "uat",
     "evidence",
     "supervisor",
-    "subagent"
+    "pi-intercom",
+    "herdr"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -27,7 +28,6 @@
   },
   "files": [
     "src",
-    "agents",
     "README.md"
   ],
   "publishConfig": {
@@ -55,11 +55,6 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "subagents": {
-      "agents": [
-        "./agents"
-      ]
-    },
     "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
   }
 }

@@ -2,9 +2,8 @@
  * pi-goals v2 — all model-facing text, in flow order.
  *
  * Design: the plan file is for LLMs and the human, not for TypeScript. No parser and no schema;
- * the skeleton below is a convention the drafting prompt teaches, the worker maintains with its
- * normal Edit tool, and the retained goal-supervisor reads natively. The harness provides format
- * guidance, one full-plan resync after context loss, and retained pi-subagents supervisor and worker sessions.
+ * the skeleton below is a convention the drafting prompt teaches. The main session implements it,
+ * while a visible forked Pi session supervises through pi-supervise.
  *
  * THE FOLD: everything above "## Log" is the short current-goal section. Everything below it
  * (Log, Learnings, Appendix) is durable memory: unlimited, read on demand, and sent in full at
@@ -13,8 +12,8 @@
  * Flow:
  *   SETUP (plan mode)     1. planDrafting   — draft goals into the plan file (read-only), sent once
  *   EXEC, after compact   2. resync         — the WHOLE file back, once
- *   SIGN-OFF, agent-side  3. completeGoal*  — the one blessed tool's description
- *   SUPERVISION            worker.ts        - retained supervisor and foreground worker
+ *   SIGN-OFF, worker-side 3. completeGoal*  — the one blessed tool's description
+ *   SUPERVISION            supervisor-session.ts — visible read-only supervisor
  *
  * The goal's test is the DISCRIMINATOR: the concrete observation that tells real success from the
  * named subtle failure mode. Evidence is empty at planning and filled at sign-off.
@@ -69,7 +68,7 @@ Style: Make it easy for a busy and forgetfull user to review. Use ASD-STE100 Sim
 the same word for the same thing, and define a new terms at first use. Use redundant context for skim readers e.g. "our output - the cells, CV tag" is easy to read and reminds context. This covers the context
 paragraph and the appendix too, not just the checklist. No all-caps headers and no bold spam. Just write less, add your voice less, persuade less, and burden the reader less.
 
-Write the plan file in roughly this shape -- the file is read directly by the human and the retained supervisor, so clarity beats conformance; small deviations are fine):
+Write the plan file in roughly this shape -- the file is read directly by the human and the visible supervisor, so clarity beats conformance; small deviations are fine):
 
 # <short plan title>
 
@@ -89,7 +88,7 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
   - subtle failure mode: <a way this could look done but isn't>
   - discriminator: <the concrete observation that tells real success from that failure>
   - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not
-    testable. The worker runs it and saves its output; the retained supervisor reads the evidence>
+    testable. The worker runs it and saves its output; the visible supervisor reads the evidence>
   - tasks:
     1. [ ] <subtask>
   - evidence: (empty until sign-off)
@@ -119,7 +118,7 @@ Conventions:
   none of the failure modes could fake. Ruling out failures is necessary, not sufficient.
 - Make the discriminator a concrete, checkable observation about a real artifact (a file, a test
   result, a committed diff, a metric), never about the plan file's own checkbox.
-- evidence stays empty at planning; the worker fills it and the retained supervisor checks it.
+- evidence stays empty at planning; the worker fills it and the visible supervisor checks it.
   Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
   usually gitignored, so files there prove things only at supervisor review time, not in history.
 - User-visible result: restate the original deliverable, not the proposed implementation. Every goal
@@ -159,11 +158,10 @@ Ready.`;
 export function resync(plan: string, planRel: string, why: string): string {
 	return `\
 <system-reminder>
-${why} This is the whole plan file (${planRel}), appendix included. You are the main coordinator.
-Keep the high-level goal and human intent stable; direct the retained goal-supervisor through
-GuideGoalWorker rather than doing implementation. The supervisor directs and approves the nested
-worker. The human's latest message outranks the plan: if it changes scope, direct the supervisor to
-have the worker amend the plan rather than preserving an obsolete decision.
+${why} This is the whole plan file (${planRel}), appendix included. You are the implementation worker.
+Keep the high-level goal and human intent stable and do the work directly. A visible read-only Pi
+session supervises you through pi-supervise. The human's latest message outranks the plan: if it
+changes scope, amend the plan rather than preserving an obsolete decision.
 
 ${plan}
 </system-reminder>`;
@@ -180,11 +178,11 @@ export const completeGoalDescription =
 	"output, rerun it or write that you couldn't -- an honest gap beats a plausible fabrication. If " +
 	"the goal names a verify: command, direct the worker to run it and save its output to a file cited " +
 	"in the evidence. The supervisor may run an allowed read-only verification command, but must not " +
-	"create the evidence file itself. The retained goal-supervisor must reject a claimed pass with no " +
-	"saved output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
-	"The supervisor records an approval checkpoint only after it inspected the current plan, repository, " +
-	"evidence, and verify output with no active nested worker and a clean committed worktree. Then the main " +
-	"coordinator calls this tool with the exact goal text. This tool independently checks that checkpoint " +
+	"create the evidence file itself. The visible supervisor must reject a claimed pass with no saved " +
+	"output. The read must show success POSITIVELY happened, not just that failures were avoided. The " +
+	"supervisor records an approval checkpoint only after it inspected the current plan, repository, " +
+	"evidence, verify output, and a stopped worker view with no active work. Then the worker calls this " +
+	"tool with the exact goal text. This tool independently checks that checkpoint " +
 	"against the exact current goal block, HEAD/tree, and clean worktree before it appends the sign-off to " +
 	"## Log and ticks the goal [x]. If any check differs, it fails closed and requires a fresh supervisor review.";
 
