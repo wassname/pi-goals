@@ -7,6 +7,7 @@ const RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
 const RPC_VERSION = 1;
 const RPC_TIMEOUT_MS = 15_000;
 export const SUPERVISOR_AGENT = "goal-supervisor";
+export const GOAL_WORKER_AGENT = "pi-goals-worker-v1";
 
 interface EventBus {
 	on(event: string, handler: (data: unknown) => void): () => void;
@@ -39,42 +40,41 @@ interface AsyncSnapshot {
 export type WorkState = "active" | "idle" | "unknown";
 
 export const supervisorSystemPrompt = `You are the retained goal supervisor. The main Pi session only coordinates with the human.
-Your forked planning history is compacted before your first turn. Launch one goal-worker, then call bg_wait with its run ID
-so this supervisory turn stays alive until the worker completes or needs attention. Do not poll status or repeatedly steer
-an active worker. Use CheckWorkerState once only after a needs-attention notice or a scheduled review. If a terminal worker
-needs a correction, launch one replacement goal-worker instead of resuming its old run ID. Read the current plan, repository,
-cited evidence, and saved verification output yourself after the worker finishes. Do not edit project files. Use read/search
-and standard verification commands only. The worker must commit its changes before approval. When no nested work is active,
-HEAD is committed, the worktree is clean, and the evidence proves the discriminator, call ApproveGoal with the current
-approval ID. Otherwise give the retained worker one concrete correction. Only ApproveGoal creates acceptance. -- Pi/Codex`;
+Your forked planning history may be compacted before your first turn. Launch ${GOAL_WORKER_AGENT} in the foreground with exactly
+agent, task, async:false, context:"fork", and, when named in the current direction, that worker model. Wait for its result; do not use
+bg_wait or worker run IDs. Read the current plan, repository, cited evidence, and saved verification output yourself after the
+worker finishes. Do not edit project files. Use read/search and standard verification commands only. The worker must commit its
+changes before approval. If the evidence needs a correction, launch a new foreground ${GOAL_WORKER_AGENT} with one concrete task
+and wait for it. On a later turn, when HEAD is committed, the worktree is clean, and the evidence proves the discriminator, call
+ApproveGoal with the current approval ID. Only ApproveGoal creates acceptance. -- Pi/Codex`;
 
-export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
-	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
-	const request: Record<string, unknown> = {
-		version: 1,
-		name: SUPERVISOR_AGENT,
-		definition: {
-			description: "Read-only supervisor that owns a nested retained implementation worker.",
-			systemPrompt: supervisorSystemPrompt,
-			tools: ["read", "grep", "find", "ls", "bash", "subagent", "bg_wait", "CheckWorkerState", "ApproveGoal"],
-			allowNestedSubagents: true,
-			subagentOnlyExtensions: [supervisorRuntime],
-			...(model ? { model } : {}),
-			systemPromptMode: "replace",
-			thinking: "low",
-			inheritProjectContext: false,
-			inheritGlobalContext: false,
-			inheritSkills: false,
-			defaultContext: "fork",
-			defaultAsync: true,
-			defaultProgress: true,
-		},
-	};
+function registerRuntimeAgent(events: EventBus, name: string, definition: Record<string, unknown>): Registration {
+	const request: Record<string, unknown> = { version: 1, name, definition };
 	events.emit(REGISTER_EVENT, request);
 	const result = request.result as { ok?: boolean; registration?: Registration; error?: Error } | undefined;
 	if (!result) throw new Error("pi-subagents is not installed or not ready.");
-	if (!result.ok || !result.registration) throw result.error ?? new Error("pi-subagents rejected the goal-supervisor agent.");
+	if (!result.ok || !result.registration) throw result.error ?? new Error(`pi-subagents rejected the ${name} agent.`);
 	return result.registration;
+}
+
+export function registerGoalSupervisor(events: EventBus, model: string | null): Registration {
+	const supervisorRuntime = fileURLToPath(new URL("./supervisor-runtime.ts", import.meta.url));
+	return registerRuntimeAgent(events, SUPERVISOR_AGENT, {
+		description: "Read-only supervisor that owns a foreground implementation worker.",
+		systemPrompt: supervisorSystemPrompt,
+		tools: ["read", "grep", "find", "ls", "bash", "subagent", "ApproveGoal"],
+		allowNestedSubagents: true,
+		subagentOnlyExtensions: [supervisorRuntime],
+		...(model ? { model } : {}),
+		systemPromptMode: "replace",
+		thinking: "low",
+		inheritProjectContext: false,
+		inheritGlobalContext: false,
+		inheritSkills: false,
+		defaultContext: "fork",
+		defaultAsync: true,
+		defaultProgress: true,
+	});
 }
 
 async function rpc(events: EventBus, method: "spawn" | "resume" | "steer" | "status" | "stop", params: Record<string, unknown>, signal?: AbortSignal): Promise<RpcData> {
@@ -114,7 +114,7 @@ function asyncRunId(data: RpcData): string {
 	return runId;
 }
 
-export async function startGoalSupervisor(events: EventBus, cwd: string, task: string, compactPlanning: boolean, signal?: AbortSignal): Promise<string> {
+export async function startGoalSupervisor(events: EventBus, cwd: string, task: string, compactPlanning: boolean, workerModel: string | null, signal?: AbortSignal): Promise<string> {
 	const data = await rpc(events, "spawn", {
 		agent: SUPERVISOR_AGENT,
 		task,
@@ -122,7 +122,7 @@ export async function startGoalSupervisor(events: EventBus, cwd: string, task: s
 		context: "fork",
 		async: true,
 		mission: false,
-		extensionBindings: { "pi-goals/1": { compactPlanning } },
+		extensionBindings: { "pi-goals/1": { compactPlanning, workerModel } },
 	}, signal);
 	return asyncRunId(data);
 }
@@ -157,15 +157,6 @@ function validSnapshot(snapshot: AsyncSnapshot | undefined): snapshot is AsyncSn
 	return snapshot?.kind === "pi-subagents.async-status-snapshot" && snapshot.version === 1 && snapshot.omitted.runs === 0 && snapshot.omitted.children === 0 && !snapshot.omitted.byteLimitExceeded;
 }
 
-function findNode(nodes: AsyncNode[], runId: string): AsyncNode | undefined {
-	for (const node of nodes) {
-		if (node.id === runId) return node;
-		const child = node.children && findNode(node.children, runId);
-		if (child) return child;
-	}
-	return undefined;
-}
-
 async function asyncSnapshot(events: EventBus): Promise<AsyncSnapshot | undefined> {
 	return (await rpc(events, "status", {})).asyncSnapshot;
 }
@@ -174,13 +165,6 @@ export async function subagentWorkState(events: EventBus): Promise<WorkState> {
 	const snapshot = await asyncSnapshot(events);
 	if (!validSnapshot(snapshot)) return "unknown";
 	return snapshot.runs.some(activeNode) ? "active" : "idle";
-}
-
-export async function retainedRunState(events: EventBus, runId: string): Promise<WorkState> {
-	const snapshot = await asyncSnapshot(events);
-	if (!validSnapshot(snapshot)) return "unknown";
-	const node = findNode(snapshot.runs, runId);
-	return node && activeNode(node) ? "active" : "idle";
 }
 
 export interface ProcessInfo {

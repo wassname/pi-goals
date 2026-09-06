@@ -4,52 +4,46 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
 import { isSupervisorReadOnlyCommand } from "./index.js";
-import { processWorkState, retainedRunState } from "./worker.js";
+import { GOAL_WORKER_AGENT, processWorkState } from "./worker.js";
 
-const NESTED_STATE = "pi-goals-nested-worker";
 const COMPACTED_STATE = "pi-goals-supervisor-compacted";
-
-interface NestedState {
-	runId: string | null;
-	pending: boolean;
-}
 
 function result(text: string, isError = false) {
 	return { content: [{ type: "text" as const, text }], details: {}, isError };
 }
 
-function targetRun(input: Record<string, unknown>): string | null {
-	const value = input.id ?? input.runId;
-	return typeof value === "string" && value ? value : null;
+interface GoalBindings {
+	compactPlanning?: boolean;
+	workerModel?: string | null;
 }
 
-function compactPlanningRequested(): boolean {
+function goalBindings(): GoalBindings {
 	const raw = process.env.PI_SUBAGENT_EXTENSION_BINDINGS;
-	if (!raw) return false;
-	const bindings = JSON.parse(raw) as { "pi-goals/1"?: { compactPlanning?: unknown } };
-	return bindings["pi-goals/1"]?.compactPlanning === true;
+	if (!raw) return {};
+	const binding = (JSON.parse(raw) as { "pi-goals/1"?: GoalBindings })["pi-goals/1"] ?? {};
+	if (binding.workerModel !== undefined && binding.workerModel !== null && typeof binding.workerModel !== "string") throw new Error("pi-goals workerModel binding must be a string or null.");
+	return binding;
+}
+
+function messageLaunchesWorker(ctx: { sessionManager: { getBranch(): unknown[] } }): boolean {
+	const entry = [...ctx.sessionManager.getBranch()].reverse().find((candidate) => {
+		const value = candidate as { type?: unknown; message?: { role?: unknown } };
+		return value.type === "message" && value.message?.role === "assistant";
+	}) as { message?: { content?: unknown } } | undefined;
+	if (!Array.isArray(entry?.message?.content)) return false;
+	return entry.message.content.some((part) => {
+		const value = part as { type?: unknown; name?: unknown; arguments?: Record<string, unknown> };
+		return value.type === "toolCall" && value.name === "subagent" && value.arguments?.agent === GOAL_WORKER_AGENT;
+	});
 }
 
 export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
-	let nested: NestedState = { runId: null, pending: false };
 	let compacting = false;
 	let compactionDone = Promise.resolve();
-	const persist = () => pi.appendEntry<NestedState>(NESTED_STATE, nested);
-
-	pi.events.on("subagent:async-started", (raw) => {
-		const event = raw as { id?: unknown; agent?: unknown };
-		if (event.agent !== "goal-worker" || typeof event.id !== "string") return;
-		nested = { runId: event.id, pending: true };
-		persist();
-	});
-	const completeNested = (raw: unknown) => {
-		const event = raw as { id?: unknown; runId?: unknown };
-		if ((event.runId ?? event.id) !== nested.runId) return;
-		nested = { ...nested, pending: false };
-		persist();
-	};
-	pi.events.on("subagent:async-complete", completeNested);
-	pi.events.on("subagent:process-terminal", completeNested);
+	let currentTurn = -1;
+	let completedWorkerTurn: number | null = null;
+	let workerModel: string | null = null;
+	const activeWorkerCalls = new Set<string>();
 
 	pi.on("session_before_compact", async (event) => {
 		if (!compacting) return;
@@ -67,15 +61,9 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const entries = ctx.sessionManager.getEntries();
-		const last = entries
-			.filter((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === NESTED_STATE)
-			.pop() as { data?: NestedState } | undefined;
-		nested = last?.data ?? nested;
-		if (nested.pending && nested.runId && (await retainedRunState(pi.events, nested.runId)) === "idle") {
-			nested = { ...nested, pending: false };
-			persist();
-		}
-		if (!compactPlanningRequested()) return;
+		const bindings = goalBindings();
+		workerModel = bindings.workerModel ?? null;
+		if (bindings.compactPlanning !== true) return;
 		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === COMPACTED_STATE)) return;
 		compacting = true;
 		compactionDone = new Promise<void>((resolvePromise, reject) => {
@@ -97,6 +85,11 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 		await compactionDone;
 	});
 
+	pi.on("turn_start", async (event) => {
+		activeWorkerCalls.clear();
+		currentTurn = event.turnIndex;
+	});
+
 	pi.on("tool_call", async (event) => {
 		if (event.toolName === "edit" || event.toolName === "write") {
 			return { block: true, reason: "Goal supervision is read-only. Direct project changes to the nested goal-worker." };
@@ -106,34 +99,33 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 		}
 		if (event.toolName !== "subagent") return;
 		const input = event.input as Record<string, unknown>;
-		const action = typeof input.action === "string" ? input.action : null;
-		if (!action) {
-			if (input.agent === "goal-worker" && !nested.pending && input.workflowScript === undefined && input.workflowScriptPath === undefined) return;
-			return { block: true, reason: nested.pending ? "Wait for the retained goal-worker instead of starting another worker." : "The supervisor may start only goal-worker." };
+		const allowedKeys = new Set(["agent", "task", "async", "context", ...(workerModel ? ["model"] : [])]);
+		const unexpectedKeys = Object.keys(input).filter((key) => !allowedKeys.has(key));
+		const validWorker = input.agent === GOAL_WORKER_AGENT
+			&& typeof input.task === "string"
+			&& input.task.trim().length > 0
+			&& input.async === false
+			&& input.context === "fork"
+			&& (workerModel ? input.model === workerModel : input.model === undefined)
+			&& unexpectedKeys.length === 0;
+		if (!validWorker) {
+			const model = workerModel ? `, model:${JSON.stringify(workerModel)}` : "";
+			return { block: true, reason: `Launch only ${GOAL_WORKER_AGENT} with task, async:false, context:"fork"${model}, and no other fields.` };
 		}
-		if (action === "list") return;
-		if (action === "status") return { block: true, reason: "Do not poll the retained worker. Use its native progress and completion updates." };
-		if (["resume", "steer", "interrupt", "stop"].includes(action) && targetRun(input) === nested.runId) {
-			if (nested.pending) return;
-			return { block: true, reason: "The retained goal-worker is terminal; start a replacement worker for a correction." };
-		}
-		return { block: true, reason: "The supervisor may inspect or control only its retained goal-worker." };
+		if (activeWorkerCalls.size > 0) return { block: true, reason: "A foreground goal-worker is already running." };
+		activeWorkerCalls.add(event.toolCallId);
+		completedWorkerTurn = null;
 	});
 
-	pi.registerTool({
-		name: "CheckWorkerState",
-		label: "Check retained worker",
-		description: "Return concise retained-worker state after a needs-attention notice or scheduled review. This does not return transcript text.",
-		parameters: Type.Object({}),
-		async execute() {
-			const state = nested.runId ? (nested.pending ? "active" : "terminal") : "not-started";
-			return result(`retained-worker=${state}${nested.runId ? `; run=${nested.runId}` : ""}`);
-		},
+	pi.on("tool_result", async (event) => {
+		if (!activeWorkerCalls.delete(event.toolCallId)) return;
+		if (!event.isError) completedWorkerTurn = currentTurn;
 	});
 
 	pi.registerTool({
 		name: "ApproveGoal",
 		label: "Approve goal",
+		executionMode: "sequential",
 		description: "Record approval after inspecting the plan, repository, evidence, and saved verification output. Active or unknown work blocks approval.",
 		parameters: Type.Object({
 			approvalId: Type.String({ minLength: 1, description: "Exact approval ID from the latest main-coordinator direction." }),
@@ -146,7 +138,9 @@ export default function goalSupervisorRuntime(pi: ExtensionAPI): void {
 			inspectedVerifyOutput: Type.Literal(true),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (nested.pending) return result("Cannot approve while the retained worker is pending.", true);
+			if (messageLaunchesWorker(ctx) || activeWorkerCalls.size > 0 || completedWorkerTurn === null || completedWorkerTurn >= currentTurn) {
+				return result("Cannot approve in a worker-launch message or before reviewing a finished worker on a later turn.", true);
+			}
 			const processes = processWorkState(pi.events);
 			if (processes !== "idle") return result(`Cannot approve: processes=${processes}.`, true);
 			const planPath = resolve(params.planPath);

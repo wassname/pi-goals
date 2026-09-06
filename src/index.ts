@@ -1,6 +1,6 @@
 /**
  * PI: pi-goals owns one versioned plan per session. The main agent is a thin coordinator for a
- * retained pi-subagents supervisor, which owns a nested retained implementation worker and approval.
+ * retained pi-subagents supervisor, which owns one foreground implementation worker at a time and approval.
  *
  * Each /goals call makes `.pi/plan/<session_id>-vN.md`. The selected version survives resume and
  * compaction. Old plans stay on disk but inactive. A session with no selected plan has no widget,
@@ -196,7 +196,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		try {
 			const runId = state.workerRunId
 				? await resumeGoalSupervisor(pi.events, state.workerRunId, task, signal)
-				: await startGoalSupervisor(pi.events, ctx.cwd, task, compactPlanning, signal);
+				: await startGoalSupervisor(pi.events, ctx.cwd, task, compactPlanning, state.workerModel, signal);
 			rememberWorkerRun(runId);
 			return runId;
 		} finally {
@@ -518,7 +518,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				persist();
 				updateWidget(ctx);
 				try {
-					await directSupervisor(ctx, "Start by launching or resuming the nested goal-worker. Then supervise the current plan.", undefined, choice === "Ready (compact)");
+					await directSupervisor(ctx, "Start by launching the foreground implementation worker. Then supervise the current plan.", undefined, choice === "Ready (compact)");
 					scheduleSupervisorCheck(ctx);
 					return true;
 				} catch (error) {

@@ -14,7 +14,7 @@
  *   SETUP (plan mode)     1. planDrafting   — draft goals into the plan file (read-only), sent once
  *   EXEC, after compact   2. resync         — the WHOLE file back, once
  *   SIGN-OFF, agent-side  3. completeGoal*  — the one blessed tool's description
- *   SUPERVISION            worker.ts        - retained implementation worker
+ *   SUPERVISION            worker.ts        - retained supervisor and foreground worker
  *
  * The goal's test is the DISCRIMINATOR: the concrete observation that tells real success from the
  * named subtle failure mode. Evidence is empty at planning and filled at sign-off.

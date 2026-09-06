@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	GOAL_WORKER_AGENT,
 	processWorkState,
 	registerGoalSupervisor,
 	resumeGoalSupervisor,
-	retainedRunState,
 	startGoalSupervisor,
 	steerGoalSupervisor,
 	stopGoalSupervisor,
@@ -35,32 +35,35 @@ function replyToRpc(events: Events, inspect: (request: any) => object): void {
 }
 
 describe("goal hierarchy registration", () => {
-	it("registers a retained supervisor that can load the worker-only runtime", () => {
+	it("registers the supervisor contract and names its packaged foreground worker", () => {
 		const events = new Events();
-		let definition: Record<string, unknown> | undefined;
+		const definitions = new Map<string, Record<string, unknown>>();
 		events.on("pi-subagents:runtime-agent-register:v1", (raw) => {
-			const request = raw as { definition: Record<string, unknown>; result?: unknown };
-			definition = request.definition;
+			const request = raw as { name: string; definition: Record<string, unknown>; result?: unknown };
+			definitions.set(request.name, request.definition);
 			request.result = { ok: true, registration: { dispose() {} } };
 		});
 
-		registerGoalSupervisor(events, "provider/cheap-model");
+		registerGoalSupervisor(events, "provider/supervisor");
 
-		expect(definition?.model).toBe("provider/cheap-model");
-		expect(definition?.defaultContext).toBe("fork");
-		expect(definition?.thinking).toBe("low");
-		expect(definition?.inheritProjectContext).toBe(false);
-		expect(definition?.inheritGlobalContext).toBe(false);
-		expect(definition?.inheritSkills).toBe(false);
-		expect(definition?.defaultProgress).toBe(true);
-		expect(definition?.allowNestedSubagents).toBe(true);
-		expect(definition?.tools).toEqual(["read", "grep", "find", "ls", "bash", "subagent", "bg_wait", "CheckWorkerState", "ApproveGoal"]);
-		expect(definition?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
-		expect(supervisorSystemPrompt).toContain("Launch one goal-worker");
-		expect(supervisorSystemPrompt).toContain("Do not poll status");
-		expect(supervisorSystemPrompt).toContain("bg_wait");
-		expect(supervisorSystemPrompt).toContain("forked planning history is compacted");
+		const supervisor = definitions.get("goal-supervisor");
+		expect(supervisor).toMatchObject({
+			model: "provider/supervisor",
+			defaultContext: "fork",
+			defaultAsync: true,
+			thinking: "low",
+			inheritProjectContext: false,
+			inheritGlobalContext: false,
+			inheritSkills: false,
+			defaultProgress: true,
+			allowNestedSubagents: true,
+			tools: ["read", "grep", "find", "ls", "bash", "subagent", "ApproveGoal"],
+		});
+		expect(supervisor?.subagentOnlyExtensions).toEqual([expect.stringContaining("supervisor-runtime.ts")]);
+		expect(supervisorSystemPrompt).toContain(GOAL_WORKER_AGENT);
+		expect(supervisorSystemPrompt).toContain("async:false");
 		expect(supervisorSystemPrompt).toContain("ApproveGoal");
+		expect(definitions.has(GOAL_WORKER_AGENT)).toBe(false);
 	});
 });
 
@@ -73,12 +76,12 @@ describe("goal worker RPC", () => {
 			return { text: "ok", details: { asyncId: `run-${requests.length}` } };
 		});
 
-		await expect(startGoalSupervisor(events, "/repo", "start", true)).resolves.toBe("run-1");
+		await expect(startGoalSupervisor(events, "/repo", "start", true, "provider/worker")).resolves.toBe("run-1");
 		await expect(resumeGoalSupervisor(events, "run-1", "continue")).resolves.toBe("run-2");
 		await steerGoalSupervisor(events, "run-2", "report");
 		await stopGoalSupervisor(events, "run-2");
 
-		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", cwd: "/repo", context: "fork", async: true, extensionBindings: { "pi-goals/1": { compactPlanning: true } } } });
+		expect(requests[0]).toMatchObject({ method: "spawn", params: { agent: "goal-supervisor", cwd: "/repo", context: "fork", async: true, extensionBindings: { "pi-goals/1": { compactPlanning: true, workerModel: "provider/worker" } } } });
 		expect(requests[1]).toMatchObject({ method: "resume", params: { id: "run-1", message: "continue" } });
 		expect(requests[2]).toMatchObject({ method: "steer", params: { id: "run-2", message: "report", mode: "steer" } });
 		expect(requests[3]).toMatchObject({ method: "stop", params: { id: "run-2" } });
@@ -96,20 +99,6 @@ describe("goal worker RPC", () => {
 			replyToRpc(events, () => ({ text: "status", asyncSnapshot: snapshot }));
 			await expect(subagentWorkState(events)).resolves.toBe(expected);
 		}
-	});
-
-	it("reconciles one retained run without treating other work as its worker", async () => {
-		const snapshot = {
-			kind: "pi-subagents.async-status-snapshot",
-			version: 1,
-			omitted: { runs: 0, children: 0, byteLimitExceeded: false },
-			runs: [{ id: "other", state: "running" }, { id: "finished", state: "complete" }, { id: "parent", state: "complete", children: [{ id: "nested", state: "running" }] }],
-		};
-		const events = new Events();
-		replyToRpc(events, () => ({ text: "status", asyncSnapshot: snapshot }));
-		await expect(retainedRunState(events, "missing")).resolves.toBe("idle");
-		await expect(retainedRunState(events, "finished")).resolves.toBe("idle");
-		await expect(retainedRunState(events, "nested")).resolves.toBe("active");
 	});
 });
 

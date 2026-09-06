@@ -1,6 +1,6 @@
 # pi-goals
 
-Make a short list of goals in one Markdown plan file. The main Pi agent is a thin coordinator for a retained supervisor, which controls a nested retained implementation worker through pi-subagents.
+Make a short list of goals in one Markdown plan file. The main Pi agent is a thin coordinator for a retained supervisor, which runs one foreground implementation worker at a time through pi-subagents.
 
 The plan file looks like this:
 
@@ -74,21 +74,25 @@ pi -e npm:pi-subagents -e .
 2. Review. After Pi settles, the full plan is printed in the transcript. Check that User-visible
    result names the final artifact or behavior you expect. Ready forks the retained supervisor and
    preserves the main context. Ready (compact) forks the supervisor, compacts its planning history
-   before its first turn, then compacts the main session. It never compacts the retained worker.
+   before its first turn, then compacts the main session. The implementation worker starts later.
    Refine collects short notes. Edit opens the full plan in Pi's editor.
 3. Work. The topology is:
 
    ```text
    main coordinator
    └── retained supervisor
-       └── retained implementation worker
+       └── foreground implementation worker
    ```
 
-   The retained `goal-supervisor` rereads the full current plan on each direction or review, waits for
-   its nested `goal-worker`, then inspects the actual repository and saved evidence before it writes a private approval checkpoint in
-   `.pi/pi-goals/approvals/`. The worker is the implementation writer. Main and supervisor block direct
+   The retained `goal-supervisor` rereads the full current plan on each direction or review and runs
+   its packaged `pi-goals-worker-v1` in the foreground. The worker must finish before the supervisor
+   can inspect the repository and evidence or write a private approval checkpoint in
+   `.pi/pi-goals/approvals/`. A correction starts a new foreground worker. Pi-goals stores no nested
+   worker ID or status. The versioned name avoids ordinary name collisions. A user or project agent
+   with the same name still overrides the package agent. The worker is the implementation writer.
+   Main and supervisor block direct
    `edit`, `write`, and write-like shell commands, but can inspect and run standard verification
-   commands. On revival, the supervisor checks the retained worker ID against Pi's run registry; a missing run is terminal and permits one replacement worker. This is not a filesystem sandbox: allowed scripts and custom tools can still mutate.
+   commands. This is not a filesystem sandbox: allowed scripts and custom tools can still mutate.
    `CompleteGoal` is mechanical. It checks that worker/supervisor/process work is idle and that the
    latest review ID, goal block, clean worktree, and committed HEAD/tree still match. The review ID
    prevents stale approval; it is not a security boundary against a worker that deliberately writes Pi state.
@@ -103,13 +107,13 @@ sets the implementation-worker model. Checks continue until all goals close, `au
 
 ## Prompts
 
-Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts.ts). Supervisor registration and RPC calls live in [`src/worker.ts`](src/worker.ts). The packaged worker definition lives in [`agents/goal-worker.md`](agents/goal-worker.md), and the supervisor-only approval tool lives in [`src/supervisor-runtime.ts`](src/supervisor-runtime.ts).
+Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts.ts). Supervisor registration and RPC calls live in [`src/worker.ts`](src/worker.ts). The packaged worker contract lives in [`agents/pi-goals-worker-v1.md`](agents/pi-goals-worker-v1.md). The supervisor-only launch and approval gates live in [`src/supervisor-runtime.ts`](src/supervisor-runtime.ts).
 
 ## Manual check
 
 1. Reload pi-goals with pi-subagents, create a small plan, and choose **Ready**. Open FleetView or run
-   `subagent({ action: "status", view: "fleet" })`. It should show `goal-supervisor` and its nested
-   `goal-worker`, not sibling runs from the main session.
+   `subagent({ action: "status", view: "fleet" })`. It should show `goal-supervisor` and its foreground
+   `pi-goals-worker-v1`, not sibling runs from the main session.
 2. Ask the main session to edit a project file. Its direct `edit`, `write`, or shell redirection call
    should be blocked. Call `CompleteGoal` before a supervisor review. It should fail because no matching
    private approval exists.
@@ -123,7 +127,7 @@ Planning and coordinator sign-off prompts live in [`src/prompts.ts`](src/prompts
 ## Develop
 
 ```bash
-pi -e npm:pi-subagents -e .  # load the extension and packaged worker locally
+pi -e .  # after installing pi-subagents above
 npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck

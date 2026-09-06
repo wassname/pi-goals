@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { approvalPath, readApproval } from "../src/approval.js";
 import supervisorRuntime from "../src/supervisor-runtime.js";
+import { GOAL_WORKER_AGENT } from "../src/worker.js";
 
 class Events {
 	private handlers = new Map<string, Set<(data: unknown) => void>>();
@@ -21,7 +22,7 @@ class Events {
 	}
 }
 
-function setup(asyncSnapshot = { kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 0, children: 0, byteLimitExceeded: false }, runs: [] }) {
+function setup() {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 	writeFileSync(join(cwd, "README.md"), "test\n");
 	execFileSync("git", ["init", "-q"], { cwd });
@@ -30,21 +31,15 @@ function setup(asyncSnapshot = { kind: "pi-subagents.async-status-snapshot", ver
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const entries: any[] = [];
+	const branch: any[] = [];
 	const compactCalls: any[] = [];
 	const events = new Events();
-	events.on("subagents:rpc:v1:request", (raw) => {
-		const request = raw as any;
-		events.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
-			success: true,
-			data: { text: "idle", asyncSnapshot },
-		});
-	});
 	events.on("processes:request:list", (raw) => {
 		(raw as { reply(value: object[]): void }).reply([]);
 	});
 	const ctx = {
 		cwd,
-		sessionManager: { getSessionId: () => "supervisor-session", getEntries: () => entries },
+		sessionManager: { getSessionId: () => "supervisor-session", getEntries: () => entries, getBranch: () => branch },
 		compact: (options: any) => compactCalls.push(options),
 		ui: { notify() {} },
 	};
@@ -55,7 +50,7 @@ function setup(asyncSnapshot = { kind: "pi-subagents.async-status-snapshot", ver
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 	};
 	supervisorRuntime(pi as any);
-	return { cwd, ctx, events, hooks, tools, entries, compactCalls };
+	return { cwd, ctx, events, hooks, tools, entries, branch, compactCalls };
 }
 
 describe("supervisor-only runtime", () => {
@@ -64,9 +59,19 @@ describe("supervisor-only runtime", () => {
 		try {
 			expect((await runtime.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, runtime.ctx))?.block).toBe(true);
 			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git branch new-name" } }, runtime.ctx))?.block).toBe(true);
-			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "worker" } }, runtime.ctx))?.block).toBe(true);
-			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx))).toBeUndefined();
-			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status", id: "nested-1" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "wrong", input: { agent: "goal-worker", task: "work", async: false, context: "fork" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "implicit", input: { agent: GOAL_WORKER_AGENT, task: "work" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "model", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork", model: "other/model" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "override", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork", worktree: true } }, runtime.ctx))?.block).toBe(true);
+			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "worker", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork" } }, runtime.ctx)).toBeUndefined();
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "duplicate", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork" } }, runtime.ctx))?.block).toBe(true);
+			await runtime.hooks.get("tool_result")({ toolName: "subagent", toolCallId: "worker", isError: true }, runtime.ctx);
+			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "stale", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork" } }, runtime.ctx)).toBeUndefined();
+			await runtime.hooks.get("turn_start")({ turnIndex: 1 }, runtime.ctx);
+			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "recovered", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork" } }, runtime.ctx)).toBeUndefined();
+			await runtime.hooks.get("tool_result")({ toolName: "subagent", toolCallId: "recovered", isError: true }, runtime.ctx);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "async", input: { agent: GOAL_WORKER_AGENT, task: "work", async: true, context: "fork" } }, runtime.ctx))?.block).toBe(true);
+			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "resume", input: { action: "resume", id: "nested-1" } }, runtime.ctx))?.block).toBe(true);
 			expect((await runtime.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status && npm test" } }, runtime.ctx))).toBeUndefined();
 		} finally {
 			rmSync(runtime.cwd, { recursive: true, force: true });
@@ -75,10 +80,13 @@ describe("supervisor-only runtime", () => {
 
 	it("compacts a requested fork before the first supervisor turn", async () => {
 		const previous = process.env.PI_SUBAGENT_EXTENSION_BINDINGS;
-		process.env.PI_SUBAGENT_EXTENSION_BINDINGS = JSON.stringify({ "pi-goals/1": { compactPlanning: true } });
+		process.env.PI_SUBAGENT_EXTENSION_BINDINGS = JSON.stringify({ "pi-goals/1": { compactPlanning: true, workerModel: "provider/worker" } });
 		const runtime = setup();
 		try {
 			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "wrong-model", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork", model: "other/model" } }, runtime.ctx)).toMatchObject({ block: true });
+			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "worker", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork", model: "provider/worker" } }, runtime.ctx)).toBeUndefined();
+		await runtime.hooks.get("tool_result")({ toolName: "subagent", toolCallId: "worker", isError: true }, runtime.ctx);
 			expect(runtime.compactCalls).toHaveLength(1);
 			const replacement = await runtime.hooks.get("session_before_compact")({
 				preparation: { firstKeptEntryId: "old", tokensBefore: 70_000 },
@@ -95,65 +103,6 @@ describe("supervisor-only runtime", () => {
 		}
 	});
 
-	it("reconciles a missing retained worker and permits approval or one replacement", async () => {
-		const runtime = setup();
-		try {
-			runtime.entries.push({ type: "custom", customType: "pi-goals-nested-worker", data: { runId: "missing-worker", pending: true } });
-			await runtime.hooks.get("session_start")({}, runtime.ctx);
-			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
-			expect(state.content[0].text).toBe("retained-worker=terminal; run=missing-worker");
-			expect(await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx)).toBeUndefined();
-			const blocked = await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { action: "resume", id: "missing-worker" } }, runtime.ctx);
-			expect(blocked?.reason).toContain("terminal");
-
-			const planPath = join(runtime.cwd, ".pi/plan/session-a-v1.md");
-			mkdirSync(join(runtime.cwd, ".pi/plan"), { recursive: true });
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: ship it\n  - evidence: verify.log: PASS\n");
-			const accepted = await runtime.tools.get("ApproveGoal").execute("", {
-				approvalId: "review-1",
-				goal: "ship it",
-				planPath,
-				checkpointPath: approvalPath(runtime.cwd, "main-session", "ship it"),
-				inspectedPlan: true,
-				inspectedRepository: true,
-				inspectedEvidence: true,
-				inspectedVerifyOutput: true,
-			}, undefined, undefined, runtime.ctx);
-			expect(accepted.isError).toBe(false);
-		} finally {
-			rmSync(runtime.cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("keeps a revived worker pending when the run registry is incomplete", async () => {
-		const runtime = setup({ kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 1, children: 0, byteLimitExceeded: false }, runs: [] });
-		try {
-			runtime.entries.push({ type: "custom", customType: "pi-goals-nested-worker", data: { runId: "unknown-worker", pending: true } });
-			await runtime.hooks.get("session_start")({}, runtime.ctx);
-			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
-			expect(state.content[0].text).toBe("retained-worker=active; run=unknown-worker");
-			expect((await runtime.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "goal-worker" } }, runtime.ctx))?.block).toBe(true);
-			const blocked = await runtime.tools.get("ApproveGoal").execute("", {}, undefined, undefined, runtime.ctx);
-			expect(blocked.content[0].text).toContain("retained worker is pending");
-		} finally {
-			rmSync(runtime.cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("blocks approval while its retained worker is pending", async () => {
-		const runtime = setup();
-		try {
-			runtime.events.emit("subagent:async-started", { id: "nested-1", agent: "goal-worker" });
-			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
-			expect(state.content[0].text).toBe("retained-worker=active; run=nested-1");
-			const blocked = await runtime.tools.get("ApproveGoal").execute("", {}, undefined, undefined, runtime.ctx);
-			expect(blocked.isError).toBe(true);
-			expect(blocked.content[0].text).toContain("retained worker is pending");
-		} finally {
-			rmSync(runtime.cwd, { recursive: true, force: true });
-		}
-	});
-
 	it("writes an approval only after inspecting the plan and confirming a clean worktree at a commit", async () => {
 		const runtime = setup();
 		const previousRunId = process.env.PI_SUBAGENT_RUN_ID;
@@ -163,11 +112,7 @@ describe("supervisor-only runtime", () => {
 			mkdirSync(join(runtime.cwd, ".pi/plan"), { recursive: true });
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: ship it\n  - evidence: verify.log: PASS\n");
 			const checkpoint = approvalPath(runtime.cwd, "main-session", "ship it");
-			runtime.events.emit("subagent:async-started", { id: "nested-1", agent: "goal-worker" });
-			runtime.events.emit("subagent:process-terminal", { runId: "nested-1", state: "observed" });
-			const state = await runtime.tools.get("CheckWorkerState").execute("", {}, undefined, undefined, runtime.ctx);
-			expect(state.content[0].text).toBe("retained-worker=terminal; run=nested-1");
-			const accepted = await runtime.tools.get("ApproveGoal").execute("", {
+			const params = {
 				approvalId: "review-1",
 				goal: "ship it",
 				planPath,
@@ -176,8 +121,26 @@ describe("supervisor-only runtime", () => {
 				inspectedRepository: true,
 				inspectedEvidence: true,
 				inspectedVerifyOutput: true,
-			}, undefined, undefined, runtime.ctx);
+			};
+			await runtime.hooks.get("turn_start")({ turnIndex: 0 }, runtime.ctx);
+			await runtime.hooks.get("tool_call")({ toolName: "subagent", toolCallId: "worker", input: { agent: GOAL_WORKER_AGENT, task: "work", async: false, context: "fork" } }, runtime.ctx);
+			expect((await runtime.tools.get("ApproveGoal").execute("", params, undefined, undefined, runtime.ctx)).isError).toBe(true);
+			await runtime.hooks.get("tool_result")({ toolName: "subagent", toolCallId: "worker", isError: false }, runtime.ctx);
+			expect((await runtime.tools.get("ApproveGoal").execute("", params, undefined, undefined, runtime.ctx)).isError).toBe(true);
+			await runtime.hooks.get("turn_start")({ turnIndex: 1 }, runtime.ctx);
+			runtime.branch.push({
+				type: "message",
+				message: { role: "assistant", content: [
+					{ type: "toolCall", name: "ApproveGoal", arguments: params },
+					{ type: "toolCall", name: "subagent", arguments: { agent: GOAL_WORKER_AGENT, task: "more work", async: false, context: "fork" } },
+				] },
+			});
+			expect((await runtime.tools.get("ApproveGoal").execute("", params, undefined, undefined, runtime.ctx)).isError).toBe(true);
+			await runtime.hooks.get("turn_start")({ turnIndex: 2 }, runtime.ctx);
+			runtime.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "ApproveGoal", arguments: params }] } });
+			const accepted = await runtime.tools.get("ApproveGoal").execute("", params, undefined, undefined, runtime.ctx);
 
+			expect(runtime.tools.get("ApproveGoal").executionMode).toBe("sequential");
 			expect(accepted.isError).toBe(false);
 			expect(readApproval(checkpoint)).toMatchObject({ version: 2, approvalId: "review-1", goal: "ship it", supervisor: { sessionId: "supervisor-session", runId: "supervisor-run" } });
 			expect(readFileSync(checkpoint, "utf8")).toContain('"goalBlockHash"');

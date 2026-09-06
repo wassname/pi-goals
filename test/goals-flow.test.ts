@@ -195,11 +195,15 @@ describe("/goals draft flow", () => {
 	});
 
 	it("keeps supervisor and implementation-worker models separate", async () => {
-		const flow = setup([]);
+		const flow = setup(["Ready"]);
 		try {
 			await flow.commands.get("goals").handler("model provider/supervisor", flow.ctx);
 			await flow.commands.get("goals").handler("worker-model provider/worker", flow.ctx);
 			expect(flow.entries.at(-1)?.data).toMatchObject({ supervisorModel: "provider/supervisor", workerModel: "provider/worker" });
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			writeFileSync(join(flow.cwd, ".pi/plan/session-a-v1.md"), "# Plan\n\n## Goals\n\n1. [/] goal: work\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(flow.rpcRequests.at(-1)).toMatchObject({ params: { extensionBindings: { "pi-goals/1": { workerModel: "provider/worker" } } } });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
