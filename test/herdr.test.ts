@@ -24,10 +24,9 @@ describe("supervisor pane command", () => {
 		const command = supervisorCommand(input());
 		expect(command).toContain("'PI_GOALS_ROLE=supervisor'");
 		expect(command).toContain("'PI_GOALS_WORKER_INTERCOM_ID=intercom-12345678'");
-		expect(command).toContain("'pi' '--no-extensions' '-e' '/repo/src/index.ts'");
-		expect(command).toContain("'-e' 'npm:pi-intercom' '-e' 'npm:@wassname2/pi-supervise@0.0.4'");
+		expect(command).toContain("'pi' '--no-extensions' '-e' 'npm:pi-intercom' '-e' 'npm:@wassname2/pi-supervise@0.0.4' '-e' '/repo/src/index.ts'");
 		expect(command).toContain("'--fork' '/sessions/worker.jsonl'");
-		expect(command).toContain("'--model' 'provider/supervisor'");
+		expect(command).toContain("'--model' 'provider/supervisor' 'Initialize supervision startup.'");
 		expect(command).not.toContain("pi-subagents");
 	});
 

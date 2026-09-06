@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
-import type { GoalsIntercom } from "./intercom.js";
 import { pairWithPiSupervise } from "./supervise.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v1";
@@ -76,17 +75,21 @@ export function isVisibleSupervisor(): boolean {
 	return process.env.PI_GOALS_ROLE === "supervisor";
 }
 
-export function registerVisibleSupervisor(pi: ExtensionAPI, intercom: GoalsIntercom): void {
+export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
+	let bootstrapping = false;
 
-	pi.on("before_agent_start", async (_event, ctx) => ({
-		systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}`,
-	}));
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await bootstrap(ctx);
+		return { systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` };
+	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
+		if (bootstrapping) return;
 		const entries = ctx.sessionManager.getEntries();
 		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) return;
+		bootstrapping = true;
 		compacting = true;
 		try {
 			await new Promise<void>((resolve, reject) => {
@@ -97,14 +100,13 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, intercom: GoalsInter
 				});
 			});
 			await pairWithPiSupervise(pi, settings.workerIntercomId, settings.planPath);
-			await intercom.announceSupervisorReady(settings.workerIntercomId, settings.approvalId);
 			pi.appendEntry(BOOTSTRAPPED, { version: 1, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
 		} catch (error) {
 			ctx.ui.notify(`Supervisor startup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 		} finally {
 			compacting = false;
 		}
-	});
+	};
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (compacting || (ctx.getContextUsage()?.tokens ?? 0) < COMPACT_AT_TOKENS) return;

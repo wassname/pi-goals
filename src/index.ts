@@ -22,8 +22,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { approvalMatches, approvalPath, goalBlock, hashGoalBlock, readApproval, repositoryState } from "./approval.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
-import { registerGoalsIntercom } from "./intercom.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
+import { workerPiSupervise } from "./supervise.js";
 import { isVisibleSupervisor, registerVisibleSupervisor } from "./supervisor-session.js";
 
 const STATE = "pi-goals-state";
@@ -100,11 +100,10 @@ interface PlanState {
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
 	if (isVisibleSupervisor()) {
-		registerVisibleSupervisor(pi, registerGoalsIntercom(pi));
+		registerVisibleSupervisor(pi);
 		return;
 	}
 	if (!isMainSession()) return;
-	const intercom = registerGoalsIntercom(pi);
 	let state: PlanState = {
 		phase: null,
 		supervisorModel: null,
@@ -148,7 +147,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		repositoryRoot(ctx.cwd);
 		const sourceSessionFile = ctx.sessionManager.getSessionFile();
 		if (!sourceSessionFile) throw new Error("The current session is not persisted, so it cannot be forked.");
-		const workerIntercomId = await intercom.workerIntercomId();
+		const worker = await workerPiSupervise(pi);
 		beginReview(ctx);
 		let paneId: string | null = null;
 		try {
@@ -156,13 +155,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				cwd: ctx.cwd,
 				sourceSessionFile,
 				workerSessionId: ctx.sessionManager.getSessionId(),
-				workerIntercomId,
+				workerIntercomId: worker.intercomId,
 				planPath: planPath(ctx),
 				approvalId: state.approvalId!,
 				extensionPath: fileURLToPath(import.meta.url),
 				model: state.supervisorModel,
 			});
-			await intercom.waitForSupervisorReady(state.approvalId!);
+			await worker.paired;
 		} catch (error) {
 			if (paneId) await closeSupervisorPane(paneId).catch(() => {});
 			throw error;

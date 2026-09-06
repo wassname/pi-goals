@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,14 +10,6 @@ import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
 vi.mock("../src/herdr.js", () => ({ openSupervisorPane, closeSupervisorPane }));
-vi.mock("../src/intercom.js", () => ({
-	registerGoalsIntercom: () => ({
-		workerIntercomId: async () => "worker-intercom",
-		waitForSupervisorReady: async () => {},
-		announceSupervisorReady: async () => {},
-	}),
-}));
-
 const { default: piGoalsExtension, isMainSession } = await import("../src/index.js");
 
 function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = []) {
@@ -49,7 +42,14 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 			editor: async () => editorChoices.shift(),
 		},
 	};
+	const events = new EventEmitter();
+	events.on("pi-supervise:worker-state:v1", (reply) => reply({ intercomId: "worker-intercom" }));
+	openSupervisorPane.mockImplementation(async () => {
+		queueMicrotask(() => events.emit("pi-supervise:worker-paired:v1", { supervisorIntercomId: "supervisor-intercom" }));
+		return "pane-2";
+	});
 	const pi = {
+		events,
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
@@ -58,7 +58,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		sendUserMessage: (content: string) => messages.push({ content }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, entries, hooks, messages, notifications, tools };
+	return { commands, ctx, cwd, entries, events, hooks, messages, notifications, tools };
 }
 
 function writePlan(cwd: string, content: string): string {
@@ -116,6 +116,24 @@ describe("/goals flow", () => {
 			const prompt = await flow.hooks.get("before_agent_start")({}, flow.ctx);
 			expect(prompt.systemPrompt).toContain("implementation worker");
 			expect(prompt.systemPrompt).toContain("stronger read-only supervisor");
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("waits for the worker's real paired acknowledgement before beginning work", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			openSupervisorPane.mockImplementationOnce(async () => "pane-2");
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			approvedPlan(flow.cwd);
+			const ready = flow.hooks.get("agent_settled")({}, flow.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
+			expect(flow.messages.some((message) => message.content === "The plan is approved. Begin implementation as the worker.")).toBe(false);
+			flow.events.emit("pi-supervise:worker-paired:v1", { supervisorIntercomId: "supervisor-intercom" });
+			await ready;
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}

@@ -56,13 +56,14 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 	const args = [
 		"pi",
 		"--no-extensions",
-		"-e", input.extensionPath,
 		"-e", "npm:pi-intercom",
 		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? "npm:@wassname2/pi-supervise@0.0.4",
+		"-e", input.extensionPath,
 		"--fork", input.sourceSessionFile,
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,
 	];
 	if (input.model) args.push("--model", input.model);
+	args.push("Initialize supervision startup.");
 	return `env ${[...env, ...args].map(shellQuote).join(" ")}`;
 }
 
