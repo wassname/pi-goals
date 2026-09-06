@@ -58,7 +58,7 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 		"--no-extensions",
 		"-e", input.extensionPath,
 		"-e", "npm:pi-intercom",
-		"-e", "npm:@wassname2/pi-supervise@0.0.4",
+		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? "npm:@wassname2/pi-supervise@0.0.4",
 		"--fork", input.sourceSessionFile,
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,
 	];

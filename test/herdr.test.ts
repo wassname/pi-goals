@@ -31,6 +31,11 @@ describe("supervisor pane command", () => {
 		expect(command).not.toContain("pi-subagents");
 	});
 
+	it("uses a local pi-supervise extension only when explicitly requested", () => {
+		vi.stubEnv("PI_GOALS_SUPERVISE_EXTENSION", "/repo/vendor/pi-supervise/src/index.ts");
+		expect(supervisorCommand(input())).toContain("'-e' '/repo/vendor/pi-supervise/src/index.ts'");
+	});
+
 	it("accepts Herdr's text version output and stale pane cleanup", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-herdr-"));
 		const bin = join(cwd, "herdr");
