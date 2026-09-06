@@ -9,13 +9,15 @@ import { registerVisibleSupervisor } from "../src/supervisor-session.js";
 
 function setup(cwd: string, planPath: string) {
 	vi.stubEnv("PI_GOALS_WORKER_ID", "worker-session");
+	vi.stubEnv("PI_GOALS_WORKER_INTERCOM_ID", "worker-intercom");
 	vi.stubEnv("PI_GOALS_OWNER_SESSION_ID", "worker-session");
 	vi.stubEnv("PI_GOALS_PLAN_PATH", planPath);
 	vi.stubEnv("PI_GOALS_APPROVAL_ID", "approval-1");
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const entries: any[] = [];
-	const sent: Array<{ content: string; options?: unknown }> = [];
+	const paired: Array<{ workerIntercomId: string; goal: string }> = [];
+	const announced: Array<{ workerIntercomId: string; approvalId: string }> = [];
 	let branch: any[] = [];
 	const ctx = {
 		cwd,
@@ -30,14 +32,24 @@ function setup(cwd: string, planPath: string) {
 		ui: { notify: vi.fn() },
 	};
 	const pi = {
+		events: {
+			on() {},
+			emit(name: string, request: any) {
+				if (name !== "pi-supervise:pair:v1") return;
+				paired.push({ workerIntercomId: request.workerIntercomId, goal: request.goal });
+				request.resolve();
+			},
+		},
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-		getCommands: () => [{ name: "supervise", source: "extension" }],
-		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
 	};
-	registerVisibleSupervisor(pi as unknown as ExtensionAPI);
-	return { branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, sent, tools };
+	registerVisibleSupervisor(pi as unknown as ExtensionAPI, {
+		workerIntercomId: async () => "worker-intercom",
+		waitForSupervisorReady: async () => {},
+		announceSupervisorReady: async (workerIntercomId, approvalId) => { announced.push({ workerIntercomId, approvalId }); },
+	});
+	return { announced, branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, paired, tools };
 }
 
 afterEach(() => vi.unstubAllEnvs());
@@ -50,10 +62,8 @@ describe("visible supervisor session", () => {
 			await runtime.hooks.get("session_start")({}, runtime.ctx);
 			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
 			expect(runtime.entries.at(-1)).toMatchObject({ customType: "pi-goals-visible-supervisor-v1" });
-			expect(runtime.sent).toEqual([{
-				content: `/supervise @worker-session ${join(cwd, ".pi/plan/worker-v1.md")}`,
-				options: { expandPromptTemplates: true },
-			}]);
+			expect(runtime.paired).toEqual([{ workerIntercomId: "worker-intercom", goal: join(cwd, ".pi/plan/worker-v1.md") }]);
+			expect(runtime.announced).toEqual([{ workerIntercomId: "worker-intercom", approvalId: "approval-1" }]);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -83,6 +93,12 @@ describe("visible supervisor session", () => {
 			}, undefined, undefined, runtime.ctx);
 			expect(approved.isError).toBe(false);
 			expect(existsSync(approvalPath(cwd, "worker-session", "make the file"))).toBe(true);
+			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n  - evidence:\n    - \n  - tasks:\n    - write result.txt\n");
+			const missingEvidence = await runtime.tools.get("ApproveGoal").execute("id", {
+				goal: "make the file", inspectedPlan: true, inspectedRepository: true, inspectedEvidence: true, inspectedVerifyOutput: true,
+			}, undefined, undefined, runtime.ctx);
+			expect(missingEvidence.isError).toBe(true);
+			expect(missingEvidence.content[0].text).toContain("nonblank evidence entry");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

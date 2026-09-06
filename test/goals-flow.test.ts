@@ -9,6 +9,13 @@ import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
 vi.mock("../src/herdr.js", () => ({ openSupervisorPane, closeSupervisorPane }));
+vi.mock("../src/intercom.js", () => ({
+	registerGoalsIntercom: () => ({
+		workerIntercomId: async () => "worker-intercom",
+		waitForSupervisorReady: async () => {},
+		announceSupervisorReady: async () => {},
+	}),
+}));
 
 const { default: piGoalsExtension, isMainSession } = await import("../src/index.js");
 
@@ -101,6 +108,7 @@ describe("/goals flow", () => {
 				cwd: flow.cwd,
 				sourceSessionFile: join(flow.cwd, "session.jsonl"),
 				workerSessionId: "session-a",
+				workerIntercomId: "worker-intercom",
 				planPath,
 			}));
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
@@ -128,7 +136,7 @@ describe("/goals flow", () => {
 		}
 	});
 
-	it("signs off only an approval for the exact clean commit and goal block", async () => {
+	it("accepts only an approval for the exact clean commit and goal block", async () => {
 		const flow = setup(["Ready"]);
 		try {
 			await flow.commands.get("goals").handler("make the file", flow.ctx);

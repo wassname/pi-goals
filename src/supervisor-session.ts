@@ -3,12 +3,15 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
+import type { GoalsIntercom } from "./intercom.js";
+import { pairWithPiSupervise } from "./supervise.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v1";
 const COMPACT_AT_TOKENS = 100_000;
 
 interface SupervisorConfig {
 	workerSessionId: string;
+	workerIntercomId: string;
 	ownerSessionId: string;
 	planPath: string;
 	approvalId: string;
@@ -27,10 +30,28 @@ function requiredEnv(name: string): string {
 function config(): SupervisorConfig {
 	return {
 		workerSessionId: requiredEnv("PI_GOALS_WORKER_ID"),
+		workerIntercomId: requiredEnv("PI_GOALS_WORKER_INTERCOM_ID"),
 		ownerSessionId: requiredEnv("PI_GOALS_OWNER_SESSION_ID"),
 		planPath: resolve(requiredEnv("PI_GOALS_PLAN_PATH")),
 		approvalId: requiredEnv("PI_GOALS_APPROVAL_ID"),
 	};
+}
+
+function hasEvidenceEntry(block: string): boolean {
+	const lines = block.split("\n");
+	for (let index = 0; index < lines.length; index++) {
+		const evidence = /^\s*[-*]\s+evidence:\s*(.*)$/i.exec(lines[index]);
+		if (!evidence) continue;
+		if (evidence[1].trim() && !/^\(empty until sign-off\)$/i.test(evidence[1].trim())) return true;
+		const indent = lines[index].match(/^\s*/)?.[0].length ?? 0;
+		for (let child = index + 1; child < lines.length; child++) {
+			const childIndent = lines[child].match(/^\s*/)?.[0].length ?? 0;
+			if (lines[child].trim() && childIndent <= indent) break;
+			const entry = /^\s+[-*]\s+(.+?)\s*$/.exec(lines[child]);
+			if (entry?.[1].trim()) return true;
+		}
+	}
+	return false;
 }
 
 function latestWorkerView(ctx: ExtensionContext): string | null {
@@ -55,7 +76,7 @@ export function isVisibleSupervisor(): boolean {
 	return process.env.PI_GOALS_ROLE === "supervisor";
 }
 
-export function registerVisibleSupervisor(pi: ExtensionAPI): void {
+export function registerVisibleSupervisor(pi: ExtensionAPI, intercom: GoalsIntercom): void {
 	const settings = config();
 	let compacting = false;
 
@@ -66,24 +87,23 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		const entries = ctx.sessionManager.getEntries();
 		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) return;
-		if (!pi.getCommands().some((command) => command.name === "supervise" && command.source === "extension")) {
-			ctx.ui.notify("pi-goals supervisor needs the @wassname2/pi-supervise extension.", "error");
-			return;
-		}
 		compacting = true;
-		ctx.compact({
-			customInstructions: `Preserve the user's decisions, preferences, and high-level objective from planning. Preserve unresolved risks and the plan path ${settings.planPath}. Remove implementation chatter. This summary is for a read-only supervisor that will judge and steer another Pi session.`,
-			onComplete: () => {
-				compacting = false;
-				pi.appendEntry(BOOTSTRAPPED, { version: 1, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
-				const sendCommand = pi.sendUserMessage as (content: string, options: { expandPromptTemplates: boolean }) => void;
-				sendCommand(`/supervise @${settings.workerSessionId} ${settings.planPath}`, { expandPromptTemplates: true });
-			},
-			onError: (error) => {
-				compacting = false;
-				ctx.ui.notify(`Supervisor compaction failed: ${error.message}`, "error");
-			},
-		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				ctx.compact({
+					customInstructions: `Preserve the user's decisions, preferences, and high-level objective from planning. Preserve unresolved risks and the plan path ${settings.planPath}. Remove implementation chatter. This summary is for a read-only supervisor that will judge and steer another Pi session.`,
+					onComplete: () => resolve(),
+					onError: reject,
+				});
+			});
+			await pairWithPiSupervise(pi, settings.workerIntercomId, settings.planPath);
+			await intercom.announceSupervisorReady(settings.workerIntercomId, settings.approvalId);
+			pi.appendEntry(BOOTSTRAPPED, { version: 1, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
+		} catch (error) {
+			ctx.ui.notify(`Supervisor startup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+		} finally {
+			compacting = false;
+		}
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -131,7 +151,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			if (!repository.cleanWorktree) return result("Cannot approve with a dirty worktree. Commit the worker changes first.", true);
 			const block = goalBlock(plan, params.goal);
 			if (!block) return result(`Cannot approve: no unique open goal matches "${params.goal}".`, true);
-			if (/evidence:\s*\(empty until sign-off\)/i.test(block)) return result("Cannot approve while the goal evidence is empty.", true);
+			if (!hasEvidenceEntry(block)) return result("Cannot approve without a nonblank evidence entry in the goal block.", true);
 			const path = approvalPath(ctx.cwd, settings.ownerSessionId, params.goal);
 			writeApproval(path, {
 				version: 2,
