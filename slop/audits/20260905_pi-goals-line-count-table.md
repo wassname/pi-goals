@@ -7,7 +7,7 @@ Excluded: `media/screenshot.png` is binary (`image/png`); `package-lock.json` is
 Method: run the command below from the repository root; the saved machine-readable output is `slop/audits/20260905_pi-goals-text-line-counts.txt`.
 
 ```sh
-git ls-files -z | while IFS= read -r -d '' f; do case "$f" in media/screenshot.png|package-lock.json) continue;; esac; mime=$(file -b --mime-type "$f"); [[ "$mime" =~ ^text/|^application/(json|javascript)$ ]] && printf '%s\t%s\n' "$(wc -l < "$f")" "$f"; done | sort -k2
+git ls-files -z | while IFS= read -r -d '\0' f; do case "$f" in media/screenshot.png|package-lock.json) continue;; esac; mime=$(file -b --mime-type "$f"); [[ "$mime" =~ ^text/|^application/(json|javascript)$ ]] && printf '%s\t%s\n' "$(wc -l < "$f")" "$f"; done | sort -k2
 ```
 
 | File | Lines |
@@ -36,12 +36,13 @@ git ls-files -z | while IFS= read -r -d '' f; do case "$f" in media/screenshot.p
 | `scripts/stale-fixme-removal.diff` | 30 |
 | `slop/audits/20260905_goal-steward-validation.md` | 31 |
 | `slop/audits/20260905_nested-supervisor-validation.txt` | 91 |
-| `slop/audits/20260905_pi-goals-file-types.txt` | 51 |
-| `slop/audits/20260905_pi-goals-line-count-table.md` | 66 |
+| `slop/audits/20260905_pi-goals-file-types.txt` | 52 |
+| `slop/audits/20260905_pi-goals-line-count-table.md` | 67 |
 | `slop/audits/20260905_pi-goals-text-line-counts.txt` | 50 |
 | `slop/audits/20260905_steward-probe.json` | 15 |
 | `slop/audits/20260906_foreground-supervisor-validation.txt` | 53 |
 | `slop/audits/20260906_nested-runtime-smoke.md` | 31 |
+| `slop/audits/20260906_nonchild-npm-test.txt` | 33 |
 | `slop/plans/20260905_goal-steward.md` | 37 |
 | `slop/reviews/2026-09-06_deepseek-v4-pro-0813_pi_goals_fragility.md` | 65 |
 | `slop/reviews/20260906_foreground-worker-review.md` | 20 |
@@ -61,6 +62,6 @@ git ls-files -z | while IFS= read -r -d '' f; do case "$f" in media/screenshot.p
 | `test/tick-goal.test.ts` | 32 |
 | `test/worker.test.ts` | 119 |
 | `tsconfig.json` | 15 |
-| **Total** | **4316** |
+| **Total** | **4351** |
 
 -- PI[gpt-5.6]
