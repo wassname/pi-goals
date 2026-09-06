@@ -37,7 +37,7 @@ describe("supervisor pane command", () => {
 		writeFileSync(bin, `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "herdr 0.8.2"; exit 0; fi
 if [ "$1" = "pane" ] && [ "$2" = "split" ]; then echo '{"pane_id":"new-pane"}'; exit 0; fi
-if [ "$1" = "pane" ] && [ "$2" = "run" ]; then echo '{}'; exit 0; fi
+if [ "$1" = "pane" ] && [ "$2" = "run" ]; then if [ "$HERDR_SMOKE_RUN_FAIL" = "1" ]; then echo "run failed" >&2; exit 1; fi; echo '{}'; exit 0; fi
 if [ "$1" = "pane" ] && [ "$2" = "close" ]; then echo '{"error":{"code":"PANE_GONE"}}' >&2; exit 1; fi
 exit 2
 `);
@@ -47,6 +47,8 @@ exit 2
 		try {
 			await expect(openSupervisorPane(input())).resolves.toBe("new-pane");
 			await expect(closeSupervisorPane("new-pane")).resolves.toBeUndefined();
+			vi.stubEnv("HERDR_SMOKE_RUN_FAIL", "1");
+			await expect(openSupervisorPane(input())).rejects.toThrow("run failed");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

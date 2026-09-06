@@ -76,7 +76,7 @@ export async function openSupervisorPane(input: LaunchSupervisorInput): Promise<
 		await herdr(["pane", "run", paneId, supervisorCommand(input)]);
 		return paneId;
 	} catch (error) {
-		await herdr(["pane", "close", paneId]);
+		await closeSupervisorPane(paneId);
 		throw error;
 	}
 }
