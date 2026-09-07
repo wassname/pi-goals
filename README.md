@@ -91,12 +91,12 @@ is not an OS sandbox. If pi-subagents is absent, Ready stays in planning after a
 install it, retry Ready, or use `/goals steward off`. The integration is process-local and does not
 require `pi-intercom`.
 
-Other commands: `/goals --clear` disconnects this session from its active plan, preserving the
-versioned file on disk; `/goals --auto [minutes|off]` continues active goals after the agent settles
+Other commands: `/goals clear` disconnects this session from its active plan, preserving the
+versioned file on disk; `/goals auto [minutes|off]` continues active goals after the agent settles
 and then on that interval. It pauses after two automatic wakes with no working-plan change;
-`/goals --judge <model-ref>` picks a sign-off judge model (default: your current session model, else
+`/goals judge <model-ref>` picks a sign-off judge model (default: your current session model, else
 pi's default); `/goals steward [on|off|status]` controls the optional persistent plan steward. The
-older `--` forms remain only for the existing clear, auto, and judge controls.
+old `--clear`, `--auto`, and `--judge` forms remain compatibility aliases but are not required.
 
 ## Prompts
 

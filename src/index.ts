@@ -5,7 +5,7 @@
  *
  * PI: Each /goals call makes a new plan version, `.pi/plan/<session_id>-vN.md`. The selected version
  * stays in session state across resume and compaction. Old plans stay on disk but inert, so a new
- * conversation cannot silently edit them. `/goals --clear` only disconnects this session; the filename is the arm switch: a session that never ran
+ * conversation cannot silently edit them. `/goals clear` only disconnects this session; the filename is the arm switch: a session that never ran
  * /goals has no active plan, so the widget, injections, and CompleteGoal all stay silent.
  *
  * The v1 lesson: the parser existed so TypeScript could read the plan, but almost every reader is a
@@ -474,10 +474,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- /goals: enter plan mode (or clear / set judge / set steward) -------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals steward [on|off|status] | /goals --clear | /goals --auto [minutes|off] | /goals --judge <model>`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals judge <model> | /goals steward [on|off|status]`,
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (arg === "--clear") {
+			if (arg === "clear" || arg === "--clear") {
 				if (state.planVersion === null) {
 					ctx.ui.notify("No active plan to disconnect.", "info");
 					return;
@@ -500,8 +500,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
 				return;
 			}
-			if (arg === "--auto" || arg.startsWith("--auto ")) {
-				const value = arg.slice("--auto".length).trim();
+			if (arg === "auto" || arg.startsWith("auto ") || arg === "--auto" || arg.startsWith("--auto ")) {
+				const command = arg.startsWith("--") ? "--auto" : "auto";
+				const value = arg.slice(command.length).trim();
 				if (value === "off") {
 					clearAutoTimer();
 					state = { ...state, autoIntervalMs: null, autoPaused: false };
@@ -516,7 +517,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				}
 				const minutes = value ? Number(value) : AUTO_DEFAULT_INTERVAL_MS / 60_000;
 				if (!Number.isInteger(minutes) || minutes < 1) {
-					ctx.ui.notify("Use /goals --auto [whole minutes], or /goals --auto off.", "warning");
+					ctx.ui.notify("Use /goals auto [whole minutes], or /goals auto off.", "warning");
 					return;
 				}
 				autoWakeInFlight = false;
@@ -562,8 +563,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Persistent plan steward ${value === "on" ? "enabled" : "disabled"}.`, "info");
 				return;
 			}
-			if (arg === "--judge" || arg.startsWith("--judge ")) {
-				const ref = arg.slice("--judge".length).trim();
+			if (arg === "judge" || arg.startsWith("judge ") || arg === "--judge" || arg.startsWith("--judge ")) {
+				const command = arg.startsWith("--") ? "--judge" : "judge";
+				const ref = arg.slice(command.length).trim();
 				state = { ...state, judgeModel: ref || null };
 				persist();
 				ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the session model", "info");

@@ -98,9 +98,12 @@ describe("/goals draft flow", () => {
 			expect(readFileSync(join(flow.cwd, ".pi/plan/session-a-v2.md"), "utf-8")).toBe("");
 			expect(flow.messages.at(-1)?.content).toContain("session-a-v2.md");
 
-			await flow.commands.get("goals").handler("judge the vendor options", flow.ctx);
+			await flow.commands.get("goals").handler("compare the vendor options", flow.ctx);
 			expect(readFileSync(join(flow.cwd, ".pi/plan/session-a-v3.md"), "utf-8")).toBe("");
-			expect(flow.messages.at(-1)?.content).toContain("Objective: judge the vendor options");
+			expect(flow.messages.at(-1)?.content).toContain("Objective: compare the vendor options");
+
+			await flow.commands.get("goals").handler("judge provider/model", flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ judgeModel: "provider/model", planVersion: 3 });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -113,7 +116,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: preserve this\n");
 
-			await flow.commands.get("goals").handler("--clear", flow.ctx);
+			await flow.commands.get("goals").handler("clear", flow.ctx);
 
 			expect(readFileSync(planPath, "utf-8")).toContain("goal: preserve this");
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null });
@@ -427,7 +430,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await flow.commands.get("goals").handler("--auto 1", flow.ctx);
+			await flow.commands.get("goals").handler("auto 1", flow.ctx);
 
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			await vi.advanceTimersByTimeAsync(0);
@@ -454,7 +457,7 @@ describe("/goals draft flow", () => {
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await flow.commands.get("goals").handler("--auto 1", flow.ctx);
+			await flow.commands.get("goals").handler("auto 1", flow.ctx);
 			await flow.hooks.get("agent_start")({}, flow.ctx);
 			await flow.hooks.get("tool_call")({ toolName: "process", input: { action: "start" } }, flow.ctx);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
