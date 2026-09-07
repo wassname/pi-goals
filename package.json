@@ -27,7 +27,7 @@
     "typebox": "*"
   },
   "dependencies": {
-    "@wassname2/pi-supervise": "git+https://github.com/wassname/pi-supervise.git#74cdd77dc2a1e9c7d1f21ca0f00d2a59530139b8",
+    "@wassname2/pi-supervise": "https://codeload.github.com/wassname/pi-intercom-supervisor/tar.gz/74cdd77dc2a1e9c7d1f21ca0f00d2a59530139b8",
     "pi-intercom": "0.13.0"
   },
   "bundledDependencies": [
