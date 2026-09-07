@@ -17,6 +17,7 @@ function setup(cwd: string, planPath: string) {
 	const tools = new Map<string, any>();
 	const entries: any[] = [];
 	const paired: Array<{ workerIntercomId: string; goal: string }> = [];
+	const messages: string[] = [];
 	let branch: any[] = [];
 	const ctx = {
 		cwd,
@@ -42,34 +43,37 @@ function setup(cwd: string, planPath: string) {
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		sendUserMessage: (message: string) => messages.push(message),
 	};
 	registerVisibleSupervisor(pi as unknown as ExtensionAPI);
-	return { branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, paired, tools };
+	return { branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, messages, paired, tools };
 }
 
 afterEach(() => vi.unstubAllEnvs());
 
 describe("visible supervisor session", () => {
-	it("compacts the fork before pairing it with the worker", async () => {
+	it("pairs from session startup before asking the supervisor to work", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
 			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"));
-			await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
-			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(runtime.ctx.compact).not.toHaveBeenCalled();
 			expect(runtime.entries.at(-1)).toMatchObject({ customType: "pi-goals-visible-supervisor-v1" });
 			expect(runtime.paired).toEqual([{ workerIntercomId: "worker-intercom", goal: join(cwd, ".pi/plan/worker-v1.md") }]);
+			expect(runtime.messages).toEqual(["Supervision is paired. Inspect the worker and give its next concrete instruction."]);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("does not pair twice when startup reaches a second worker turn", async () => {
+	it("does not pair twice across session startup and later turns", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
 			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"));
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
 			await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
-			await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
-			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
 			expect(runtime.paired).toHaveLength(1);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });

@@ -80,33 +80,27 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	let compacting = false;
 	let bootstrapping = false;
 
-	pi.on("before_agent_start", async (_event, ctx) => {
-		await bootstrap(ctx);
-		return { systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` };
-	});
-
 	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
 		if (bootstrapping) return;
 		const entries = ctx.sessionManager.getEntries();
 		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) return;
 		bootstrapping = true;
-		compacting = true;
 		try {
-			await new Promise<void>((resolve, reject) => {
-				ctx.compact({
-					customInstructions: `Preserve the user's decisions, preferences, and high-level objective from planning. Preserve unresolved risks and the plan path ${settings.planPath}. Remove implementation chatter. This summary is for a read-only supervisor that will judge and steer another Pi session.`,
-					onComplete: () => resolve(),
-					onError: reject,
-				});
-			});
 			await pairWithPiSupervise(pi, settings.workerIntercomId, settings.planPath);
 			pi.appendEntry(BOOTSTRAPPED, { version: 1, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
+			pi.sendUserMessage("Supervision is paired. Inspect the worker and give its next concrete instruction.");
 		} catch (error) {
 			ctx.ui.notify(`Supervisor startup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-		} finally {
-			compacting = false;
 		}
 	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		setImmediate(() => { void bootstrap(ctx); });
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => {
+		return { systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` };
+	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (compacting || (ctx.getContextUsage()?.tokens ?? 0) < COMPACT_AT_TOKENS) return;

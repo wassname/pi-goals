@@ -63,7 +63,6 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,
 	];
 	if (input.model) args.push("--model", input.model);
-	args.push("Initialize supervision startup.");
 	return `env ${[...env, ...args].map(shellQuote).join(" ")}`;
 }
 
