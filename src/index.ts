@@ -163,7 +163,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			});
 			await worker.waitForPair();
 		} catch (error) {
-			if (paneId) await closeSupervisorPane(paneId).catch(() => {});
+			if (paneId) throw new Error(`Supervisor startup failed in Herdr pane ${paneId}; it remains open for inspection. ${error instanceof Error ? error.message : String(error)}`);
 			throw error;
 		}
 		state = { ...state, supervisorPaneId: paneId };
