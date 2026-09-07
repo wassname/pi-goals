@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*goal:\s*(.*)$/i;
 
 export interface ApprovalRecord {
-	version: 2;
+	version: 3;
 	verdict: "accept";
 	approvalId: string;
 	goal: string;
@@ -17,6 +17,7 @@ export interface ApprovalRecord {
 	tree: string;
 	cleanWorktree: true;
 	inspected: { plan: true; repository: true; evidence: true; verifyOutput: true };
+	verifyOutputPath: string;
 	supervisor: { sessionId: string; runId: string | null };
 	timestamp: string;
 }
@@ -62,6 +63,20 @@ export function hashGoalBlock(block: string): string {
 	return createHash("sha256").update(block).digest("hex");
 }
 
+export function verifyOutputPath(repoRoot: string, path: string): string | null {
+	const resolved = resolve(repoRoot, path);
+	const relativePath = relative(repoRoot, resolved).replaceAll("\\", "/");
+	if (!relativePath || relativePath.startsWith("../") || relativePath === "..") return null;
+	try {
+		const output = statSync(resolved);
+		if (!output.isFile() || output.size === 0) return null;
+		command(repoRoot, ["ls-files", "--error-unmatch", "--", relativePath]);
+		return relativePath;
+	} catch {
+		return null;
+	}
+}
+
 export function approvalPath(cwd: string, sessionId: string, goal: string): string {
 	const goalId = createHash("sha256").update(goal.trim().toLowerCase()).digest("hex").slice(0, 16);
 	return join(cwd, ".pi", "pi-goals", "approvals", `${sessionId}-${goalId}.json`);
@@ -97,7 +112,7 @@ export function approvalMatches(record: ApprovalRecord | null, input: {
 	tree: string;
 	cleanWorktree: boolean;
 }): boolean {
-	return record?.version === 2
+	return record?.version === 3
 		&& record.verdict === "accept"
 		&& record.approvalId === input.approvalId
 		&& record.goal === input.goal
@@ -111,5 +126,6 @@ export function approvalMatches(record: ApprovalRecord | null, input: {
 		&& record.inspected.plan === true
 		&& record.inspected.repository === true
 		&& record.inspected.evidence === true
-		&& record.inspected.verifyOutput === true;
+		&& record.inspected.verifyOutput === true
+		&& Boolean(record.verifyOutputPath);
 }

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -38,6 +39,10 @@ async function herdr(args: string[], json = true): Promise<unknown> {
 	return stdout.trim() ? JSON.parse(stdout) : {};
 }
 
+function bundledExtension(path: string): string {
+	return fileURLToPath(new URL(path, import.meta.url));
+}
+
 function stalePaneError(error: unknown): boolean {
 	const record = error as { stdout?: unknown; stderr?: unknown; message?: unknown };
 	const text = [record.stdout, record.stderr, record.message].filter((value): value is string => typeof value === "string").join("\n");
@@ -56,8 +61,8 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 	const args = [
 		"pi",
 		"--no-extensions",
-		"-e", "npm:pi-intercom",
-		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? "npm:@wassname2/pi-supervise@0.0.4",
+		"-e", process.env.PI_GOALS_INTERCOM_EXTENSION ?? bundledExtension("../node_modules/pi-intercom/index.ts"),
+		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? bundledExtension("../node_modules/@wassname2/pi-supervise/src/index.ts"),
 		"-e", input.extensionPath,
 		"--fork", input.sourceSessionFile,
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,

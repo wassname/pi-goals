@@ -16,12 +16,10 @@ The two Pi sessions are visible. You can switch to the supervisor pane and talk 
 
 ## Install
 
-This branch requires Herdr 0.7.5 or newer and these Pi packages:
+This branch requires Herdr 0.7.5 or newer. One Pi package bundles its supervisor and intercom extensions:
 
 ```bash
 pi install npm:@wassname2/pi-goals
-pi install npm:@wassname2/pi-supervise
-pi install npm:pi-intercom
 ```
 
 For a local checkout:
@@ -55,7 +53,7 @@ A goal is a checkbox line whose text starts with `goal:`:
    - evidence: (empty until sign-off)
 ```
 
-The worker adds durable evidence and commits it. The supervisor calls `ApproveGoal`; the worker then calls `CompleteGoal` with the exact goal text.
+The worker saves verification output in a nonempty repository file, adds that path to evidence, and commits it. The supervisor calls `ApproveGoal` with the inspected path; the worker then calls `CompleteGoal` with the exact goal text.
 
 ## Development
 

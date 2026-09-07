@@ -15,8 +15,9 @@ const { default: piGoalsExtension, isMainSession } = await import("../src/index.
 function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = []) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-flow-"));
 	writeFileSync(join(cwd, ".gitignore"), ".pi/\n");
+	writeFileSync(join(cwd, "verify.txt"), "PASS\n");
 	execFileSync("git", ["init", "-q"], { cwd });
-	execFileSync("git", ["add", ".gitignore"], { cwd });
+	execFileSync("git", ["add", ".gitignore", "verify.txt"], { cwd });
 	execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd });
 	const commands = new Map<string, any>();
 	const hooks = new Map<string, any>();
@@ -121,6 +122,22 @@ describe("/goals flow", () => {
 		}
 	});
 
+	it("returns to planning when the worker is already paired", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			flow.events.removeAllListeners("pi-supervise:worker-state:v1");
+			flow.events.on("pi-supervise:worker-state:v1", (reply) => reply({ intercomId: "worker-intercom", paired: true }));
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			approvedPlan(flow.cwd);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(openSupervisorPane).not.toHaveBeenCalled();
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: null });
+			expect(flow.notifications.at(-1)).toContain("already paired");
+		} finally {
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("waits for the worker's real paired acknowledgement before beginning work", async () => {
 		const flow = setup(["Ready"]);
 		try {
@@ -166,10 +183,11 @@ describe("/goals flow", () => {
 			const repository = repositoryState(flow.cwd);
 			const approvalId = (flow.entries.at(-1)?.data as { approvalId: string }).approvalId;
 			writeApproval(approvalPath(flow.cwd, "session-a", goal), {
-				version: 2, verdict: "accept", approvalId, goal, planPath,
+				version: 3, verdict: "accept", approvalId, goal, planPath,
 				goalBlockHash: hashGoalBlock(block), repoRoot: repository.repoRoot,
 				head: repository.head, tree: repository.tree, cleanWorktree: true,
 				inspected: { plan: true, repository: true, evidence: true, verifyOutput: true },
+				verifyOutputPath: "verify.txt",
 				supervisor: { sessionId: "supervisor", runId: null }, timestamp: new Date().toISOString(),
 			});
 			const signed = await flow.tools.get("CompleteGoal").execute("id", { goal }, undefined, undefined, flow.ctx);

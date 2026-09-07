@@ -80,8 +80,9 @@ describe("visible supervisor session", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
 			writeFileSync(join(cwd, ".gitignore"), ".pi/\n");
+			writeFileSync(join(cwd, "verify.txt"), "PASS\n");
 			execFileSync("git", ["init", "-q"], { cwd });
-			execFileSync("git", ["add", ".gitignore"], { cwd });
+			execFileSync("git", ["add", ".gitignore", "verify.txt"], { cwd });
 			execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd });
 			const planPath = join(cwd, ".pi/plan/worker-v1.md");
 			execFileSync("mkdir", ["-p", join(cwd, ".pi/plan")]);
@@ -93,16 +94,18 @@ describe("visible supervisor session", () => {
 			}]);
 			const approved = await runtime.tools.get("ApproveGoal").execute("id", {
 				goal: "make the file",
-				inspectedPlan: true,
-				inspectedRepository: true,
-				inspectedEvidence: true,
-				inspectedVerifyOutput: true,
+				verifyOutputPath: "verify.txt",
 			}, undefined, undefined, runtime.ctx);
 			expect(approved.isError).toBe(false);
 			expect(existsSync(approvalPath(cwd, "worker-session", "make the file"))).toBe(true);
+			const missingOutput = await runtime.tools.get("ApproveGoal").execute("id", {
+				goal: "make the file", verifyOutputPath: "missing.txt",
+			}, undefined, undefined, runtime.ctx);
+			expect(missingOutput.isError).toBe(true);
+			expect(missingOutput.content[0].text).toContain("verification-output");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n  - evidence:\n    - \n  - tasks:\n    - write result.txt\n");
 			const missingEvidence = await runtime.tools.get("ApproveGoal").execute("id", {
-				goal: "make the file", inspectedPlan: true, inspectedRepository: true, inspectedEvidence: true, inspectedVerifyOutput: true,
+				goal: "make the file", verifyOutputPath: "verify.txt",
 			}, undefined, undefined, runtime.ctx);
 			expect(missingEvidence.isError).toBe(true);
 			expect(missingEvidence.content[0].text).toContain("nonblank evidence entry");
@@ -122,7 +125,7 @@ describe("visible supervisor session", () => {
 				message: { role: "user", content: [{ type: "text", text: "The worker stopped.\n\ntool calls with no result: bash\nchild pi processes still running: none" }] },
 			}]);
 			const rejected = await runtime.tools.get("ApproveGoal").execute("id", {
-				goal: "wait", inspectedPlan: true, inspectedRepository: true, inspectedEvidence: true, inspectedVerifyOutput: true,
+				goal: "wait", verifyOutputPath: "verify.txt",
 			}, undefined, undefined, runtime.ctx);
 			expect(rejected.isError).toBe(true);
 			expect(rejected.content[0].text).toContain("bash");

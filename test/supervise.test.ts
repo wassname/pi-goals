@@ -25,10 +25,23 @@ describe("pi-supervise worker API", () => {
 		events.on(WORKER_STATE, (reply) => reply({ intercomId: "worker-id", paired: false }));
 		const worker = await workerPiSupervise(pi(events));
 		let acknowledgements = 0;
-		void worker.paired.then(() => { acknowledgements += 1; });
+		const paired = worker.waitForPair().then(() => { acknowledgements += 1; });
 		events.emit(WORKER_PAIRED, { supervisorIntercomId: "supervisor-id" });
 		events.emit(WORKER_PAIRED, { supervisorIntercomId: "supervisor-id" });
-		await worker.paired;
+		await paired;
 		expect(acknowledgements).toBe(1);
+	});
+
+	it("rejects Ready when another supervisor already owns the worker", async () => {
+		const events = new EventEmitter();
+		events.on(WORKER_STATE, (reply) => reply({ intercomId: "worker-id", paired: true }));
+		await expect(workerPiSupervise(pi(events))).rejects.toThrow("already paired");
+	});
+
+	it("times out when the visible supervisor never pairs", async () => {
+		const events = new EventEmitter();
+		events.on(WORKER_STATE, (reply) => reply({ intercomId: "worker-id", paired: false }));
+		const worker = await workerPiSupervise(pi(events), 1);
+		await expect(worker.waitForPair()).rejects.toThrow("did not pair");
 	});
 });

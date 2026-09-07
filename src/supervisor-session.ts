@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "./approval.js";
+import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
 import { pairWithPiSupervise } from "./supervise.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v1";
@@ -68,7 +68,7 @@ function latestWorkerView(ctx: ExtensionContext): string | null {
 function supervisorPrompt(settings: SupervisorConfig): string {
 	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation, the complete plan, and pi-supervise worker views.
 
-Use pi-supervise to inspect and steer the worker. Give one concrete instruction when work is incomplete. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and saved verify output. When its discriminator is positively satisfied and the worker view says no work is active, call ApproveGoal. Then call steer and tell the worker to call CompleteGoal with the exact goal text. Do not call done until every plan goal is [x]. -- PI[gpt-5.6-sol]`;
+Use pi-supervise to inspect and steer the worker. Give one concrete instruction when work is incomplete. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. When its discriminator is positively satisfied and the worker view says no work is active, call ApproveGoal with that repository-relative path. Then call steer and tell the worker to call CompleteGoal with the exact goal text. Do not call done until every plan goal is [x]. -- PI[gpt-5.6-sol]`;
 }
 
 export function isVisibleSupervisor(): boolean {
@@ -128,13 +128,10 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		name: "ApproveGoal",
 		label: "Approve goal",
 		executionMode: "sequential",
-		description: "Record approval after inspecting the current goal, repository, evidence, saved verify output, and a stopped worker view with no active work.",
+		description: "Record approval after inspecting the current goal, repository, evidence, and a saved nonempty verification-output file, with a stopped worker view and no active work.",
 		parameters: Type.Object({
 			goal: Type.String({ description: "Exact text after goal: in the plan." }),
-			inspectedPlan: Type.Literal(true),
-			inspectedRepository: Type.Literal(true),
-			inspectedEvidence: Type.Literal(true),
-			inspectedVerifyOutput: Type.Literal(true),
+			verifyOutputPath: Type.String({ description: "Nonempty repository-relative file containing the verification output you inspected." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const view = latestWorkerView(ctx);
@@ -154,9 +151,11 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			const block = goalBlock(plan, params.goal);
 			if (!block) return result(`Cannot approve: no unique open goal matches "${params.goal}".`, true);
 			if (!hasEvidenceEntry(block)) return result("Cannot approve without a nonblank evidence entry in the goal block.", true);
+			const verifiedOutput = verifyOutputPath(repository.repoRoot, params.verifyOutputPath);
+			if (!verifiedOutput) return result("Cannot approve without a nonempty repository-relative verification-output file.", true);
 			const path = approvalPath(ctx.cwd, settings.ownerSessionId, params.goal);
 			writeApproval(path, {
-				version: 2,
+				version: 3,
 				verdict: "accept",
 				approvalId: settings.approvalId,
 				goal: params.goal,
@@ -167,6 +166,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 				tree: repository.tree,
 				cleanWorktree: true,
 				inspected: { plan: true, repository: true, evidence: true, verifyOutput: true },
+				verifyOutputPath: verifiedOutput,
 				supervisor: { sessionId: ctx.sessionManager.getSessionId(), runId: null },
 				timestamp: new Date().toISOString(),
 			});

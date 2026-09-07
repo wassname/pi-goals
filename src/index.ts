@@ -161,7 +161,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				extensionPath: fileURLToPath(import.meta.url),
 				model: state.supervisorModel,
 			});
-			await worker.paired;
+			await worker.waitForPair();
 		} catch (error) {
 			if (paneId) await closeSupervisorPane(paneId).catch(() => {});
 			throw error;
