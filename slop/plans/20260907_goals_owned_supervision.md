@@ -10,7 +10,7 @@ Replace the pi-goals → pi-supervise → pi-intercom runtime chain with one pi-
 - Ready waits for the supervisor's durable `ready.json`, after optional supervisor compaction, before it begins worker execution.
 - Worker views are written on Ready, settle, 50 turns, and 60 minutes. The supervisor polls views and writes one steer request. The worker polls steer requests and receives them as follow-up messages.
 - The canonical plan remains a direct path in the supervisor prompt. It is not a summary artifact.
-- Keep the approval checkpoint: stopped view, no active work, clean commit, plan evidence, and tracked verification output.
+- Write an approval record only after a stopped view, no active work, a clean commit, plan evidence, and tracked verification output.
 - No external `pi-supervise` or `pi-intercom` runtime dependency remains.
 
 ## Risks and discriminators
