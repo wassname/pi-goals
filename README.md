@@ -77,26 +77,66 @@ pi -e ./src/index.ts
    After eight turns without a change above `## Log`, the working set is sent back with a short upkeep
    reminder.
 
-Optional persistent perspective requires the separate `pi-subagents` package (`pi install
-npm:pi-subagents`, then restart or reload Pi). `/goals steward on` forks one non-writing Oracle
-when Ready is selected. Work waits for its plan decision. The child process exits after the
-review, while its session is retained. The first `CompleteGoal` call resumes that same session for a
-trajectory and scope check; after approval, a second call runs the normal fresh evidence judge. The
-steward cannot complete goals or make unresolved human decisions. `/goals steward off` disables it.
-Between reviews there is no running child process or model call. The retained session receives a
-bounded contract view: evidence detail stays with the fresh judge, approved checkbox state is
-normalized, and current goal status remains visible. The Oracle's profile includes inspection-only
-bash by contract; pi-goals rejects its decision if pi-subagents reports a file-mutation effect. This
-is not an OS sandbox. If pi-subagents is absent, Ready stays in planning after a visible RPC timeout;
-install it, retry Ready, or use `/goals steward off`. The integration is process-local and does not
-require `pi-intercom`.
+## Plan supervisor and auto-continue
 
-Other commands: `/goals clear` disconnects this session from its active plan, preserving the
-versioned file on disk; `/goals auto [minutes|off]` continues active goals after the agent settles
-and then on that interval. It pauses after two automatic wakes with no working-plan change;
-`/goals judge <model-ref>` picks a sign-off judge model (default: your current session model, else
-pi's default); `/goals steward [on|off|status]` controls the optional persistent plan steward. The
-old `--clear`, `--auto`, and `--judge` forms remain compatibility aliases but are not required.
+Steward supervision and 60-minute auto-continue are enabled by default. A real supervisor starts at
+Ready. Auto-continue is the fallback when stewardship is off; it does not run a competing timer while
+supervision is enabled. Use `/goals steward off` or `/goals auto off` to opt out. Explicit preferences
+survive clear and reload. Cleared legacy sessions adopt the new defaults on reload; active legacy
+plans retain their settings so supervision is not attached midway through work.
+
+This branch requires the matching
+plan-aware `pi-intercom-supervisor` branch, `pi-intercom`, and Pi running inside Herdr. Both extensions
+must be loaded in the worker; pi-goals passes their resolved paths to the supervisor.
+
+Ready is the human's plan approval. Pi-goals forks the planning session, initializes the supervisor
+with the original plan and supervisor policy, and waits for acknowledged pairing before starting the
+worker. The initial supervisor view can steer; it is not another mandatory plan-approval gate.
+The supervisor fork is compacted unless its known context is already at most 20k tokens. Only the
+supervisor is compacted. Its normal context policy checks near 100k tokens, subject to its model limit.
+
+The existing supervisor provides incremental VCC views and retains its decisions. The plan-aware
+policy checks every 50 model turns or 60 minutes, or when the worker settles with no tracked
+background work. Process/subagent providers that cannot answer are reported as unknown; they do not
+prove the worker is finished. Standalone supervisor settings are unchanged. Auto-continue is
+suspended while the steward is enabled so there is only one continuation policy.
+
+One `CompleteGoal` call asks this supervisor about direction and scope, then runs the normal fresh
+read-only evidence judge. Approving one goal does not finish supervision. Cancelled, stale or
+mismatched replies do not sign off goals. `/goals steward off` ends this plan's supervision and
+cancels pending goal requests; it does not close the human's terminal pane.
+
+Navigation: `/goals supervisor` focuses the supervisor, `/goals worker` returns to the worker, and
+`/goals zoom` toggles supervisor zoom. These use the real Pi panes, not a Fleet inspector. If the
+recorded pane is unavailable, its location/liveness is unknown. Locate the existing session first;
+only after confirming it is no longer running, reopen the saved `pi --session` path shown in the
+error. Pi-goals never starts a duplicate merely because a pane ID is missing.
+
+After completion, keep the plan as a record. Ordinary auto-continue stops when no open goals remain.
+The supervisor's `done` ends the pairing and its watch timer; it leaves the terminal and saved session
+available for inspection. `/goals clear` is the manual way to disconnect. A later `/goals plan …`
+creates a new plan version and starts a new supervisor fork at Ready rather than reusing the completed
+plan's pairing. You can close an old supervisor pane after supervision has ended.
+
+Other commands: `/goals clear` disconnects this session, preserving its plan file;
+`/goals auto [minutes|off]` controls ordinary auto-continue; `/goals judge <model-ref>` overrides the
+fresh judge's model; `/goals steward status` reports supervision. Use `/goals plan <objective>` for
+objectives beginning with reserved command words, such as `/goals plan judge the vendor options`.
+The old `--clear`, `--auto`, and `--judge` forms remain compatibility aliases.
+
+For a local trial, load the two feature checkouts explicitly in a Herdr-managed Pi session (replace
+paths as needed; this does not change global package settings):
+
+```bash
+pi -e /path/to/pi-intercom-supervisor/src/index.ts \
+   -e /path/to/pi-intercom-supervisor/node_modules/pi-intercom/index.ts \
+   -e /path/to/pi-goals/src/index.ts
+```
+
+Then draft a plan and select Ready; no enable command is needed. Initialization failure stays in
+planning and names the unavailable component; resolve it in the supervisor pane, or turn the steward
+off and retry Ready. Sessions saved with the older checkpoint-only steward need a new Ready handoff;
+old pi-subagents reviewer runs are not reused as supervisor sessions.
 
 ## Prompts
 
@@ -110,7 +150,14 @@ npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck
 npm run lint
+# Cross-package tests require the updated supervisor checkout:
+PI_GOALS_SUPERVISOR_SOURCE=/path/to/pi-intercom-supervisor/src/index.ts npm test
 ```
+
+The cross-package hook test uses actual extension code and a native persisted fork, with Herdr and
+the evidence judge mocked. `test/rpc-supervisor.test.ts` starts two real Pi RPC sessions, the actual
+Intercom broker and a fresh judge against a local offline model, with Herdr alone mocked. It requires
+Unix sockets. Neither test proves visual pane navigation; live Herdr UAT is still required.
 
 ## License
 

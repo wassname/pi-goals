@@ -33,7 +33,7 @@ function setup(
 		cwd,
 		hasUI: true,
 		isIdle: () => true,
-		sessionManager: { getSessionId: () => "session-a", getSessionFile: () => join(cwd, "session-a.jsonl"), getEntries: () => entries },
+		sessionManager: { getSessionId: () => "session-a", getSessionFile: () => join(cwd, "session-a.jsonl"), getEntries: () => entries, getBranch: () => entries },
 		ui: {
 			theme: { fg: (_kind: string, text: string) => text },
 			setStatus: () => {},
@@ -66,6 +66,66 @@ function setup(
 }
 
 describe("/goals draft flow", () => {
+	it("enables steward and hourly auto by default in new and cleared legacy sessions", async () => {
+		for (const legacy of [false, true]) {
+			const flow = setup([]);
+			try {
+				if (legacy) flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: null, planVersion: null, stewardEnabled: false, autoIntervalMs: null } });
+				await flow.hooks.get("session_start")({}, flow.ctx);
+				await flow.commands.get("goals").handler("objective", flow.ctx);
+				expect(flow.entries.at(-1)?.data).toMatchObject({ defaultsVersion: 1, stewardEnabled: true, autoIntervalMs: 3_600_000 });
+				await flow.commands.get("goals").handler("clear", flow.ctx);
+				expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, stewardEnabled: true, autoIntervalMs: 3_600_000 });
+			} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+		}
+	});
+
+	it("preserves explicit off preferences across reload and a new plan", async () => {
+		const flow = setup([]);
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("steward off", flow.ctx);
+			await flow.commands.get("goals").handler("auto off", flow.ctx);
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ defaultsVersion: 1, stewardEnabled: false, autoIntervalMs: null });
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it("does not enable automation midway through a legacy working plan", async () => {
+		const flow = setup([]);
+		try {
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: false, autoIntervalMs: null } });
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("judge", flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", stewardEnabled: false, autoIntervalMs: null });
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it("uses the plan escape for objectives beginning with reserved command words", async () => {
+		const flow = setup([]);
+		try {
+			for (const objective of ["judge the vendor options", "auto generate captions", "steward the migration", "clear"]) {
+				await flow.commands.get("goals").handler(`plan ${objective}`, flow.ctx);
+				expect(flow.messages.at(-1)?.content).toContain(`Objective: ${objective}`);
+			}
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", planVersion: 4, judgeModel: null });
+		} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it("keeps an enabled plan in planning when a real supervisor cannot be launched", async () => {
+		const flow = setup(["Ready"]);
+		vi.stubEnv("HERDR_ENV", "");
+		try {
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("objective", flow.ctx);
+			writeFileSync(join(flow.cwd, ".pi/plan/session-a-v1.md"), "# Plan\n\n1. [ ] goal: make the file\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", stewardEnabled: true });
+			expect(flow.messages.some(message => message.content.startsWith("Work the goals"))).toBe(false);
+		} finally { vi.unstubAllEnvs(); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
 	it("preserves prior drafts, displays the plan before Refine, and records editor notes", async () => {
 		const flow = setup(["Refine"], ["Keep two columns.\nDo not add a filter."]);
 		try {
@@ -154,6 +214,7 @@ describe("/goals draft flow", () => {
 	it("starts work only when the human chooses Ready", async () => {
 		const flow = setup(["Ready"]);
 		try {
+			await flow.commands.get("goals").handler("steward off", flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: work on this\n");
@@ -170,207 +231,17 @@ describe("/goals draft flow", () => {
 		}
 	});
 
-	it("forks a persistent steward at Ready and resumes it before sign-off", async () => {
-		const flow = setup(["Ready"]);
-		flow.bus.on("subagents:rpc:v1:request", (value: unknown) => {
-			const request = value as { requestId: string; method: string; params: Record<string, unknown> };
-			const runId = request.method === "spawn" ? "plan-review-run" : "signoff-review-run";
-			flow.bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
-				version: 1,
-				requestId: request.requestId,
-				success: true,
-				data: { details: { runId } },
-			});
-		});
-		try {
-			await flow.hooks.get("session_start")({}, flow.ctx);
-			await flow.commands.get("goals").handler("steward on", flow.ctx);
-			await flow.commands.get("goals").handler("objective", flow.ctx);
-			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
-			writeFileSync(planPath, "# Plan\n\n## User-visible result\n\nA file exists.\n\n## Goals\n\n1. [ ] goal: make the file\n  - discriminator: the file can be read\n");
-
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.entries.at(-1)?.data).toMatchObject({
-				phase: "reviewing",
-				stewardReview: { kind: "plan", runId: "plan-review-run" },
-			});
-			expect(flow.messages.some((message) => message.content.includes("Work the goals"))).toBe(false);
-			const blockedDuringReview = await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "README.md" } }, flow.ctx);
-			expect(blockedDuringReview?.block).toBe(true);
-			const reviewContext = await flow.hooks.get("before_agent_start")({}, flow.ctx);
-			expect(reviewContext.message.content).toContain("[PLAN STEWARD REVIEW]");
-
-			flow.bus.emit("subagent:async-complete", {
-				runId: "plan-review-run",
-				success: true,
-				results: [{ structuredOutput: {
-					decision: "approve",
-					reason: "The goals preserve the requested result.",
-					nextAction: "Start work.",
-					contractDrift: [],
-					unresolvedDecisions: [],
-				} }],
-			});
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", stewardRunId: "plan-review-run" });
-			expect(flow.messages.some((message) => message.content.includes("Work the goals"))).toBe(true);
-
-			const firstSignoff = await flow.tools.get("CompleteGoal").execute("", { goal: "make the file" }, undefined, undefined, flow.ctx);
-			expect(firstSignoff.isError).toBe(false);
-			expect(firstSignoff.content[0].text).toContain("Sign-off paused");
-			expect(flow.entries.at(-1)?.data).toMatchObject({
-				stewardReview: { kind: "signoff", runId: "signoff-review-run", goal: "make the file" },
-			});
-
-			flow.bus.emit("subagent:async-complete", {
-				runId: "signoff-review-run",
-				success: true,
-				results: [{ structuredOutput: {
-					decision: "approve",
-					reason: "The sign-off remains in scope.",
-					nextAction: "Run the fresh evidence review.",
-					contractDrift: [],
-					unresolvedDecisions: [],
-				} }],
-			});
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.entries.at(-1)?.data).toMatchObject({
-				stewardRunId: "signoff-review-run",
-				stewardApproval: { goal: "make the file" },
-			});
-			expect(flow.messages.at(-1)?.content).toContain("Call CompleteGoal again");
-		} finally {
-			rmSync(flow.cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("invalidates a plan approval when the human corrects it during review", async () => {
-		const flow = setup(["Ready"]);
-		flow.bus.on("subagents:rpc:v1:request", (value: unknown) => {
-			const request = value as { requestId: string };
-			flow.bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
-				version: 1, requestId: request.requestId, success: true, data: { details: { runId: "review-run" } },
-			});
-		});
-		try {
-			await flow.hooks.get("session_start")({}, flow.ctx);
-			await flow.commands.get("goals").handler("steward on", flow.ctx);
-			await flow.commands.get("goals").handler("objective", flow.ctx);
-			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n\n## Log\n\n## Interview\n");
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			await flow.hooks.get("input")({ text: "The file must be CSV.", source: "interactive" }, flow.ctx);
-			flow.bus.emit("subagent:async-complete", {
-				runId: "review-run",
-				success: true,
-				results: [{ structuredOutput: {
-					decision: "approve", reason: "The old plan was sound.", nextAction: "Start.", contractDrift: [], unresolvedDecisions: [],
-				} }],
-			});
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
-			expect(flow.messages.some((message) => message.content.includes("Work the goals"))).toBe(false);
-			expect(flow.messages.at(-1)?.content).toContain("plan changed while the steward reviewed it");
-		} finally {
-			rmSync(flow.cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("reconciles a completed pending steward review after session restart", async () => {
-		const flow = setup([]);
-		const methods: string[] = [];
-		flow.bus.on("subagents:rpc:v1:request", (value: unknown) => {
-			const request = value as { requestId: string; method: string };
-			methods.push(request.method);
-			if (request.method === "resume") {
-				flow.bus.emit("subagent:async-complete", {
-					runId: "lost-review",
-					success: true,
-					results: [{ structuredOutput: {
-						decision: "approve", reason: "Stale completion.", nextAction: "Start.", contractDrift: [], unresolvedDecisions: [],
-					} }],
-				});
-			}
-			flow.bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
-				version: 1,
-				requestId: request.requestId,
-				success: true,
-				data: request.method === "status" ? { text: "State: complete" } : { details: { runId: "recovered-review" } },
-			});
-		});
-		try {
-			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
-			writeFileSync(join(flow.cwd, ".pi/plan/session-a-v1.md"), "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n");
-			flow.entries.push({
-				type: "custom",
-				customType: "pi-goals-state",
-				data: {
-					phase: "reviewing", judgeModel: null, planVersion: 1, autoIntervalMs: null, autoPaused: false,
-					stewardEnabled: true, stewardRunId: "lost-review", approvedPlan: null, stewardApproval: null,
-					stewardReview: { kind: "plan", runId: "lost-review", snapshotHash: "old" },
-				},
-			});
-			await flow.hooks.get("session_start")({}, flow.ctx);
-			expect(methods).toEqual(["status", "resume"]);
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "reviewing", stewardReview: { runId: "recovered-review" } });
-			expect(flow.messages.some((message) => message.content.includes("Work the goals"))).toBe(false);
-		} finally {
-			rmSync(flow.cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("resumes the same steward after it requests a plan revision", async () => {
-		const flow = setup(["Ready", "Ready"]);
-		const methods: string[] = [];
-		flow.bus.on("subagents:rpc:v1:request", (value: unknown) => {
-			const request = value as { requestId: string; method: string };
-			methods.push(request.method);
-			flow.bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
-				version: 1,
-				requestId: request.requestId,
-				success: true,
-				data: { details: { runId: methods.length === 1 ? "first-review" : "revised-review" } },
-			});
-		});
-		try {
-			await flow.hooks.get("session_start")({}, flow.ctx);
-			await flow.commands.get("goals").handler("steward on", flow.ctx);
-			await flow.commands.get("goals").handler("objective", flow.ctx);
-			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make it better\n");
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			flow.bus.emit("subagent:async-complete", {
-				runId: "first-review",
-				success: true,
-				results: [{ structuredOutput: {
-					decision: "revise_plan",
-					reason: "The result is not observable.",
-					nextAction: "Name the artifact.",
-					contractDrift: [],
-					unresolvedDecisions: [],
-				} }],
-			});
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", stewardRunId: "first-review" });
-			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: create report.html\n");
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(methods).toEqual(["spawn", "resume"]);
-			expect(flow.entries.at(-1)?.data).toMatchObject({ stewardReview: { runId: "revised-review" } });
-		} finally {
-			rmSync(flow.cwd, { recursive: true, force: true });
-		}
-	});
-
 	it("refuses to enable a steward after an unreviewed plan is already working", async () => {
 		const flow = setup(["Ready"]);
 		try {
 			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.commands.get("goals").handler("steward off", flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			await flow.commands.get("goals").handler("steward on", flow.ctx);
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", stewardEnabled: false, stewardRunId: null });
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", stewardEnabled: false, supervisor: null });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -398,6 +269,7 @@ describe("/goals draft flow", () => {
 	it("reminds every eight unchanged working-set turns, ignoring log-only edits", async () => {
 		const flow = setup(["Ready"]);
 		try {
+			await flow.commands.get("goals").handler("steward off", flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n");
@@ -426,6 +298,7 @@ describe("/goals draft flow", () => {
 		vi.useFakeTimers();
 		const flow = setup(["Ready"]);
 		try {
+			await flow.commands.get("goals").handler("steward off", flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");
@@ -453,6 +326,7 @@ describe("/goals draft flow", () => {
 		vi.useFakeTimers();
 		const flow = setup(["Ready"]);
 		try {
+			await flow.commands.get("goals").handler("steward off", flow.ctx);
 			await flow.commands.get("goals").handler("objective", flow.ctx);
 			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n");

@@ -1,5 +1,7 @@
 # Persistent plan steward
 
+Historical snapshot of the replaced checkpoint-review implementation. The user's clarified objective and proposed real-session supervisor workflow are captured in [Plan-aware persistent supervisor (2026-09-07)](2026-09-07_plan-supervisor.md); the current branch implements that newer composition, with validation limitations recorded in its plan.
+
 ## Purpose
 
 Add judgement across a plan without weakening the fresh evidence check. The steward checks intent,
