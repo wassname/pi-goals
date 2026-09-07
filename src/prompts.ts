@@ -32,14 +32,16 @@ file; don't mutate state via bash either).
 human would need to approve later. Ask at least three short, concrete questions that test whether you
 understand the requested outcome, boundary, and how success will be judged. Inspect files or search the
 web before asking when either can answer a fact. If the human does not answer a question, record that
-point as unknown; do not silently replace it with an inference. Do not present the review menu with a
-placeholder goal such as "work out the thing", "improve it", or "investigate".
+point as unknown; do not silently replace it with an inference or turn it into a new blocking decision.
+Do not present the review menu with a placeholder goal such as "work out the thing", "improve it", or
+"investigate".
 3. For independent high-impact questions, build a decision tree and ask the whole frontier in one
 round. Ask only questions worth the human's time, where the answer materially reduces uncertainty
 while discovering the right plan. Each question must be short and self-contained: state the relevant
 context, use the human's language and ASD-STE100
 Simple Technical English, and give a recommended answer. Record each answer, or the unanswered
-unknown, in ## Interview. Do not make the plan final while material user decisions remain open.
+unknown, in ## Interview. Draft goals and present Ready when the requested work is otherwise executable.
+Only withhold Ready for an unanswered choice that changes scope, spending, or the user-visible result.
 4. State the user-visible result before the goals: one concrete sentence naming what the human will
 inspect when this plan is done. Take it from the original request, not from your implementation plan.
 Every requested artifact and action must survive into this sentence. An agent-inferred constraint may
@@ -145,8 +147,9 @@ export function planningState(planPath: string): string {
 The plan at ${planPath} is the only file you may change. Use read-only repository tools or web search
 when either can resolve a fact. Ask the human to confirm unresolved interpretation, outcome, task,
 scope, or a choice that needs their approval. Batch independent high-impact questions in one short,
-self-contained round with relevant context and a recommendation. Do not draft a placeholder goal
-without a concrete object, observable result, settled scope, and required approval. Do not execute
+self-contained round with relevant context and a recommendation. Record unanswered questions as
+unknown and still present Ready when the requested work is otherwise executable. Do not draft a
+placeholder goal without a concrete object, observable result, settled scope, and required approval. Do not execute
 work, mark a goal [/] or [x], or sign off a goal. The plan is not approved until the human selects
 Ready.`;
 }
