@@ -16,10 +16,12 @@ The two Pi sessions are visible. You can switch to the supervisor pane and talk 
 
 ## Install
 
-This branch requires Herdr 0.7.5 or newer. One Pi package bundles its supervisor and intercom extensions:
+This branch requires Herdr 0.7.5 or newer and these Pi packages:
 
 ```bash
 pi install npm:@wassname2/pi-goals
+pi install npm:@wassname2/pi-supervise
+pi install npm:pi-intercom
 ```
 
 For a local checkout:

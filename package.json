@@ -26,14 +26,6 @@
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
-  "dependencies": {
-    "@wassname2/pi-supervise": "https://codeload.github.com/wassname/pi-intercom-supervisor/tar.gz/74cdd77dc2a1e9c7d1f21ca0f00d2a59530139b8",
-    "pi-intercom": "0.13.0"
-  },
-  "bundledDependencies": [
-    "@wassname2/pi-supervise",
-    "pi-intercom"
-  ],
   "files": [
     "src",
     "README.md"
@@ -61,9 +53,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts",
-      "./node_modules/pi-intercom/index.ts",
-      "./node_modules/@wassname2/pi-supervise/src/index.ts"
+      "./src/index.ts"
     ],
     "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
   }
