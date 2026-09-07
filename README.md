@@ -8,20 +8,19 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 2. Pi asks only material questions, writes the plan, and shows **Ready / Refine / Edit / Cancel**.
 3. **Ready** opens a second Herdr pane. The new Pi session explicitly forks the planning session and compacts that fork.
 4. The original session becomes the implementation worker. It keeps the full conversation and normal tools.
-5. The fork becomes a read-only supervisor. `pi-supervise` gives it compact worker views and carries its instructions to the worker through `pi-intercom`.
-6. The supervisor compacts again when its context reaches 100k tokens.
-7. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean commit, evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
+5. The fork becomes a read-only supervisor. Worker views and supervisor instructions use a session-scoped mailbox under ignored `.pi/goals-supervision/`.
+6. Ready waits for the supervisor's durable readiness receipt; the worker does not begin before the fork has compacted and started.
+7. The supervisor compacts again when its context reaches 100k tokens.
+8. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean commit, evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
 
 The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly.
 
 ## Install
 
-This branch requires Herdr 0.7.5 or newer and these Pi packages:
+This branch requires Herdr 0.7.5 or newer and one Pi package:
 
 ```bash
 pi install npm:@wassname2/pi-goals
-pi install npm:@wassname2/pi-supervise
-pi install npm:pi-intercom
 ```
 
 For a local checkout:

@@ -19,7 +19,6 @@
     "uat",
     "evidence",
     "supervisor",
-    "pi-intercom",
     "herdr"
   ],
   "peerDependencies": {

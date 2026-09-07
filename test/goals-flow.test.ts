@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "../src/approval.js";
+import { writeWorkerSteer } from "../src/mailbox.js";
 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
@@ -33,6 +33,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 			getSessionId: () => "session-a",
 			getSessionFile: () => join(cwd, "session.jsonl"),
 			getEntries: () => entries,
+			getBranch: () => [],
 		},
 		ui: {
 			theme: { fg: (_kind: string, text: string) => text },
@@ -43,14 +44,8 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 			editor: async () => editorChoices.shift(),
 		},
 	};
-	const events = new EventEmitter();
-	events.on("pi-supervise:worker-state:v1", (reply) => reply({ intercomId: "worker-intercom" }));
-	openSupervisorPane.mockImplementation(async () => {
-		queueMicrotask(() => events.emit("pi-supervise:worker-paired:v1", { supervisorIntercomId: "supervisor-intercom" }));
-		return "pane-2";
-	});
+	openSupervisorPane.mockImplementation(async () => "pane-2");
 	const pi = {
-		events,
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
@@ -60,7 +55,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		sendUserMessage: (content: string) => messages.push({ content }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, entries, events, hooks, messages, notifications, tools };
+	return { commands, ctx, cwd, entries, hooks, messages, notifications, tools };
 }
 
 function writePlan(cwd: string, content: string): string {
@@ -110,8 +105,8 @@ describe("/goals flow", () => {
 				cwd: flow.cwd,
 				sourceSessionFile: join(flow.cwd, "session.jsonl"),
 				workerSessionId: "session-a",
-				workerIntercomId: "worker-intercom",
 				planPath,
+				mailboxPath: expect.stringContaining(".pi/goals-supervision/session-a/"),
 			}));
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
 			expect(flow.messages.at(-1)?.content).toBe("The plan is approved. Begin implementation as the worker.");
@@ -123,35 +118,34 @@ describe("/goals flow", () => {
 		}
 	});
 
-	it("returns to planning when the worker is already paired", async () => {
+	it("starts work only after the supervisor launcher resolves", async () => {
 		const flow = setup(["Ready"]);
 		try {
-			flow.events.removeAllListeners("pi-supervise:worker-state:v1");
-			flow.events.on("pi-supervise:worker-state:v1", (reply) => reply({ intercomId: "worker-intercom", paired: true }));
+			let ready: (() => void) | undefined;
+			openSupervisorPane.mockImplementationOnce(() => new Promise((resolve) => { ready = () => resolve("pane-2"); }));
 			await flow.commands.get("goals").handler("make the file", flow.ctx);
 			approvedPlan(flow.cwd);
-			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(openSupervisorPane).not.toHaveBeenCalled();
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: null });
-			expect(flow.notifications.at(-1)).toContain("already paired");
+			const starting = flow.hooks.get("agent_settled")({}, flow.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
+			ready!();
+			await starting;
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("waits for the worker's real paired acknowledgement before beginning work", async () => {
+	it("delivers a mailbox instruction to the worker", async () => {
 		const flow = setup(["Ready"]);
 		try {
-			openSupervisorPane.mockImplementationOnce(async () => "pane-2");
 			await flow.commands.get("goals").handler("make the file", flow.ctx);
 			approvedPlan(flow.cwd);
-			const ready = flow.hooks.get("agent_settled")({}, flow.ctx);
-			await new Promise((resolve) => setImmediate(resolve));
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
-			expect(flow.messages.some((message) => message.content === "The plan is approved. Begin implementation as the worker.")).toBe(false);
-			flow.events.emit("pi-supervise:worker-paired:v1", { supervisorIntercomId: "supervisor-intercom" });
-			await ready;
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			const mailboxPath = (flow.entries.at(-1)?.data as { mailboxPath: string }).mailboxPath;
+			writeWorkerSteer(mailboxPath, "Run the focused test.");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(flow.messages.some((message) => message.content === "[supervisor] Run the focused test.")).toBe(true);
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}

@@ -3,18 +3,19 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
-import { pairWithPiSupervise } from "./supervise.js";
+import { readyMailbox, workerViewsAfter, writeWorkerSteer } from "./mailbox.js";
 
-const BOOTSTRAPPED = "pi-goals-visible-supervisor-v1";
+const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
 const INITIAL_COMPACT_AT_TOKENS = 20_000;
 const COMPACT_AT_TOKENS = 100_000;
+const WRITER_TOOLS = new Set(["bash", "edit", "write", "multi_edit", "multiedit", "apply_patch", "notebook_edit", "edit_file", "write_file", "quick_edit", "target_edit"]);
 
 interface SupervisorConfig {
 	workerSessionId: string;
-	workerIntercomId: string;
 	ownerSessionId: string;
 	planPath: string;
 	approvalId: string;
+	mailboxPath: string;
 }
 
 function result(text: string, isError = false) {
@@ -30,10 +31,10 @@ function requiredEnv(name: string): string {
 function config(): SupervisorConfig {
 	return {
 		workerSessionId: requiredEnv("PI_GOALS_WORKER_ID"),
-		workerIntercomId: requiredEnv("PI_GOALS_WORKER_INTERCOM_ID"),
 		ownerSessionId: requiredEnv("PI_GOALS_OWNER_SESSION_ID"),
 		planPath: resolve(requiredEnv("PI_GOALS_PLAN_PATH")),
 		approvalId: requiredEnv("PI_GOALS_APPROVAL_ID"),
+		mailboxPath: resolve(requiredEnv("PI_GOALS_MAILBOX_PATH")),
 	};
 }
 
@@ -67,9 +68,9 @@ function latestWorkerView(ctx: ExtensionContext): string | null {
 }
 
 function supervisorPrompt(settings: SupervisorConfig): string {
-	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and pi-supervise worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
+	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
 
-Use pi-supervise to inspect and steer the worker. Give one concrete instruction when work is incomplete. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. When its discriminator is positively satisfied and the worker view says no work is active, call ApproveGoal with that repository-relative path. Then call steer and tell the worker to call CompleteGoal with the exact goal text. Do not call done until every plan goal is [x]. -- PI[gpt-5.6-sol]`;
+Use SteerWorker to give one concrete instruction when work is incomplete. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. When its discriminator is positively satisfied and the worker view says no work is active, call ApproveGoal with that repository-relative path. Then call SteerWorker and tell the worker to call CompleteGoal with the exact goal text. Do not call done until every plan goal is [x]. -- PI[Kimi K3]`;
 }
 
 export function isVisibleSupervisor(): boolean {
@@ -80,6 +81,15 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
 	let bootstrapping = false;
+	let deliveredView = 0;
+	let viewTimer: ReturnType<typeof setInterval> | undefined;
+
+	const deliverWorkerViews = (): void => {
+		for (const view of workerViewsAfter(settings.mailboxPath, deliveredView)) {
+			deliveredView = view.sequence;
+			pi.sendUserMessage(view.text, { deliverAs: "followUp" });
+		}
+	};
 
 	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
 		if (bootstrapping) return;
@@ -87,9 +97,14 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) return;
 		bootstrapping = true;
 		try {
-			await pairWithPiSupervise(pi, settings.workerIntercomId, settings.planPath);
-			pi.appendEntry(BOOTSTRAPPED, { version: 1, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
-			pi.sendUserMessage("Supervision is paired. Inspect the worker and give its next concrete instruction.");
+			const active = pi.getActiveTools();
+			pi.setActiveTools(active.filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
+			const writers = pi.getActiveTools().filter((tool) => WRITER_TOOLS.has(tool.toLowerCase()));
+			if (writers.length) throw new Error(`Could not remove supervisor writing tools: ${writers.join(", ")}`);
+			pi.appendEntry(BOOTSTRAPPED, { version: 2, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
+			readyMailbox(settings.mailboxPath);
+			viewTimer = setInterval(deliverWorkerViews, 1_000);
+			deliverWorkerViews();
 		} catch (error) {
 			ctx.ui.notify(`Supervisor startup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
@@ -119,16 +134,15 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		setImmediate(() => { bootstrapAfterInitialCompaction(ctx); });
 	});
-
-	pi.on("before_agent_start", async (_event, ctx) => {
-		return { systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` };
+	pi.on("session_shutdown", async () => {
+		if (viewTimer) clearInterval(viewTimer);
 	});
-
+	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (compacting || (ctx.getContextUsage()?.tokens ?? 0) < COMPACT_AT_TOKENS) return;
 		compacting = true;
 		ctx.compact({
-			customInstructions: `Keep the user's high-level intent, current plan state, unresolved risks, approval decisions, and the supervisor's own concise findings. Remove old worker views and implementation detail.`,
+			customInstructions: `Keep the user's high-level intent, current plan state, unresolved risks, approval decisions, and the supervisor's own concise findings. Remove old worker views and implementation detail. The canonical plan remains ${settings.planPath}.`,
 			onComplete: () => {
 				compacting = false;
 				ctx.ui.notify("Supervisor context compacted at 100k tokens.", "info");
@@ -138,6 +152,20 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Supervisor compaction failed: ${error.message}`, "error");
 			},
 		});
+	});
+
+	pi.registerTool({
+		name: "SteerWorker",
+		label: "Steer worker",
+		executionMode: "sequential",
+		description: "Write one concrete instruction for the implementation worker.",
+		parameters: Type.Object({ instruction: Type.String({ description: "Concrete next instruction for the worker." }) }),
+		async execute(_id, params) {
+			const instruction = params.instruction.trim();
+			if (!instruction) return result("A worker instruction cannot be empty.", true);
+			const steer = writeWorkerSteer(settings.mailboxPath, instruction);
+			return result(`Worker instruction ${steer.sequence} recorded.`);
+		},
 	});
 
 	pi.registerTool({
@@ -171,20 +199,10 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			if (!verifiedOutput) return result("Cannot approve without a nonempty repository-relative verification-output file.", true);
 			const path = approvalPath(ctx.cwd, settings.ownerSessionId, params.goal);
 			writeApproval(path, {
-				version: 3,
-				verdict: "accept",
-				approvalId: settings.approvalId,
-				goal: params.goal,
-				planPath: settings.planPath,
-				goalBlockHash: hashGoalBlock(block),
-				repoRoot: repository.repoRoot,
-				head: repository.head,
-				tree: repository.tree,
-				cleanWorktree: true,
-				inspected: { plan: true, repository: true, evidence: true, verifyOutput: true },
-				verifyOutputPath: verifiedOutput,
-				supervisor: { sessionId: ctx.sessionManager.getSessionId(), runId: null },
-				timestamp: new Date().toISOString(),
+				version: 3, verdict: "accept", approvalId: settings.approvalId, goal: params.goal, planPath: settings.planPath,
+				goalBlockHash: hashGoalBlock(block), repoRoot: repository.repoRoot, head: repository.head, tree: repository.tree,
+				cleanWorktree: true, inspected: { plan: true, repository: true, evidence: true, verifyOutput: true }, verifyOutputPath: verifiedOutput,
+				supervisor: { sessionId: ctx.sessionManager.getSessionId(), runId: null }, timestamp: new Date().toISOString(),
 			});
 			return result(`Approval recorded for "${params.goal}". Now steer the worker to call CompleteGoal.`);
 		},

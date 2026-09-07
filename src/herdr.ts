@@ -1,17 +1,18 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { supervisorReady } from "./mailbox.js";
 
 const execFileAsync = promisify(execFile);
+const STARTUP_TIMEOUT_MS = 5 * 60_000;
 
 interface LaunchSupervisorInput {
 	cwd: string;
 	sourceSessionFile: string;
 	workerSessionId: string;
-	workerIntercomId: string;
 	planPath: string;
 	approvalId: string;
+	mailboxPath: string;
 	extensionPath: string;
-	superviseExtensionPath: string | null;
 	model: string | null;
 }
 
@@ -49,16 +50,14 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 	const env = [
 		"PI_GOALS_ROLE=supervisor",
 		`PI_GOALS_WORKER_ID=${input.workerSessionId}`,
-		`PI_GOALS_WORKER_INTERCOM_ID=${input.workerIntercomId}`,
 		`PI_GOALS_PLAN_PATH=${input.planPath}`,
 		`PI_GOALS_APPROVAL_ID=${input.approvalId}`,
 		`PI_GOALS_OWNER_SESSION_ID=${input.workerSessionId}`,
+		`PI_GOALS_MAILBOX_PATH=${input.mailboxPath}`,
 	];
 	const args = [
 		"pi",
 		"--no-extensions",
-		"-e", "npm:pi-intercom",
-		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? input.superviseExtensionPath ?? "npm:@wassname2/pi-supervise@0.0.4",
 		"-e", input.extensionPath,
 		"--fork", input.sourceSessionFile,
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,
@@ -67,18 +66,26 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 	return `env ${[...env, ...args].map(shellQuote).join(" ")}`;
 }
 
+export async function waitForSupervisorReady(mailboxPath: string, timeoutMs = STARTUP_TIMEOUT_MS): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!supervisorReady(mailboxPath)) {
+		if (Date.now() >= deadline) throw new Error("The visible supervisor did not become ready.");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+}
+
 export async function openSupervisorPane(input: LaunchSupervisorInput): Promise<string> {
 	if (process.env.HERDR_ENV !== "1") throw new Error("Ready needs a Herdr session so pi-goals can open the supervisor session.");
 	await herdr(["--version"], false);
 	const split = await herdr(["pane", "split", "--current", "--direction", "right", "--cwd", input.cwd, "--no-focus"]);
 	const paneId = findPaneId(split);
 	if (!paneId) throw new Error("Herdr did not return the new supervisor pane ID.");
+	await herdr(["pane", "run", paneId, supervisorCommand(input)]);
 	try {
-		await herdr(["pane", "run", paneId, supervisorCommand(input)]);
+		await waitForSupervisorReady(input.mailboxPath);
 		return paneId;
 	} catch (error) {
-		await closeSupervisorPane(paneId);
-		throw error;
+		throw new Error(`Supervisor startup incomplete in Herdr pane ${paneId}; inspect that pane. ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
