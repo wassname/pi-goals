@@ -5,6 +5,7 @@ const WORKER_STATE_EVENT = "pi-supervise:worker-state:v1";
 const WORKER_PAIRED_EVENT = "pi-supervise:worker-paired:v1";
 const API_READY_EVENT = "pi-supervise:api-ready:v1";
 const TIMEOUT_MS = 15_000;
+export const SUPERVISOR_STARTUP_TIMEOUT_MS = 5 * 60_000;
 
 type Events = { emit(name: string, value: unknown): boolean; on(name: string, handler: (value: any) => void): void };
 
@@ -22,7 +23,7 @@ export function pairWithPiSupervise(pi: ExtensionAPI, workerIntercomId: string, 
 
 export interface WorkerPiSupervise {
 	intercomId: string;
-	waitForPair(): Promise<void>;
+	waitForPair(timeoutMs?: number): Promise<void>;
 }
 
 export function workerPiSupervise(pi: ExtensionAPI, timeoutMs = TIMEOUT_MS): Promise<WorkerPiSupervise> {
@@ -42,7 +43,7 @@ export function workerPiSupervise(pi: ExtensionAPI, timeoutMs = TIMEOUT_MS): Pro
 			resolved = true;
 			resolve({
 				intercomId: state.intercomId,
-				waitForPair: () => paired ? Promise.resolve() : wait((pairResolve) => { resolvePair = pairResolve; }, "The visible supervisor did not pair with this worker.", timeoutMs),
+				waitForPair: (pairTimeoutMs = timeoutMs) => paired ? Promise.resolve() : wait((pairResolve) => { resolvePair = pairResolve; }, "The visible supervisor did not pair with this worker.", pairTimeoutMs),
 			});
 		});
 		events.on(API_READY_EVENT, request);

@@ -23,7 +23,7 @@ import { Type } from "typebox";
 import { approvalMatches, approvalPath, goalBlock, hashGoalBlock, readApproval, repositoryState } from "./approval.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
-import { workerPiSupervise } from "./supervise.js";
+import { SUPERVISOR_STARTUP_TIMEOUT_MS, workerPiSupervise } from "./supervise.js";
 import { isVisibleSupervisor, registerVisibleSupervisor } from "./supervisor-session.js";
 
 const STATE = "pi-goals-state";
@@ -167,7 +167,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				superviseExtensionPath: loadedPiSuperviseExtensionPath(),
 				model: state.supervisorModel,
 			});
-			await worker.waitForPair();
+			await worker.waitForPair(SUPERVISOR_STARTUP_TIMEOUT_MS);
 		} catch (error) {
 			if (paneId) throw new Error(`Supervisor startup failed in Herdr pane ${paneId}; it remains open for inspection. ${error instanceof Error ? error.message : String(error)}`);
 			throw error;
