@@ -11,6 +11,7 @@ interface LaunchSupervisorInput {
 	planPath: string;
 	approvalId: string;
 	extensionPath: string;
+	superviseExtensionPath: string | null;
 	model: string | null;
 }
 
@@ -57,7 +58,7 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 		"pi",
 		"--no-extensions",
 		"-e", "npm:pi-intercom",
-		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? "npm:@wassname2/pi-supervise@0.0.4",
+		"-e", process.env.PI_GOALS_SUPERVISE_EXTENSION ?? input.superviseExtensionPath ?? "npm:@wassname2/pi-supervise@0.0.4",
 		"-e", input.extensionPath,
 		"--fork", input.sourceSessionFile,
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,

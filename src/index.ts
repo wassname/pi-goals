@@ -139,6 +139,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		persist();
 	}
 
+	function loadedPiSuperviseExtensionPath(): string | null {
+		const tool = pi.getAllTools().find((candidate) => candidate.name === "worker_view") as { sourceInfo?: { path?: unknown } } | undefined;
+		return typeof tool?.sourceInfo?.path === "string" ? tool.sourceInfo.path : null;
+	}
+
 	function repositoryRoot(cwd: string): string {
 		return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" }).trim();
 	}
@@ -159,6 +164,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				planPath: planPath(ctx),
 				approvalId: state.approvalId!,
 				extensionPath: fileURLToPath(import.meta.url),
+				superviseExtensionPath: loadedPiSuperviseExtensionPath(),
 				model: state.supervisorModel,
 			});
 			await worker.waitForPair();

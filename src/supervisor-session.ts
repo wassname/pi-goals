@@ -6,6 +6,7 @@ import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPa
 import { pairWithPiSupervise } from "./supervise.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v1";
+const INITIAL_COMPACT_AT_TOKENS = 20_000;
 const COMPACT_AT_TOKENS = 100_000;
 
 interface SupervisorConfig {
@@ -66,7 +67,7 @@ function latestWorkerView(ctx: ExtensionContext): string | null {
 }
 
 function supervisorPrompt(settings: SupervisorConfig): string {
-	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation, the complete plan, and pi-supervise worker views.
+	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and pi-supervise worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
 
 Use pi-supervise to inspect and steer the worker. Give one concrete instruction when work is incomplete. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. When its discriminator is positively satisfied and the worker view says no work is active, call ApproveGoal with that repository-relative path. Then call steer and tell the worker to call CompleteGoal with the exact goal text. Do not call done until every plan goal is [x]. -- PI[gpt-5.6-sol]`;
 }
@@ -94,8 +95,29 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		}
 	};
 
+	const bootstrapAfterInitialCompaction = (ctx: ExtensionContext): void => {
+		const tokens = ctx.getContextUsage()?.tokens;
+		if (typeof tokens === "number" && tokens <= INITIAL_COMPACT_AT_TOKENS) {
+			void bootstrap(ctx);
+			return;
+		}
+		compacting = true;
+		ctx.compact({
+			customInstructions: `Preserve the user's high-level intent, decisions, unresolved risks, and the supervisor's remit. The canonical plan is ${settings.planPath}; it remains available directly and must not be replaced by this summary.`,
+			onComplete: () => {
+				compacting = false;
+				ctx.ui.notify("Supervisor planning context compacted before work started.", "info");
+				void bootstrap(ctx);
+			},
+			onError: (error) => {
+				compacting = false;
+				ctx.ui.notify(`Supervisor startup compaction failed: ${error.message}`, "error");
+			},
+		});
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
-		setImmediate(() => { void bootstrap(ctx); });
+		setImmediate(() => { bootstrapAfterInitialCompaction(ctx); });
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {

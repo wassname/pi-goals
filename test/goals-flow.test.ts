@@ -55,6 +55,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
+		getAllTools: () => [],
 		sendMessage: (message: { content: string; display?: boolean }) => messages.push(message),
 		sendUserMessage: (content: string) => messages.push({ content }),
 	};

@@ -4,12 +4,13 @@ import { completeGoalDescription, planDrafting, planningState, resync } from "..
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
 		expect(planDrafting).toContain("Use read-only repository tools or web search when either can\nresolve a fact.");
-		expect(planDrafting).toContain("ask the human to confirm your interpretation");
-		expect(planDrafting).toContain("approve an editorial or other preference choice");
+		expect(planDrafting).toContain("Ask at least three short, concrete questions");
+		expect(planDrafting).toContain("understand the requested outcome, boundary, and how success will be judged");
+		expect(planDrafting).toContain("record that\npoint as unknown; do not silently replace it with an inference");
 		expect(planDrafting).toContain("answer materially reduces uncertainty\nwhile discovering the right plan");
 		expect(planDrafting).toContain("self-contained: state the relevant\ncontext, use the human's language and ASD-STE100");
 		expect(planDrafting).toContain("placeholder goal such as \"work out the thing\"");
-		expect(planDrafting).toContain("object, observable result, settled scope, and required approval");
+		expect(planDrafting).toContain("material user decisions remain open");
 	});
 
 	it("restores the same rule after compaction", () => {

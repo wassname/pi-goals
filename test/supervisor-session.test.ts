@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath } from "../src/approval.js";
 import { registerVisibleSupervisor } from "../src/supervisor-session.js";
 
-function setup(cwd: string, planPath: string) {
+function setup(cwd: string, planPath: string, tokens: number | null = 10, onCompact: (options: any) => void = (options) => options.onComplete()) {
 	vi.stubEnv("PI_GOALS_WORKER_ID", "worker-session");
 	vi.stubEnv("PI_GOALS_WORKER_INTERCOM_ID", "worker-intercom");
 	vi.stubEnv("PI_GOALS_OWNER_SESSION_ID", "worker-session");
@@ -22,8 +22,8 @@ function setup(cwd: string, planPath: string) {
 	const ctx = {
 		cwd,
 		getSystemPrompt: () => "base",
-		getContextUsage: () => ({ tokens: 10 }),
-		compact: vi.fn((options: any) => options.onComplete()),
+		getContextUsage: () => tokens === null ? undefined : ({ tokens }),
+		compact: vi.fn(onCompact),
 		sessionManager: {
 			getEntries: () => entries,
 			getBranch: () => branch,
@@ -62,6 +62,38 @@ describe("visible supervisor session", () => {
 			expect(runtime.entries.at(-1)).toMatchObject({ customType: "pi-goals-visible-supervisor-v1" });
 			expect(runtime.paired).toEqual([{ workerIntercomId: "worker-intercom", goal: join(cwd, ".pi/plan/worker-v1.md") }]);
 			expect(runtime.messages).toEqual(["Supervision is paired. Inspect the worker and give its next concrete instruction."]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("compacts a large planning fork before pairing", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
+		try {
+			let complete: (() => void) | undefined;
+			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"), 20_001, (options) => { complete = options.onComplete; });
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
+			expect(runtime.paired).toHaveLength(0);
+			complete!();
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(runtime.paired).toHaveLength(1);
+			expect(runtime.messages).toEqual(["Supervision is paired. Inspect the worker and give its next concrete instruction."]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("does not start work when initial compaction fails", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
+		try {
+			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"), null, (options) => options.onError(new Error("offline")));
+			await runtime.hooks.get("session_start")({}, runtime.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
+			expect(runtime.paired).toHaveLength(0);
+			expect(runtime.ctx.ui.notify).toHaveBeenCalledWith("Supervisor startup compaction failed: offline", "error");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

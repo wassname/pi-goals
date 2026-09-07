@@ -13,6 +13,7 @@ function input() {
 		planPath: "/repo/.pi/plan/worker-v1.md",
 		approvalId: "approval-1",
 		extensionPath: "/repo/src/index.ts",
+		superviseExtensionPath: null,
 		model: "provider/supervisor",
 	};
 }
@@ -31,9 +32,11 @@ describe("supervisor pane command", () => {
 		expect(command).not.toContain("pi-subagents");
 	});
 
-	it("uses a local pi-supervise extension only when explicitly requested", () => {
-		vi.stubEnv("PI_GOALS_SUPERVISE_EXTENSION", "/repo/vendor/pi-supervise/src/index.ts");
-		expect(supervisorCommand(input())).toContain("'-e' '/repo/vendor/pi-supervise/src/index.ts'");
+	it("uses the loaded pi-supervise extension before the npm fallback", () => {
+		const loaded = { ...input(), superviseExtensionPath: "/repo/vendor/pi-supervise/src/index.ts" };
+		expect(supervisorCommand(loaded)).toContain("'-e' '/repo/vendor/pi-supervise/src/index.ts'");
+		vi.stubEnv("PI_GOALS_SUPERVISE_EXTENSION", "/repo/override/pi-supervise/src/index.ts");
+		expect(supervisorCommand(loaded)).toContain("'-e' '/repo/override/pi-supervise/src/index.ts'");
 	});
 
 	it("accepts Herdr's text version output and stale pane cleanup", async () => {
