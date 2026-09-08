@@ -1,0 +1,107 @@
++ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR=/home/code/.pi/agent/git/github.com/wassname/pi-goals/slop/reviews/handshake-native npm test -- --reporter=verbose
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run --reporter=verbose
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+ ✓ test/background.test.ts > reports tracked running work, rather than equating idle agent with finished jobs 5ms
+ ✓ test/background.test.ts > distinguishes missing providers from an unavailable installed tracker 47ms
+ ✓ test/package-agent.test.ts > package manifest > includes the extension without registering a packaged subagent 3ms
+ ✓ test/herdr.test.ts > supervisor pane command > forks the planning session with pi-goals owning its Intercom dependency 3ms
+ ✓ test/herdr.test.ts > supervisor pane command > accepts Herdr's text version output and stale pane cleanup 26ms
+ ✓ test/prompts.test.ts > planning prompt > requires fact finding or a focused question before a goal 2ms
+ ✓ test/prompts.test.ts > planning prompt > restores the same rule after compaction 0ms
+ ✓ test/prompts.test.ts > planning prompt > anchors work and sign-off to the user-visible result 0ms
+ ✓ test/worker-view.test.ts > keeps human direction and source location while sending only new messages 3ms
+ ✓ test/worker-view.test.ts > restarts after compaction and does not report historical tool calls as active 1ms
+ ✓ test/worker-view.test.ts > bounds serialized Unicode and quoted logs while marking omissions 2ms
+stdout | test/role-models.test.ts > remembers each role without automatic switching overwriting another role
+Role preferences restored: planning=planner, worker=small-worker, supervisor=astra; restore events did not overwrite the choice.
+
+ ✓ test/role-models.test.ts > remembers each role without automatic switching overwriting another role 14ms
+ ✓ test/role-models.test.ts > fails on an unavailable remembered model without replacing the choice 5ms
+ ✓ test/approval.test.ts > hashes only the current goal, excluding the log, interview, and their historical goal text 5ms
+ ✓ test/intercom-handshake.test.ts > re-handshakes unchanged peers in either direction without hello ping-pong or lost advice 9ms
+ ✓ test/intercom-handshake.test.ts > replays pending advice and views across either role's own readiness transition 1ms
+ ✓ test/intercom-handshake.test.ts > cancels pending waits immediately on detach or reconfiguration 2ms
+ ✓ test/intercom.test.ts > pi-intercom transport > receives exact advice once, acknowledges it and rejects unrelated peers 7ms
+ ✓ test/intercom.test.ts > pi-intercom transport > restores an unacknowledged steer on reconnect and stops replay after acknowledgment 4ms
+ ✓ test/intercom.test.ts > pi-intercom transport > advances the incremental overview only after acknowledgment 1ms
+ ✓ test/intercom.test.ts > pi-intercom transport > cancels a readiness wait on shutdown 1ms
+ ✓ test/intercom.test.ts > does not acknowledge a synchronous handoff failure, and retries the instruction 2ms
+ ✓ test/intercom.test.ts > detaches a completed binding and ignores its late advice without replay errors or false acceptance 1ms
+ ✓ test/tick-goal.test.ts > tickGoal (sign-off ticks the goal; agent only ticks on wording drift) > ticks the exact-matching goal line, case-insensitive, leaving subtasks alone 2ms
+ ✓ test/tick-goal.test.ts > tickGoal (sign-off ticks the goal; agent only ticks on wording drift) > returns null on wording drift (fuzzy matching is the judge's job, not TypeScript's) 0ms
+ ✓ test/tick-goal.test.ts > tickGoal (sign-off ticks the goal; agent only ticks on wording drift) > returns null when the subject matches more than one goal line 0ms
+ ✓ test/tick-goal.test.ts > tickGoal (sign-off ticks the goal; agent only ticks on wording drift) > ignores a historical duplicate below the Log and leaves it unchanged 0ms
+ ✓ test/append-log.test.ts > appendLog (the extension's only plan-file write) > creates ## Log at EOF when absent 4ms
+ ✓ test/append-log.test.ts > appendLog (the extension's only plan-file write) > appends after the last existing log line, before any following header 1ms
+ ✓ test/fold.test.ts > foldPlan (current goals are above ## Log; durable memory is below it) > keeps the title, user voice and goals 2ms
+ ✓ test/fold.test.ts > foldPlan (current goals are above ## Log; durable memory is below it) > drops the log, the learnings and the unlimited appendix 1ms
+ ✓ test/fold.test.ts > foldPlan (current goals are above ## Log; durable memory is below it) > returns the whole plan when there is no ## Log yet (a fresh draft) 0ms
+ ✓ test/fold.test.ts > openSubtasks (the widget shows the next action, so the plan IS the task list) > lists the active goal's open and in-progress subtasks, stopping at the next goal 1ms
+ ✓ test/fold.test.ts > openSubtasks (the widget shows the next action, so the plan IS the task list) > does not leak subtasks from the goal below 1ms
+ ✓ test/fold.test.ts > does not show historical Log subtasks under the last active goal 0ms
+stdout | test/intercom-broker.test.ts > exchanges readiness, views and exact advice over a real isolated pi-intercom broker
+Intercom broker: readiness confirmed; exact worker view and supervisor advice received.
+
+ ✓ test/goals-flow.test.ts > /goals flow > reports actual idle state, invalidates stopped views on start, and stops completed plans 47ms
+ ✓ test/goals-flow.test.ts > /goals flow > preserves drafts, records the interview, and keeps planning read-only 24ms
+ ✓ test/intercom-broker.test.ts > exchanges readiness, views and exact advice over a real isolated pi-intercom broker 236ms
+ ✓ test/goals-flow.test.ts > /goals flow > forks a visible supervisor on Ready and keeps the main session as worker 32ms
+ ✓ test/goals-flow.test.ts > /goals flow > starts work only after the supervisor launcher resolves 29ms
+ ✓ test/goals-flow.test.ts > /goals flow > delivers an Intercom instruction to the worker 26ms
+ ✓ test/goals-flow.test.ts > /goals flow > closes the supervisor on clear but keeps the plan file 20ms
+ ✓ test/goals-flow.test.ts > /goals flow > accepts only an approval for the exact clean commit and goal block 62ms
+ ✓ test/goals-flow.test.ts > process role > keeps subagent children and visible supervisors out of the worker extension 0ms
+ ✓ test/goals-flow.test.ts > restores working linkage even when its remembered model is unavailable, and supports explicit recovery 33ms
+ ✓ test/goals-flow.test.ts > restores planning linkage even when its remembered model is unavailable, and supports explicit recovery 24ms
+ ✓ test/goals-flow.test.ts > shows a missing resumed supervisor, pauses writes, and automatically unpauses when that peer returns 24ms
+ ✓ test/goals-flow.test.ts > times out stale Ready retries in five seconds, without replacing the pane automatically 25ms
+ ✓ test/goals-flow.test.ts > explicitly restarts only the tracked pane, keeps the plan, and invalidates old approval binding 42ms
+ ✓ test/goals-flow.test.ts > does not persist startup results or launch work after session shutdown 36ms
+ ✓ test/goals-flow.test.ts > keeps a failed Ready model not-ready and recovers the same real supervisor binding 31ms
+ ✓ test/goals-flow.test.ts > points a present-but-paused peer recovery at the supervisor pane 17ms
+ ✓ test/goals-flow.test.ts > clear during the initial Ready wait cancels immediately and cannot resurrect the plan 25ms
+ ✓ test/goals-flow.test.ts > clear before the launcher resolves rejects late pane callbacks without restoring the binding 19ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > restores monitoring and read-only tools without replaying persisted views 7ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > renders all advice in real Pi tool rows, including collapsed and restored rows 22ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > asks for judgment and useful recaps without inventing instructions 1ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > writes readiness only after removing writing tools 2ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > compacts a large planning fork before writing readiness 1ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > does not become ready when initial compaction fails 2ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > writes a durable worker instruction 1ms
+ ✓ test/rpc-review.test.ts > RPC review flow > opens Refine's editor before it starts the revision turn 1350ms
+ ✓ test/supervisor-session.test.ts > visible supervisor session > records approval only from a stopped view with evidence and no active work 87ms
+ ✓ test/supervisor-session.test.ts > blocks the general intercom actuator even if enabled after startup 2ms
+ ✓ test/supervisor-session.test.ts > keeps a supervisor unready after model restoration failure, then recovers explicitly without substituting a model 2ms
+ ✓ test/supervisor-session.test.ts > warns once on unavailable usage but stays quiet for Pi's post-compaction null token sample 2ms
+stdout | test/native-intercom.test.ts > runs a forked Pi supervisor and receives its exact instruction in another Pi session
+Native Pi pair: fork retained planning context; SteerWorker delivered exactly: Read the real outputs before declaring completion.
+
+ ✓ test/native-intercom.test.ts > runs a forked Pi supervisor and receives its exact instruction in another Pi session 2530ms
+
+ Test Files  17 passed (17)
+      Tests  67 passed (67)
+   Start at  19:24:07
+   Duration  2.84s (transform 2.36s, setup 0ms, import 6.39s, tests 4.95s, environment 3ms)
+
++ npm run typecheck
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
++ npm run lint
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 32 files in 91ms. No fixes applied.
++ npm run build
+
+> @wassname2/pi-goals@0.2.2 build
+> tsc
+
++ git diff --check

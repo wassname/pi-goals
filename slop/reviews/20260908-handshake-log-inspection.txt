@@ -1,0 +1,8 @@
+slop/reviews/handshake-native/worker-events.jsonl: 22 events; 0 error records; stderr 0 bytes
+worker: ack received cf656aef-1404-4d5c-9a11-4fbd4ed5b5dc
+worker: ack received cf656aef-1404-4d5c-9a11-4fbd4ed5b5dc
+worker: in steer 22068654-6e7c-4328-890f-9382b25c8ea7
+worker: [{"type":"text","text":"[supervisor] Read the real outputs before declaring completion."}]
+slop/reviews/handshake-native/supervisor-events.jsonl: 21 events; 0 error records; stderr 0 bytes
+supervisor: out steer 22068654-6e7c-4328-890f-9382b25c8ea7
+supervisor: ack received 22068654-6e7c-4328-890f-9382b25c8ea7

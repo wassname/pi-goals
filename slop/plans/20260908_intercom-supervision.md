@@ -42,7 +42,10 @@ The earlier asynchronous subagent failure (missing pi-client/unix) prevented the
 - [ ] F3 deeper delivery confirmation: Pi's void adapter can ack before an asynchronous enqueue failure. Future UAT must inject that failure, avoid reporting confirmed model delivery, and keep the instruction recoverable. See the [SDK source-backed limitation](../reviews/20260908-review-fixes.md). Parent approved keeping this protocol expansion out of the current fix commit.
 - [x] Remove F5 general Intercom actuator, reject F6 nested placeholders, and correct F7 goal/log hashing boundary.
 - [x] Add focused regressions and inspect final full test/typecheck/lint/build output. [57-test evidence](../reviews/20260908-review-fixes-validation.txt); [initial child-environment failure and correction](../reviews/20260908-review-fixes-initial-validation.md).
-- [ ] Parent independent post-change review before push. F8/F9 limitations and remaining native/UI/behavioral gaps are explicit in the [finding-by-finding disposition](../reviews/20260908-review-fixes.md).
+- [x] Parent independent post-change review of `1668c94` completed and found P1–P5; [attributed review](../reviews/20260908-independent-post-fix-review.md).
+- [x] Fix P1–P5: explicit hello request/reply, not-ready until worker-model success, peer-specific recovery guidance, one current-plan boundary and cancellation-safe Ready waits. [Disposition and provenance](../reviews/20260908-handshake-fixes.md); [67-test full validation](../reviews/20260908-handshake-validation.txt). Real two-adapter regressions replace reliance on automatic hello replies for handshake acceptance.
+- [x] F8 usage observability: warn once for an unavailable usage result, not for normal post-compaction null tokens. No estimator or changed auto-compaction policy.
+- [ ] Parent independent review of these handshake fixes before push. F3 durable enqueue confirmation stays open; F8 persistent unknown/null usage, F9 trusted-repo guardrails, and native/UI/behavioral gaps remain documented.
 
 Recovery operations were exercised only with isolated mocks/native test processes; existing user panes were not operated. Implementation worker commits locally only; parent owns review and push.
 
