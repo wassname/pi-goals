@@ -11,14 +11,16 @@ User priority: pi-intercom is the session-to-session transport. Keep one pi-goal
   - failure modes: false readiness, duplicate delivery, wrong-session routing, stale callbacks after reload, disconnected peer treated as active.
   - deliverable: isolated two-session message transcript with exact instructions received, reconnect/reload checks, and saved validation output. Do not operate user panes.
   - evidence: [37 passing tests, typecheck and lint](../reviews/20260908-intercom-validation.txt). Two client sessions exchange readiness, view, and exact advice through a real isolated Intercom broker. Lifecycle mocks cover resume/deduplication. This is not yet a full live Pi-pair test. Mailbox source and polling were removed.
-- [ ] goal: supervisor receives a useful bounded worker overview
+- [x] goal: supervisor receives a useful bounded worker overview
   - Borrow latest human direction, source-session path, and incremental progress from `origin/feature/simple-visible-supervision`.
   - failure modes: lost authorization, repeated summaries, truncated evidence treated as complete.
   - deliverable: saved before/after overview fixtures covering compaction and changed human direction.
-- [ ] goal: supervisor distinguishes agent idleness from tracked background work
+  - evidence: [generated fixture views](../reviews/20260908-worker-overview-example.txt) retain the human direction while omitting acknowledged old detail. [43-test validation](../reviews/20260908-worker-overview-validation.txt) also checks compaction reset and serialized Unicode limits; fixture content is synthetic, not a model performance claim.
+- [x] goal: supervisor distinguishes agent idleness from tracked background work
   - Borrow existing process/subagent tracker queries; report unavailable trackers as unknown.
   - failure modes: approving while a tracked job runs, treating a local queue as a dependency of remote work.
   - deliverable: idle/running/unknown status cases and a blocker-diagnosis scenario.
+  - evidence: the same validation log checks active and unavailable tracker reports and rejection of approval with unknown background state. Actual independent diagnosis of the queue mistake remains a behavioral acceptance task.
 - [ ] goal: role model choices persist
   - Borrow planning/worker/supervisor model preference behavior without changing active user settings.
   - failure modes: automatic model changes overwrite user choices; a missing model silently substitutes another.

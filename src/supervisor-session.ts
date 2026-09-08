@@ -192,6 +192,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			const newest = intercom.latestView;
 			if (!intercom.connected || !newest || view !== newest.text) return result("Cannot approve without inspecting the latest worker view.", true);
 			if (!view?.startsWith("The worker stopped.")) return result("Cannot approve without a current stopped-worker view.", true);
+			if (!newest.backgroundQuiet) return result("Cannot approve while tracked background work is active or unknown.", true);
 			const pendingTool = view.match(/^tool calls with no result: (?!none$)(.+)$/m);
 			const pendingChild = view.match(/^child pi processes still running: (?!none$)(.+)$/m);
 			if (pendingTool || pendingChild) return result(`Cannot approve while work is active: ${(pendingTool ?? pendingChild)![1]}`, true);

@@ -49,8 +49,8 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 		activeTools: () => activeTools, branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, transport, messages, tools,
 		ready: () => transport.sent.some(message => message.kind === "hello" && message.role === "supervisor" && message.ready),
 		start: async () => { await hooks.get("session_start")({}, ctx); await new Promise(resolve => setImmediate(resolve)); },
-		view: (id: string, text: string, reason = "settled") => {
-			transport.receive({ binding: "approval-1", role: "worker", kind: "view", id, text, reason });
+		view: (id: string, text: string, reason = "settled", backgroundQuiet = true) => {
+			transport.receive({ binding: "approval-1", role: "worker", kind: "view", id, text, reason, backgroundQuiet });
 			return { text };
 		},
 	};
@@ -216,6 +216,11 @@ describe("visible supervisor session", () => {
 			const stale = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
 			expect(stale.isError).toBe(true);
 			expect(stale.content[0].text).toContain("latest worker view");
+			const unknown = runtime.view("third", "The worker stopped.\ntracked background work: unknown", "settled", false);
+			runtime.branch([{ type: "message", message: { role: "user", content: [{ type: "text", text: unknown.text }] } }]);
+			const blocked = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
+			expect(blocked.isError).toBe(true);
+			expect(blocked.content[0].text).toContain("background work is active or unknown");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
 });

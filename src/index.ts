@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { approvalMatches, approvalPath, goalBlock, hashGoalBlock, readApproval, repositoryState } from "./approval.js";
+import { backgroundState } from "./background.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
 import { GoalIntercom } from "./intercom.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
@@ -97,6 +98,7 @@ interface PlanState {
 	supervisorPaneId: string | null;
 	approvalId: string | null;
 	planVersion: number | null;
+	latestDirection: string;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
@@ -116,6 +118,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		supervisorPaneId: null,
 		approvalId: null,
 		planVersion: null,
+		latestDirection: "",
 	};
 	let planningContextPending = false;
 	let resyncReason: string | null = "New session.";
@@ -185,11 +188,22 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	let workerTurns = 0;
+	let viewGeneration = 0;
 	let viewTimer: ReturnType<typeof setInterval> | undefined;
 
-	function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started"): void {
-		if (state.phase !== "working") return;
-		intercom.view(workerView(ctx.sessionManager.getBranch(), reason, reason !== "started" && ctx.isIdle()), reason);
+	async function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started"): Promise<void> {
+		if (state.phase !== "working" || intercom.ended) return;
+		const generation = ++viewGeneration;
+		const binding = state.approvalId;
+		const background = reason === "started" ? { quiet: false, description: "agent starting; background state not queried" } : await backgroundState(pi);
+		if (intercom.ended || generation !== viewGeneration || binding !== state.approvalId || state.phase !== "working") return;
+		const entries = ctx.sessionManager.getBranch();
+		const view = workerView(entries, reason, reason !== "started" && ctx.isIdle(), {
+			sourceSession: ctx.sessionManager.getSessionFile()!, latestDirection: state.latestDirection,
+			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "not selected",
+			since: intercom.acknowledgedEntry, background: background.description,
+		});
+		intercom.view(view, reason, entries.at(-1)?.id, background.quiet);
 		const goals = scanGoals(readPlan(ctx));
 		if (goals.length > 0 && goals.every((goal) => goal.status === "done" || goal.status === "cancelled")) {
 			stopWorkerTimers();
@@ -199,7 +213,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function startWorkerTimers(ctx: ExtensionContext): void {
-		if (!viewTimer) viewTimer = setInterval(() => publishWorkerView(ctx, "interval"), 60 * 60_000);
+		if (!viewTimer) viewTimer = setInterval(() => {
+			void publishWorkerView(ctx, "interval").catch(error => { if (!intercom.ended) ctx.ui.notify(`Worker view failed: ${String(error)}`, "error"); });
+		}, 60 * 60_000);
 	}
 
 	function stopWorkerTimers(): void {
@@ -290,7 +306,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Could not close the visible supervisor; no new plan was started.", "warning");
 				return;
 			}
-			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx) };
+			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx), latestDirection: arg };
 			planningContextPending = true;
 			resyncReason = null;
 			writePlan(ctx, "");
@@ -344,11 +360,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
-		if (state.phase === "planning" && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
+		if (event.source === "extension") return;
+		state = { ...state, latestDirection: event.text };
+		persist();
+		if (state.phase === "planning") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
-		publishWorkerView(ctx, "started");
+		await publishWorkerView(ctx, "started");
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
@@ -357,7 +376,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		workerTurns++;
 		if (workerTurns < 50) return;
 		workerTurns = 0;
-		publishWorkerView(ctx, "turns");
+		await publishWorkerView(ctx, "turns");
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -383,7 +402,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (state.phase === "working") {
-			publishWorkerView(ctx, "settled");
+			await publishWorkerView(ctx, "settled");
 			return;
 		}
 		if (state.phase !== "planning" || !ctx.hasUI) return;
@@ -402,6 +421,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (choice === "Refine") {
 				const notes = await ctx.ui.editor("What should change about the plan?", "");
 				if (!notes?.trim()) continue;
+				state = { ...state, latestDirection: notes };
+				persist();
 				writePlan(ctx, appendInterview(plan, notes));
 				planningContextPending = true;
 				pi.sendUserMessage(`Revise the plan at ${planPath(ctx)} using these human notes:\n\n${notes}\n\nKeep the same goal structure.`, { deliverAs: "followUp" });
@@ -427,7 +448,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				resyncReason = "The plan was approved.";
 				persist();
 				startWorkerTimers(ctx);
-				publishWorkerView(ctx, "ready");
+				await publishWorkerView(ctx, "ready");
 				updateWidget(ctx);
 				ctx.ui.notify(`Visible supervisor opened in Herdr pane ${state.supervisorPaneId}.`, "info");
 				pi.sendUserMessage("The plan is approved. Begin implementation as the worker.");
@@ -452,6 +473,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			supervisorPaneId: last?.data?.supervisorPaneId ?? null,
 			approvalId: last?.data?.approvalId ?? null,
 			planVersion: last?.data?.planVersion ?? null,
+			latestDirection: last?.data?.latestDirection ?? "",
 		};
 		planningContextPending = state.phase === "planning";
 		resyncReason = state.phase === "working" ? "New session." : null;
@@ -476,6 +498,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (state.phase !== "working") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
 			if (!state.approvalId) return result("Goal sign-off blocked: no current supervisor review.", true);
+			const background = await backgroundState(pi);
+			if (intercom.ended || !background.quiet) return result(`Goal sign-off blocked: ${background.description}`, true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
 			const block = goalBlock(plan, params.goal);

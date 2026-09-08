@@ -3,8 +3,8 @@ import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendi
 import type { IntercomExtensionChannel, IntercomExtensionEvent } from "pi-intercom/extension-api.ts";
 
 export type Role = "worker" | "supervisor";
-export interface View { id: string; text: string; reason: string }
-interface Message { binding: string; role: Role; kind: "hello" | "view" | "steer" | "received"; id: string; text?: string; reason?: string; ready?: boolean }
+export interface View { id: string; text: string; reason: string; through?: string; backgroundQuiet: boolean }
+interface Message { binding: string; role: Role; kind: "hello" | "view" | "steer" | "received"; id: string; text?: string; reason?: string; ready?: boolean; through?: string; backgroundQuiet?: boolean }
 const STATE = "pi-goals-intercom";
 
 export class GoalIntercom {
@@ -21,6 +21,7 @@ export class GoalIntercom {
 	private received = new Set<string>();
 	private waiters = new Set<() => void>();
 	latestView?: View;
+	acknowledgedEntry?: string;
 	onView: (view: View) => void = () => {};
 	onSteer: (text: string) => void = () => {};
 
@@ -48,15 +49,19 @@ export class GoalIntercom {
 		this.pending.clear();
 		this.received.clear();
 		this.latestView = undefined;
+		this.acknowledgedEntry = undefined;
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (entry.type !== "custom" || entry.customType !== STATE) continue;
 			const record = entry.data as { direction: string; message: Message };
 			const message = record.message;
 			if (message.binding !== binding) continue;
 			if (record.direction === "out" && message.kind === "steer") this.pending.set(message.id, message);
-			if (record.direction === "ack") this.pending.delete(message.id);
+			if (record.direction === "ack") {
+				this.pending.delete(message.id);
+				if (message.through) this.acknowledgedEntry = message.through;
+			}
 			if (record.direction === "in") this.received.add(message.id);
-			if (message.kind === "view") this.latestView = { id: message.id, text: message.text!, reason: message.reason! };
+			if (message.kind === "view") this.latestView = { id: message.id, text: message.text!, reason: message.reason!, through: message.through, backgroundQuiet: message.backgroundQuiet === true };
 		}
 		this.hello();
 	}
@@ -80,11 +85,11 @@ export class GoalIntercom {
 		});
 	}
 
-	view(text: string, reason: string): View {
+	view(text: string, reason: string, through?: string, backgroundQuiet = false): View {
 		const id = randomUUID();
-		const message: Message = { binding: this.binding, role: this.role, kind: "view", id, text: `${text}\n\nworker view id: ${id}`, reason };
+		const message: Message = { binding: this.binding, role: this.role, kind: "view", id, text: `${text}\n\nworker view id: ${id}`, reason, through, backgroundQuiet };
 		this.record("out", message);
-		this.latestView = { id, text: message.text!, reason };
+		this.latestView = { id, text: message.text!, reason, through, backgroundQuiet };
 		if (this.connected) this.publish(message);
 		return this.latestView;
 	}
@@ -143,14 +148,23 @@ export class GoalIntercom {
 			return;
 		}
 		if (event.fromSessionId !== this.peer || !this.ready) return;
-		if (message.kind === "received") { this.pending.delete(message.id); this.record("ack", message); return; }
+		if (message.kind === "received") {
+			this.pending.delete(message.id);
+			const through = message.id === this.latestView?.id ? this.latestView.through : undefined;
+			if (through) this.acknowledgedEntry = through;
+			this.record("ack", { ...message, through });
+			return;
+		}
 		if (this.received.has(message.id)) {
-			if (message.kind === "steer") this.publish({ ...message, role: this.role, kind: "received" });
+			if (message.kind === "steer" || (message.kind === "view" && message.reason !== "started")) this.publish({ binding: this.binding, role: this.role, kind: "received", id: message.id });
 			return;
 		}
 		if (message.kind === "view" && this.role === "supervisor") {
-			this.latestView = { id: message.id, text: message.text!, reason: message.reason! };
-			if (message.reason !== "started") this.onView(this.latestView);
+			this.latestView = { id: message.id, text: message.text!, reason: message.reason!, through: message.through, backgroundQuiet: message.backgroundQuiet === true };
+			if (message.reason !== "started") {
+				this.onView(this.latestView);
+				this.publish({ binding: this.binding, role: this.role, kind: "received", id: message.id });
+			}
 		} else if (message.kind === "steer" && this.role === "worker") {
 			this.onSteer(message.text!);
 			this.received.add(message.id);

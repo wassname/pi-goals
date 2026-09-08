@@ -1,0 +1,27 @@
+INITIAL VIEW
+The worker stopped.
+
+review trigger: settled
+source session: /isolated/worker.jsonl
+worker model: test/worker
+latest human direction:
+Modal does not use our GPU.
+tool calls with no result: none
+tracked background work: processes: 0; subagents: 0; unregistered work is not tracked
+
+new worker transcript (initial or reset view):
+I am waiting for the local queue.
+
+AFTER ACKNOWLEDGMENT
+The worker stopped.
+
+review trigger: settled
+source session: /isolated/worker.jsonl
+worker model: test/worker
+latest human direction:
+Modal does not use our GPU.
+tool calls with no result: none
+tracked background work: processes: 0; subagents: 0; unregistered work is not tracked
+
+new worker transcript since the last acknowledged view:
+The command launches a Modal remote GPU; local default stays paused.

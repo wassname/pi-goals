@@ -52,6 +52,17 @@ describe("pi-intercom transport", () => {
 		expect(resumed.fixture.sent.filter(message => message.kind === "steer")).toHaveLength(1);
 	});
 
+	it("advances the incremental overview only after acknowledgment", async () => {
+		const runtime = setup("worker");
+		await runtime.link.waitReady();
+		const view = runtime.link.view("The worker stopped.", "settled", "entry-1", true);
+		expect(runtime.link.acknowledgedEntry).toBeUndefined();
+		runtime.fixture.receive({ binding: "binding", role: "supervisor", kind: "received", id: view.id });
+		expect(runtime.link.acknowledgedEntry).toBe("entry-1");
+		const resumed = setup("worker", [...runtime.entries]);
+		expect(resumed.link.acknowledgedEntry).toBe("entry-1");
+	});
+
 	it("cancels a readiness wait on shutdown", async () => {
 		const runtime = setup("worker");
 		await runtime.link.waitReady();
