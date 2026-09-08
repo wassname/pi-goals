@@ -1,0 +1,17 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run --run test/native-intercom.test.ts --reporter=verbose
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+stdout | test/native-intercom.test.ts > runs a forked Pi supervisor and receives its exact instruction in another Pi session
+Native Pi pair: fork retained planning context; SteerWorker delivered exactly: Read the real outputs before declaring completion.
+
+ ✓ test/native-intercom.test.ts > runs a forked Pi supervisor and receives its exact instruction in another Pi session 2264ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  16:52:40
+   Duration  2.43s (transform 26ms, setup 0ms, import 56ms, tests 2.27s, environment 0ms)
+
