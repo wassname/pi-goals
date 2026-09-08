@@ -1,0 +1,4 @@
+fresh: deliveredViews=1, activeTools=read, readyReceipt=true
+steer: renderCall=undefined, result=Worker instruction 1 recorded.
+resumed: deliveredViews=0, activeTools=read,write,bash, readyReceipt=true
+interval view without any work: The worker is still working.
