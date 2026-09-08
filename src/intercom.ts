@@ -24,6 +24,7 @@ export class GoalIntercom {
 	acknowledgedEntry?: string;
 	onView: (view: View) => void = () => {};
 	onSteer: (text: string) => void = () => {};
+	onConnectionChange: (ctx: ExtensionContext) => void = () => {};
 
 	constructor(private pi: ExtensionAPI) {
 		pi.events.on("intercom:extension-registry-ready", () => this.register());
@@ -39,11 +40,11 @@ export class GoalIntercom {
 		});
 	}
 
-	configure(binding: string, role: Role, ctx: ExtensionContext): void {
+	configure(binding: string, role: Role, ctx: ExtensionContext, ready = role === "worker"): void {
 		this.binding = binding;
 		this.role = role;
 		this.ctx = ctx;
-		this.ready = role === "worker";
+		this.ready = ready;
 		this.peer = undefined;
 		this.peerReady = false;
 		this.pending.clear();
@@ -66,9 +67,22 @@ export class GoalIntercom {
 		this.hello();
 	}
 
+	// End this plan's binding without disposing the session's transport.
+	detach(): void {
+		this.ready = false;
+		this.hello();
+		this.binding = "";
+		this.peer = undefined;
+		this.peerReady = false;
+		this.latestView = undefined;
+		this.pending.clear();
+		if (this.ctx) this.onConnectionChange(this.ctx);
+	}
+
 	markReady(): void { if (!this.stopped) { this.ready = true; this.hello(); } }
 	get ended(): boolean { return this.stopped; }
-	get connected(): boolean { return Boolean(this.channel?.snapshot().connected && this.peerReady); }
+	get bound(): boolean { return !this.stopped && Boolean(this.binding); }
+	get connected(): boolean { return Boolean(!this.stopped && this.ready && this.binding && this.channel?.snapshot().connected && this.peerReady); }
 
 	async waitReady(timeoutMs = 300_000): Promise<void> {
 		if (this.connected) return;
@@ -86,6 +100,7 @@ export class GoalIntercom {
 	}
 
 	view(text: string, reason: string, through?: string, backgroundQuiet = false): View {
+		if (!this.bound) throw new Error("No active supervision binding for a worker view.");
 		const id = randomUUID();
 		const message: Message = { binding: this.binding, role: this.role, kind: "view", id, text: `${text}\n\nworker view id: ${id}`, reason, through, backgroundQuiet };
 		this.record("out", message);
@@ -121,11 +136,13 @@ export class GoalIntercom {
 				this.peer = undefined; this.peerReady = false;
 			}
 			else this.hello();
+			if (this.ctx) this.onConnectionChange(this.ctx);
 			return;
 		}
 		if (event.type === "session_left" && event.sessionId === this.peer) {
 			this.peer = undefined; this.peerReady = false;
 			this.ctx?.ui.notify("Goal supervision peer disconnected; reconnect the existing session.", "warning");
+			if (this.ctx) this.onConnectionChange(this.ctx);
 			return;
 		}
 		if (event.type === "session_joined") { this.hello(); return; }
@@ -139,11 +156,12 @@ export class GoalIntercom {
 			this.peerReady = Boolean(message.ready);
 			if (changed) {
 				this.hello();
-				if (this.peerReady) {
+				if (this.peerReady && this.ready) {
 					if (this.role === "worker" && this.latestView) this.publish({ binding: this.binding, role: this.role, kind: "view", ...this.latestView });
 					for (const pending of this.pending.values()) this.publish(pending);
 				}
 			}
+			if (changed && this.ctx) this.onConnectionChange(this.ctx);
 			for (const wake of this.waiters) wake();
 			return;
 		}
@@ -166,6 +184,8 @@ export class GoalIntercom {
 				this.publish({ binding: this.binding, role: this.role, kind: "received", id: message.id });
 			}
 		} else if (message.kind === "steer" && this.role === "worker") {
+			// Pi's void message API provides synchronous handoff, not a durable queue receipt.
+			// Ack only after that handoff; asynchronous enqueue errors are not observable here.
 			this.onSteer(message.text!);
 			this.received.add(message.id);
 			this.record("in", message);

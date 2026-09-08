@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -19,12 +19,14 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 	vi.stubEnv("PI_GOALS_APPROVAL_ID", "approval-1");
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
+	const commands = new Map<string, any>();
 	const entries: any[] = [];
 	const messages: string[] = [];
 	let branch: any[] = [];
-	let activeTools = ["read", "grep", "bash", "write", "edit"];
+	let activeTools = ["read", "grep", "bash", "write", "edit", "intercom"];
 	const ctx = {
 		cwd,
+		isIdle: () => true,
 		getSystemPrompt: () => "base",
 		model: { provider: "test", id: "supervisor" },
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
@@ -40,6 +42,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 			hooks.set(name, async (...args: any[]) => { await prior?.(...args); return handler(...args); });
 		},
 		registerTool: (tool: any) => tools.set(tool.name, tool),
+		registerCommand: (name: string, command: any) => commands.set(name, command),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
 		sendUserMessage: (message: string) => messages.push(message),
 		getActiveTools: () => activeTools,
@@ -49,7 +52,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 	registerVisibleSupervisor(pi as unknown as ExtensionAPI);
 	shutdowns.push(() => hooks.get("session_shutdown")());
 	return {
-		activeTools: () => activeTools, branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, transport, messages, tools,
+		commands, pi, activeTools: () => activeTools, branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, transport, messages, tools,
 		ready: () => transport.sent.some(message => message.kind === "hello" && message.role === "supervisor" && message.ready),
 		start: async () => { await hooks.get("session_start")({}, ctx); await new Promise(resolve => setImmediate(resolve)); },
 		view: (id: string, text: string, reason = "settled", backgroundQuiet = true) => {
@@ -212,6 +215,15 @@ describe("visible supervisor session", () => {
 			await runtime.start();
 			const view = runtime.view("first", "The worker stopped.\n\ntool calls with no result: none");
 			runtime.branch([{ type: "message", message: { role: "user", content: [{ type: "text", text: view.text }] } }]);
+			const originalPlan = readFileSync(planPath, "utf8");
+			for (const evidence of ["  - evidence: (empty until sign-off)", "  - evidence:\n    - (empty until sign-off)"]) {
+				writeFileSync(planPath, originalPlan.replace("  - evidence:\n    - `result.txt`: contains ok", evidence));
+				const rejected = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
+				expect(rejected.isError).toBe(true);
+				expect(rejected.content[0].text).toContain("nonblank evidence");
+				expect(existsSync(approvalPath(cwd, "worker-session", "make the file"))).toBe(false);
+			}
+			writeFileSync(planPath, originalPlan);
 			const approved = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
 			expect(approved.isError).toBe(false);
 			expect(existsSync(approvalPath(cwd, "worker-session", "make the file"))).toBe(true);
@@ -226,4 +238,36 @@ describe("visible supervisor session", () => {
 			expect(blocked.content[0].text).toContain("background work is active or unknown");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
+});
+
+it("blocks the general intercom actuator even if enabled after startup", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "goals-supervisor-actuators-"));
+	try {
+		const runtime = setup(cwd, join(cwd, "plan.md"));
+		await runtime.start();
+		expect(runtime.activeTools()).not.toContain("intercom");
+		runtime.pi.setActiveTools(["intercom", "SteerWorker", "read"]);
+		expect((await runtime.hooks.get("tool_call")({ toolName: "intercom" }, runtime.ctx)).block).toBe(true);
+		expect(await runtime.hooks.get("tool_call")({ toolName: "SteerWorker" }, runtime.ctx)).toBeUndefined();
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+it("keeps a supervisor unready after model restoration failure, then recovers explicitly without substituting a model", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "goals-supervisor-model-recovery-"));
+	try {
+		const runtime = setup(cwd, join(cwd, "plan.md"));
+		mkdirSync(join(cwd, ".pi/pi-goals/models"), { recursive: true });
+		writeFileSync(join(cwd, ".pi/pi-goals/models/supervisor.json"), JSON.stringify({ provider: "gone", id: "expired" }));
+		runtime.ctx.modelRegistry.find = vi.fn().mockReturnValue(undefined);
+		await runtime.start();
+		expect(runtime.ready()).toBe(false);
+		expect(runtime.pi.setModel).not.toHaveBeenCalled();
+		expect((await runtime.tools.get("SteerWorker").execute("id", { instruction: "Do not deliver." })).isError).toBe(true);
+		runtime.ctx.modelRegistry.find = (provider, id) => ({ provider, id });
+		await runtime.hooks.get("model_select")({ source: "set", model: { provider: "test", id: "chosen" } }, runtime.ctx);
+		await runtime.commands.get("goals").handler("reconnect", runtime.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(runtime.pi.setModel).toHaveBeenLastCalledWith({ provider: "test", id: "chosen" });
+		expect(runtime.ready()).toBe(true);
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });

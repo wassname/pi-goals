@@ -42,7 +42,7 @@ export function repositoryState(cwd: string): { repoRoot: string; head: string; 
 }
 
 export function goalBlock(plan: string, goal: string): string | null {
-	const lines = plan.split("\n");
+	const lines = plan.split(/^##\s+Log\s*$/im, 1)[0].split("\n");
 	const wanted = goal.trim().toLowerCase();
 	const hits = lines.flatMap((line, index) => {
 		const match = GOAL_LINE.exec(line);
@@ -52,12 +52,12 @@ export function goalBlock(plan: string, goal: string): string | null {
 	const start = hits[0];
 	let end = lines.length;
 	for (let index = start + 1; index < lines.length; index++) {
-		if (GOAL_LINE.test(lines[index])) {
+		if (GOAL_LINE.test(lines[index]) || /^#{1,2}\s/.test(lines[index])) {
 			end = index;
 			break;
 		}
 	}
-	return lines.slice(start, end).join("\n");
+	return lines.slice(start, end).join("\n").trimEnd();
 }
 
 export function hashGoalBlock(block: string): string {

@@ -23,6 +23,7 @@ export class RoleModels {
 	leave(): void { this.role = undefined; }
 
 	async enter(role: ModelRole, ctx: ExtensionContext, useCurrent = false): Promise<void> {
+		if (this.stopped) throw new Error("Role model session ended.");
 		this.role = role;
 		this.ctx = ctx;
 		let choice: Choice | undefined;

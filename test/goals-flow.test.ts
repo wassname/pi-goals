@@ -9,6 +9,7 @@ import { intercomFixture } from "./intercom-fixture.js";
 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
+const shutdowns: Array<() => Promise<void>> = [];
 vi.mock("../src/herdr.js", () => ({ openSupervisorPane, closeSupervisorPane }));
 const { default: piGoalsExtension, isMainSession } = await import("../src/index.js");
 
@@ -64,7 +65,8 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		sendUserMessage: (content: string) => messages.push({ content }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, entries, hooks, messages, notifications, tools, transport };
+	shutdowns.push(() => hooks.get("session_shutdown")());
+	return { pi, commands, ctx, cwd, entries, hooks, messages, notifications, tools, transport };
 }
 
 function writePlan(cwd: string, content: string): string {
@@ -78,7 +80,9 @@ function approvedPlan(cwd: string): string {
 	return writePlan(cwd, "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n  - discriminator: output exists\n  - evidence:\n    - `result.txt`: contains ok\n\n## Log\n");
 }
 
-afterEach(() => {
+afterEach(async () => {
+	for (const shutdown of shutdowns.splice(0)) await shutdown();
+	vi.useRealTimers();
 	openSupervisorPane.mockClear();
 	closeSupervisorPane.mockClear();
 });
@@ -104,6 +108,13 @@ describe("/goals flow", () => {
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			const count = views().length;
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null });
+			const binding = (flow.entries.at(-1)?.data as any).approvalId;
+			const messageCount = flow.messages.length;
+			flow.transport.receive({ binding, role: "supervisor", kind: "steer", id: "late-completed", text: "Obsolete instruction." });
+			await flow.commands.get("goals").handler("restart", flow.ctx);
+			await flow.commands.get("goals").handler("reconnect", flow.ctx);
+			expect(flow.messages).toHaveLength(messageCount);
+			expect(openSupervisorPane).toHaveBeenCalledTimes(1);
 			await vi.advanceTimersByTimeAsync(60 * 60_000);
 			expect(views()).toHaveLength(count);
 		} finally {
@@ -193,7 +204,14 @@ describe("/goals flow", () => {
 			await flow.commands.get("goals").handler("make the file", flow.ctx);
 			const planPath = approvedPlan(flow.cwd);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			const binding = (flow.entries.at(-1)?.data as any).approvalId;
 			await flow.commands.get("goals").handler("clear", flow.ctx);
+			const messageCount = flow.messages.length;
+			flow.transport.receive({ binding, role: "supervisor", kind: "steer", id: "late-cleared", text: "Obsolete instruction." });
+			await flow.commands.get("goals").handler("restart", flow.ctx);
+			await flow.commands.get("goals").handler("reconnect", flow.ctx);
+			expect(flow.messages).toHaveLength(messageCount);
+			expect(openSupervisorPane).toHaveBeenCalledTimes(1);
 			expect(closeSupervisorPane).toHaveBeenCalledWith("pane-2");
 			expect(readFileSync(planPath, "utf8")).toContain("make the file");
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, supervisorPaneId: null, planVersion: null });
@@ -221,6 +239,7 @@ describe("/goals flow", () => {
 				verifyOutputPath: "verify.txt",
 				supervisor: { sessionId: "supervisor", runId: null }, timestamp: new Date().toISOString(),
 			});
+			writeFileSync(planPath, `${plan}- Appended manual log after approval.\n`);
 			const signed = await flow.tools.get("CompleteGoal").execute("id", { goal }, undefined, undefined, flow.ctx);
 			expect(signed.isError).toBe(false);
 			expect(readFileSync(planPath, "utf8")).toContain("1. [x] goal: make the file");
@@ -235,4 +254,123 @@ describe("process role", () => {
 		expect(isMainSession(false)).toBe(true);
 		expect(isMainSession(true)).toBe(false);
 	});
+});
+
+function restoredPlan(flow: ReturnType<typeof setup>, phase: "working" | "planning" = "working") {
+	const path = approvedPlan(flow.cwd);
+	flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase, approvalId: "restored-binding", supervisorPaneId: "owned-pane", planVersion: 1 } });
+	return path;
+}
+
+it.each(["working", "planning"] as const)("restores %s linkage even when its remembered model is unavailable, and supports explicit recovery", async phase => {
+	const flow = setup([]);
+	try {
+		const path = restoredPlan(flow, phase);
+		const plan = readFileSync(path, "utf8");
+		const role = phase === "working" ? "worker" : "planning";
+		mkdirSync(join(flow.cwd, ".pi/pi-goals/models"), { recursive: true });
+		const modelPath = join(flow.cwd, `.pi/pi-goals/models/${role}.json`);
+		writeFileSync(modelPath, JSON.stringify({ provider: "gone", id: "expired" }));
+		flow.ctx.modelRegistry.find = vi.fn().mockReturnValue(undefined);
+		await expect(flow.hooks.get("session_start")({}, flow.ctx)).resolves.toBeUndefined();
+		expect(flow.pi.setModel).not.toHaveBeenCalled();
+		expect(readFileSync(modelPath, "utf8")).toContain("expired");
+		expect(flow.transport.sent.filter(message => message.kind === "hello" && message.ready)).toHaveLength(0);
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "goals paused");
+		if (phase === "working") expect(flow.transport.sent).toContainEqual(expect.objectContaining({ kind: "hello", binding: "restored-binding" }));
+		expect((await flow.hooks.get("tool_call")({ toolName: "edit", input: { path: "code.ts" } }, flow.ctx)).block).toBe(true);
+		expect(await flow.hooks.get("tool_call")({ toolName: "read", input: { path: "code.ts" } }, flow.ctx)).toBeUndefined();
+		expect(await flow.hooks.get("input")({ source: "interactive", text: "Why are we paused?" }, flow.ctx)).toBeUndefined();
+		const signoff = await flow.tools.get("CompleteGoal").execute("id", { goal: "make the file" }, undefined, undefined, flow.ctx);
+		expect(signoff.isError).toBe(true);
+		flow.ctx.modelRegistry.find = (provider, id) => ({ provider, id });
+		await flow.hooks.get("model_select")({ source: "set", model: { provider: "test", id: "chosen" } }, flow.ctx);
+		await flow.commands.get("goals").handler("reconnect", flow.ctx);
+		expect(flow.pi.setModel).toHaveBeenLastCalledWith({ provider: "test", id: "chosen" });
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase, approvalId: "restored-binding", planVersion: 1 });
+		const injection = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+		if (phase === "planning") expect(injection.message.content).toContain(path);
+		else expect(injection.systemPrompt).toContain("implementation worker");
+		// Human diagnostic input is retained in the planning interview, never discarded by recovery.
+		expect(readFileSync(path, "utf8")).toContain(plan.trim());
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("shows a missing resumed supervisor, pauses writes, and automatically unpauses when that peer returns", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		flow.transport.replyToHello(false);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "goals paused");
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(flow.notifications.some(text => text.includes("/goals restart"))).toBe(true);
+		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).terminate).toBe(true);
+		expect(await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status" } }, flow.ctx)).toBeUndefined();
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: true });
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised"));
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).toBeUndefined();
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("times out stale Ready retries in five seconds, without replacing the pane automatically", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	const flow = setup(["Ready", "Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		flow.transport.replyToHello(false);
+		openSupervisorPane.mockImplementationOnce(async (_input: any, opened: any) => { opened("failed-pane"); throw new Error("pane run failed"); });
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(flow.notifications.at(-1)).toContain("failed-pane");
+		const retry = flow.hooks.get("agent_settled")({}, flow.ctx);
+		await vi.advanceTimersByTimeAsync(5000);
+		await retry;
+		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(closeSupervisorPane).not.toHaveBeenCalled();
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: "failed-pane" });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("explicitly restarts only the tracked pane, keeps the plan, and invalidates old approval binding", async () => {
+	const flow = setup([]);
+	try {
+		const path = restoredPlan(flow);
+		const before = readFileSync(path, "utf8");
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		const checkpoint = approvalPath(flow.cwd, "session-a", "make the file");
+		mkdirSync(join(flow.cwd, ".pi/pi-goals/approvals"), { recursive: true });
+		writeFileSync(checkpoint, "old checkpoint");
+		await flow.commands.get("goals").handler("restart", flow.ctx);
+		expect(closeSupervisorPane).toHaveBeenCalledExactlyOnceWith("owned-pane");
+		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", planVersion: 1 });
+		expect((flow.entries.at(-1)?.data as any).approvalId).not.toBe("restored-binding");
+		expect(() => readFileSync(checkpoint)).toThrow();
+		await flow.commands.get("goals").handler("clear", flow.ctx);
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "unrelated.ts" } }, flow.ctx)).toBeUndefined();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("does not persist startup results or launch work after session shutdown", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		let finish: (() => void) | undefined;
+		openSupervisorPane.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve("late-pane"); }));
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		const starting = flow.hooks.get("agent_settled")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		await flow.hooks.get("session_shutdown")();
+		const entries = flow.entries.length;
+		const messages = flow.messages.length;
+		finish!();
+		await starting;
+		expect(flow.entries).toHaveLength(entries);
+		expect(flow.messages).toHaveLength(messages);
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });

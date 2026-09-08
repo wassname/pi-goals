@@ -73,3 +73,31 @@ describe("pi-intercom transport", () => {
 		await rejection;
 	});
 });
+
+it("does not acknowledge a synchronous handoff failure, and retries the instruction", async () => {
+	const runtime = setup("worker");
+	await runtime.link.waitReady();
+	const delivery = vi.fn().mockImplementationOnce(() => { throw new Error("Delivery unavailable"); });
+	runtime.link.onSteer = delivery;
+	const message = { binding: "binding", role: "supervisor", kind: "steer", id: "retry", text: "Inspect evidence." };
+	runtime.fixture.receive(message);
+	expect(runtime.fixture.sent.filter(m => m.kind === "received")).toHaveLength(0);
+	expect(runtime.entries.filter(e => e.data.direction === "in")).toHaveLength(0);
+	runtime.fixture.receive(message);
+	expect(delivery).toHaveBeenCalledTimes(2);
+	expect(runtime.fixture.sent.filter(m => m.kind === "received")).toHaveLength(1);
+});
+
+it("detaches a completed binding and ignores its late advice without replay errors or false acceptance", async () => {
+	const runtime = setup("worker");
+	await runtime.link.waitReady();
+	const delivery = vi.fn();
+	runtime.link.onSteer = delivery;
+	runtime.link.detach();
+	runtime.fixture.receive({ binding: "binding", role: "supervisor", kind: "steer", id: "late", text: "Obsolete advice." });
+	expect(runtime.link.connected).toBe(false);
+	expect(delivery).not.toHaveBeenCalled();
+	expect(runtime.ctx.ui.notify).not.toHaveBeenCalled();
+	expect(runtime.fixture.sent.filter(m => m.kind === "received")).toHaveLength(0);
+	expect(runtime.fixture.sent.at(-1)).toMatchObject({ kind: "hello", ready: false });
+});

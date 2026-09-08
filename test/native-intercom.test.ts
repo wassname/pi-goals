@@ -47,12 +47,14 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 	let supervisor: Driver | undefined;
 	let workerFile: string | undefined;
 	let supervisorFile: string | undefined;
+	let supervisorTools: string[] = [];
 	const server = createServer(async (request, response) => {
 		let body = "";
 		for await (const chunk of request) body += chunk;
 		const input = JSON.parse(body);
 		const latest = input.messages.at(-1);
 		const steer = latest.role === "user" && JSON.stringify(latest.content).includes("The worker stopped.");
+		if (steer) supervisorTools = input.tools.map((tool: any) => tool.function.name);
 		response.writeHead(200, { "content-type": "text/event-stream" });
 		const delta = steer ? { tool_calls: [{ index: 0, id: "test-steer", type: "function", function: { name: "SteerWorker", arguments: JSON.stringify({ instruction: advice }) } }] } : { content: "Test context retained. Actual outputs still need inspection." };
 		response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
@@ -92,6 +94,9 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 		expect(JSON.stringify(received)).toContain(advice);
 		const result = await supervisor.wait(message => message.type === "tool_execution_end" && message.toolName === "SteerWorker");
 		expect(result.isError).toBe(false);
+		expect(supervisorTools).toContain("SteerWorker");
+		expect(supervisorTools).not.toContain("intercom");
+		expect(supervisorTools).not.toContain("bash");
 		supervisor.send({ type: "get_state", id: "supervisor-state" });
 		const supervisorState = await supervisor.wait(message => message.type === "response" && message.id === "supervisor-state");
 		supervisorFile = supervisorState.data.sessionFile;

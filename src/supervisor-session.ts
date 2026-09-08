@@ -10,7 +10,7 @@ import { RoleModels } from "./role-models.js";
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
 const INITIAL_COMPACT_AT_TOKENS = 20_000;
 const COMPACT_AT_TOKENS = 100_000;
-const WRITER_TOOLS = new Set(["bash", "edit", "write", "multi_edit", "multiedit", "apply_patch", "notebook_edit", "edit_file", "write_file", "quick_edit", "target_edit"]);
+const BLOCKED_TOOLS = new Set(["intercom", "bash", "edit", "write", "multi_edit", "multiedit", "apply_patch", "notebook_edit", "edit_file", "write_file", "quick_edit", "target_edit"]);
 
 interface SupervisorConfig {
 	workerSessionId: string;
@@ -49,7 +49,7 @@ function hasEvidenceEntry(block: string): boolean {
 			const childIndent = lines[child].match(/^\s*/)?.[0].length ?? 0;
 			if (lines[child].trim() && childIndent <= indent) break;
 			const entry = /^\s+[-*]\s+(.+?)\s*$/.exec(lines[child]);
-			if (entry?.[1].trim()) return true;
+			if (entry?.[1].trim() && !/^\(empty until sign-off\)$/i.test(entry[1].trim())) return true;
 		}
 	}
 	return false;
@@ -93,6 +93,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
 	let bootstrapping = false;
+	let modelError: string | null = null;
 	const intercom = new GoalIntercom(pi);
 	const models = new RoleModels(pi);
 	intercom.onView = (view) => pi.sendUserMessage(view.text, { deliverAs: "followUp" });
@@ -103,16 +104,16 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		bootstrapping = true;
 		try {
 			const active = pi.getActiveTools();
-			pi.setActiveTools(active.filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
-			const writers = pi.getActiveTools().filter((tool) => WRITER_TOOLS.has(tool.toLowerCase()));
-			if (writers.length) throw new Error(`Could not remove supervisor writing tools: ${writers.join(", ")}`);
+			pi.setActiveTools(active.filter((tool) => !BLOCKED_TOOLS.has(tool.toLowerCase())));
+			const blocked = pi.getActiveTools().filter((tool) => BLOCKED_TOOLS.has(tool.toLowerCase()));
+			if (blocked.length) throw new Error(`Could not remove supervisor writing or messaging tools: ${blocked.join(", ")}`);
 			if (!entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) {
 				pi.appendEntry(BOOTSTRAPPED, { version: 2, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
 			}
 			intercom.markReady();
 		} catch (error) {
 			ctx.ui.notify(`Supervisor startup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-		}
+		} finally { bootstrapping = false; }
 	};
 
 	const bootstrapAfterInitialCompaction = (ctx: ExtensionContext): void => {
@@ -139,11 +140,30 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		});
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
+	const start = async (ctx: ExtensionContext): Promise<void> => {
+		modelError = "Supervisor model restoration is pending.";
 		intercom.configure(settings.approvalId, "supervisor", ctx);
-		pi.setActiveTools(pi.getActiveTools().filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
-		await models.enter("supervisor", ctx, process.env.PI_GOALS_MODEL_EXPLICIT === "1");
-		setImmediate(() => { bootstrapAfterInitialCompaction(ctx); });
+		pi.setActiveTools(pi.getActiveTools().filter((tool) => !BLOCKED_TOOLS.has(tool.toLowerCase())));
+		try {
+			await models.enter("supervisor", ctx, process.env.PI_GOALS_MODEL_EXPLICIT === "1");
+			modelError = null;
+			setImmediate(() => { if (!intercom.ended) bootstrapAfterInitialCompaction(ctx); });
+		} catch (error) {
+			modelError = String(error);
+			if (!intercom.ended) ctx.ui.notify(`Supervisor paused: ${modelError} Select /model, then /goals reconnect.`, "error");
+		}
+	};
+	pi.on("session_start", async (_event, ctx) => start(ctx));
+	pi.registerCommand("goals", {
+		description: "Retry supervisor model restoration and readiness: /goals reconnect",
+		handler: async (args, ctx) => {
+			if (args.trim() !== "reconnect") { ctx.ui.notify("Use /goals reconnect here; manage the plan or restart the pane from the worker session.", "info"); return; }
+			if (!ctx.isIdle() || compacting) { ctx.ui.notify("Wait for the supervisor to settle before reconnecting.", "warning"); return; }
+			await start(ctx);
+		},
+	});
+	pi.on("tool_call", async (event) => {
+		if (BLOCKED_TOOLS.has(event.toolName.toLowerCase())) return { block: true, terminate: true, reason: "Supervisor is read-only; use SteerWorker for the bound worker, not the general intercom tool." };
 	});
 	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -174,6 +194,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			return new Text(`${theme.fg("toolTitle", "Supervisor → worker")}\n${args.instruction ?? ""}`, 0, 0);
 		},
 		async execute(_id, params) {
+			if (modelError) return result(`Supervisor paused: ${modelError} Use /model, then /goals reconnect.`, true);
 			const instruction = params.instruction.trim();
 			if (!instruction) return result("A worker instruction cannot be empty.", true);
 			const id = intercom.steer(instruction);
@@ -191,6 +212,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			verifyOutputPath: Type.String({ description: "Nonempty repository-relative file containing the verification output you inspected." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (modelError) return result(`Supervisor paused: ${modelError} Use /model, then /goals reconnect.`, true);
 			const view = latestWorkerView(ctx);
 			const newest = intercom.latestView;
 			if (!intercom.connected || !newest || view !== newest.text) return result("Cannot approve without inspecting the latest worker view.", true);

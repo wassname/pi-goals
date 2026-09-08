@@ -15,7 +15,7 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 
 The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly. Supervisor instructions are shown in full, including in collapsed tool rows; ordinary messages and emitted thinking use Pi's display settings. The supervisor is prompted to give brief progress assessments and use judgment about when to intervene.
 
-On resume, monitoring and read-only tools are restored. Views include the latest human direction, source-session path, worker model, and new messages since the last acknowledged view. They report Pi idleness and tracked process/subagent activity separately. Unavailable trackers stay unknown; unregistered detached jobs are not tracked. Approval is blocked while tracked work is active or unknown. Intercom disconnects are reported; unsent current views and unacknowledged instructions are retained in Pi session history for reconnect. A receipt confirms transport handling, not execution. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
+On resume, monitoring and read-only tools are restored. Views include the latest human direction, source-session path, worker model, and new messages since the last acknowledged view. They report Pi idleness and tracked process/subagent activity separately. Unavailable trackers stay unknown; unregistered detached jobs are not tracked. Approval is blocked while tracked work is active or unknown. Intercom disconnects are reported; unsent current views and unacknowledged instructions are retained in Pi session history for reconnect. A receipt confirms adapter handling only—not durable queue persistence, model receipt, or execution. Pi's void message API can fail asynchronously after that acknowledgement; crashes can also cause duplicate handoffs. End-to-end exactly-once or durable delivery is not guaranteed. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
 
 ## Install
 
@@ -43,6 +43,14 @@ Run Pi from the Git repository that the plan will change. **Ready** fails if the
 ```
 
 `/goals clear` keeps the plan file. Starting another plan also keeps older versions.
+
+If a required model or supervisor is unavailable, the widget says **goals paused** and implementation/sign-off tools are gated. Human input, read-only diagnosis, `/model`, and recovery commands remain available:
+
+- `/goals reconnect` retries the remembered role model and existing supervisor binding. Reconnect waits five seconds and never replaces a slow or missing pane automatically. A returning peer clears the connection pause automatically.
+- `/goals restart` explicitly closes only the tracked supervisor pane and starts a replacement for a working plan, preserving its file/version but invalidating old approvals. During planning it clears the failed pane so Ready can launch again.
+- In the supervisor pane, use `/model` then `/goals reconnect` to recover an unavailable supervisor model.
+
+A new supervisor may still need up to five minutes for initial compaction. Recovery does not terminate background jobs. Planning/diagnostic command checks are guardrails, not an OS sandbox; loaded extensions and repository Git configuration must be trusted.
 
 Model choices are remembered per project and role in `.pi/pi-goals/models/`. Use `/model` in planning, worker, or supervisor sessions to change that role's choice. Ready restores the worker choice after the planning fork is ready. An unavailable saved model stops the transition instead of substituting another. `/goals model <model>` explicitly overrides the supervisor choice for launch. -- Pi/OpenAI
 
