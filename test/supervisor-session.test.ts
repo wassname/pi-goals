@@ -132,6 +132,10 @@ describe("visible supervisor session", () => {
 			expect(systemPrompt).toContain("what event will resume progress and how it will be observed");
 			expect(systemPrompt).toContain("after checking what is already authorized");
 			expect(systemPrompt).toContain("Challenge success claims as carefully as blocker claims");
+			expect(systemPrompt).toContain("verbatim evidence with a source path or link");
+			expect(systemPrompt).toContain("not independent evidence");
+			expect(systemPrompt).toContain("outcomes distinguish them");
+			expect(systemPrompt).toContain("One failed implementation does not refute the idea");
 			expect(systemPrompt).toContain("do not invent work");
 			expect(systemPrompt).toContain("stop issuing instructions");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
