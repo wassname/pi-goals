@@ -124,6 +124,14 @@ describe("visible supervisor session", () => {
 			const { systemPrompt } = await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
 			expect(systemPrompt).toContain("brief visible recap");
 			expect(systemPrompt).toContain("your judgment");
+			expect(systemPrompt).toContain("justified confidence, not certainty at any cost");
+			expect(systemPrompt).toContain('Treat "blocked", "waiting", "impossible", and "already done" as claims to verify');
+			expect(systemPrompt).toContain("check whether it applies to this task");
+			expect(systemPrompt).toContain("Modal remote-GPU job");
+			expect(systemPrompt).toContain("without unpausing the shared queue, duplicating a paid job, or exceeding the approved budget");
+			expect(systemPrompt).toContain("what event will resume progress and how it will be observed");
+			expect(systemPrompt).toContain("after checking what is already authorized");
+			expect(systemPrompt).toContain("Challenge success claims as carefully as blocker claims");
 			expect(systemPrompt).toContain("do not invent work");
 			expect(systemPrompt).toContain("stop issuing instructions");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
