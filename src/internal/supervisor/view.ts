@@ -224,6 +224,8 @@ function vccSections(fresh: AgentMsg[]): { headers: string; brief: string } {
 export interface ViewInput {
   goal: string;
   status: string;
+  /** Read-only source for detail omitted by the bounded overview. */
+  sourceSession?: string;
   entries: Entry[];
   /**
    * Turns the supervisor has already been sent, from turnsSince() after the last view.
@@ -245,10 +247,11 @@ export interface ViewInput {
    * model, and a worker near the top of its context is about to compact and lose detail.
    */
   model?: string;
+  background?: string;
 }
 
 /** Render the view, and cut it to MAX_VIEW_BYTES so the broker cannot reject it. */
-export function buildView({ goal, status, entries, since = 0, stale = 0, subagents = [], model = "" }: ViewInput): string {
+export function buildView({ goal, status, entries, since = 0, stale = 0, subagents = [], model = "", sourceSession, background }: ViewInput): string {
   const messages = entries.filter((e) => e.type === "message" && e.message);
   const pending = outstandingWork(messages);
   const workerMessages = messagesSince(entries);
@@ -260,8 +263,16 @@ export function buildView({ goal, status, entries, since = 0, stale = 0, subagen
   const fresh = workerMessages.slice(from);
   const { headers, brief } = vccSections(fresh);
   const earlier = compactionSummary(entries);
-
+  // VCC may omit an older user turn even when later work still depends on its authorization.
+  // Keep the latest actual user direction distinct from summaries and supervisor echoes.
+  const latestUser = [...entries].reverse().find(e => e.type === "message" && e.message?.role === "user" && textOf(e.message).trim() && !textOf(e.message).startsWith(SUPERVISOR_PREFIX));
+  const direction = latestUser?.message ? textOf(latestUser.message) : "";
   const head = [
+    ...(from === 0 && direction ? [
+      `# Latest user direction${latestUser?.timestamp ? ` (${latestUser.timestamp})` : ""}`,
+      direction.length > 2000 ? `${direction.slice(0, 2000)}\n[user direction truncated; inspect the worker source session for full text]` : direction,
+      "",
+    ] : []),
     // Short goals are the criterion on every review. A multi-line research rubric is reinserted
     // into the supervisor context at its own cadence, so this view carries only its locator.
     `<goal>`,
@@ -269,11 +280,13 @@ export function buildView({ goal, status, entries, since = 0, stale = 0, subagen
     `</goal>`,
     ``,
     `# Worker`,
+    ...(sourceSession ? [`source session: ${sourceSession} (read-only history for omitted detail)`] : []),
     ...(model ? [`model: ${model}`] : []),
     `status: ${status}`,
     `turns: ${workerMessages.length}`,
     `tool calls with no result: ${pending.length ? pending.join(", ") : "none"}`,
     `child pi processes still running: ${subagents.length ? subagents.join(", ") : "none"}`,
+    ...(background ? [`tracked background work: ${background}`] : []),
     ...(stale > 0 ? [`no new file or commit for ${stale} reviews in a row`] : []),
     ``,
     // Sent when this view starts at the compaction boundary, which is the first view and every
@@ -281,7 +294,7 @@ export function buildView({ goal, status, entries, since = 0, stale = 0, subagen
     ...(from === 0 && earlier
       ? [
         restarted ? `# The worker compacted, so this view restarts. Everything before it:` : `# Earlier work, from the worker's own compaction summary`,
-        earlier.slice(0, 6000),
+        earlier.length > 6000 ? `${earlier.slice(0, 6000)}\n[worker compaction summary truncated; inspect the worker session for full evidence]` : earlier,
         ``,
       ]
       : []),

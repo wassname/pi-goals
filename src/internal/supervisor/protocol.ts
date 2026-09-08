@@ -5,7 +5,62 @@
  * turn locally with pi.sendUserMessage after it receives one of these.
  */
 
-import { type PlanBinding, type PlanWire, validBinding, validPlanWire } from "./plan-api.js";
+import { type SupervisorBinding, validBinding } from "../../supervisor.js";
+import { MAX_VIEW_BYTES } from "./view.js";
+
+export interface GoalReview {
+  requestId: string;
+  bindingId: string;
+  goal: string;
+  planHash: string;
+}
+/** Frozen worker context travels only with the request, never with a decision. */
+export interface GoalReviewRequest extends GoalReview {
+  view?: string;
+}
+export function reviewIdentity({ requestId, bindingId, goal, planHash }: GoalReview): GoalReview {
+  return { requestId, bindingId, goal, planHash };
+}
+
+/** Intercom measures serialized payload bytes, including JSON escapes and checkpoint identity. */
+export function goalReviewWire(to: string, review: GoalReview, view: string): PlanWire {
+  const payload = { t: "goal_review" as const, to, ...reviewIdentity(review), view };
+  const fits = (value: string) => Buffer.byteLength(value, "utf8") <= MAX_VIEW_BYTES && Buffer.byteLength(JSON.stringify({ ...payload, view: value }), "utf8") <= 16 * 1024;
+  if (fits(view)) return payload;
+  const marker = "\n[checkpoint view cut to fit the channel; inspect the worker source session for omitted detail]\n";
+  if (!fits(marker)) throw new Error("Goal checkpoint identity is too large for the 16 KiB Intercom channel");
+  const chars = Array.from(view);
+  let low = 0; let high = chars.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(chars.slice(0, middle).join("") + marker)) low = middle;
+    else high = middle - 1;
+  }
+  return { ...payload, view: chars.slice(0, low).join("") + marker };
+}
+
+export interface GoalDecision extends GoalReview {
+  decision: "approve" | "needs_work" | "needs_user";
+  reason: string;
+}
+export type PlanWire =
+  | { t: "plan_hello" | "plan_hello_ack"; to: string; bindingId: string; role: "worker" | "supervisor"; sessionFile: string }
+  | ({ t: "goal_review"; to: string } & GoalReviewRequest)
+  | ({ t: "goal_decision"; to: string } & GoalDecision)
+  | { t: "goal_cancel"; to: string; requestId: string; bindingId: string }
+  | { t: "plan_activate" | "plan_stop"; to: string; bindingId: string };
+export function validPlanWire(value: any): value is PlanWire {
+  if (!value || typeof value.to !== "string" || typeof value.bindingId !== "string") return false;
+  if (value.t === "plan_hello" || value.t === "plan_hello_ack") return ["worker", "supervisor"].includes(value.role) && typeof value.sessionFile === "string";
+  if (value.t === "plan_activate" || value.t === "plan_stop") return true;
+  if (typeof value.requestId !== "string") return false;
+  if (value.t === "goal_cancel") return true;
+  if (typeof value.goal !== "string" || typeof value.planHash !== "string") return false;
+  if (value.t === "goal_review") return value.view === undefined || (typeof value.view === "string" && Buffer.byteLength(value.view, "utf8") <= MAX_VIEW_BYTES);
+  return value.t === "goal_decision" && ["approve", "needs_work", "needs_user"].includes(value.decision) && typeof value.reason === "string";
+}
+
+
 
 export const NAMESPACE = "wassname/pi-intercom-supervisor/v1";
 
@@ -13,31 +68,31 @@ export const NAMESPACE = "wassname/pi-intercom-supervisor/v1";
 // /supervise stop, because premature stopping is the failure this whole thing exists to prevent
 // (wassname's SUPERVISOR.md, citing arXiv:2410.07095: 8.7% vs 0.8% on MLE-bench).
 
-export type Wire = PlanWire
+export type Wire = (PlanWire
   /** Roll call, broadcast, so "to" is the wildcard rather than a session. Only /supervise sends it. */
   | { t: "who"; to: "*" }
   /** The answer to a roll call: I load this extension, I am free, and I am not a child run. */
   | { t: "here"; to: string }
-  | { t: "pair"; to: string; goal: string; plan?: PlanBinding }
-  | { t: "paired"; to: string; plan?: PlanBinding }
+  | { t: "pair"; to: string; goal: string; plan?: SupervisorBinding }
+  | { t: "paired"; to: string; plan?: SupervisorBinding }
   | { t: "goal"; to: string; goal: string }
   /** stopped: the worker settled, so this is a decision point. false: a check in mid-turn. */
-  | { t: "view"; to: string; view: string; stopped: boolean }
+  | { t: "view"; to: string; view: string; stopped: boolean; refreshed?: boolean }
   /** Supervisor asks for a view now. Its own turn cannot make one: the worker publishes them. */
   | { t: "look"; to: string }
   | { t: "directive"; to: string; text: string }
   | { t: "done"; to: string; reason: string }
-  | { t: "unpair"; to: string };
+  | { t: "unpair"; to: string }) & { bindingId?: string };
 
 /** Validates the field each kind carries, so a malformed peer cannot inject "[supervisor] undefined". */
 export function isWire(payload: unknown): payload is Wire {
   if (typeof payload !== "object" || payload === null) return false;
   if (validPlanWire(payload)) return true;
-  const { t, to, goal, view, stopped, text, reason, plan } = payload as Record<string, unknown>;
+  const { t, to, goal, view, stopped, refreshed, text, reason, plan } = payload as Record<string, unknown>;
   if ((t === "pair" || t === "paired") && plan !== undefined && !validBinding(plan)) return false;
   if (typeof to !== "string") return false;
   if (t === "pair" || t === "goal") return typeof goal === "string";
-  if (t === "view") return typeof view === "string" && typeof stopped === "boolean";
+  if (t === "view") return typeof view === "string" && typeof stopped === "boolean" && (refreshed === undefined || typeof refreshed === "boolean");
   if (t === "directive") return typeof text === "string" && text.trim().length > 0;
   if (t === "done") return typeof reason === "string";
   return t === "unpair" || t === "paired" || t === "look" || t === "who" || t === "here";
@@ -86,7 +141,7 @@ export interface SuperviseState {
   /** Recent steer texts, so the supervisor can see repetition after its own context is compacted. */
   recentSteers: string[];
   /** Optional pi-goals integration. Standalone supervision keeps its original policy. */
-  plan?: PlanBinding;
+  plan?: SupervisorBinding;
   /** Supervisor bootstrap completed and the worker acknowledged this plan pairing. */
   planInitialized?: boolean;
 }

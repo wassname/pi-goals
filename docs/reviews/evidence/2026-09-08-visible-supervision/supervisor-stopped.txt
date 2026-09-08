@@ -1,0 +1,35 @@
+ supervisor message. If the
+ goal remains unmet, send a
+ concrete continuation
+ instruction. A human message
+ does not end supervision. A
+ later worker view will
+ report the worker state.
+
+
+
+ [supervisor_brief]
+
+ Progress assessment: The
+ worker states: "cli-demo.log
+ was hand-written (heredoc)
+ instead of captured from
+ actual CLI runs" and
+ "Waiting for explicit
+ operator resumption." The
+ outstanding operator
+ instruction was "Do not call
+ CompleteGoal or do further
+ work until the test operator
+ explicitly resumes you after
+ reloading the corrected
+ package."
+
+
+ Plan supervision stopped
+
+──────────────────────────────
+
+──────────────────────────────
+/tmp/pi-goals-herdr-uat.TGX...
+↑168 ↓8.0k R1.3M W442k CH99...

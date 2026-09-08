@@ -1,0 +1,37 @@
+    hand-written (heredoc)
+    instead of captured from
+    actual CLI runs
+ 2. Temporary files were
+    written outside the
+    fixture
+ 3. Need to capture real
+    child-process demos from
+    within the fixture only
+
+ Files preserved:
+ - converter.mjs ✓
+ - converter.test.mjs ✓
+ - cli.mjs ✓
+ - cli.test.mjs ✓
+ - evidence/function-tests.lo
+   g ✓
+ - evidence/cli-tests.log ✓
+ - evidence/cli-demo.log
+   (needs regeneration from
+   real runs)
+
+ Waiting for explicit
+ operator resumption.
+
+ Persistent plan steward
+ disabled.
+
+ ▸ Provide a CLI with
+ demonstrated valid and
+ invalid inputs.
+──────────────────────────────
+
+──────────────────────────────
+/tmp/pi-goals-herdr-uat.TGX...
+↑466 ↓43k R3.7M W749k CH99....
+◷ 1/2 goals

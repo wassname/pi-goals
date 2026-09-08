@@ -57,7 +57,7 @@ import {
 	waivesAlignment,
 } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
-import { focusSupervisor, initializeSupervisor, planHash, type SupervisorBinding, type SupervisorDecision, startSupervisor, supervisorBootstrap, supervisorRequest } from "./supervisor.js";
+import { focusSupervisor, initializeSupervisor, planHash, type SupervisorBinding, startSupervisor, supervisorBootstrap } from "./supervisor.js";
 
 const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
@@ -202,7 +202,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function workMessage(ctx: ExtensionContext): string {
-		return `Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Keep the plan file current as you go.`;
+		return `Work the goals in ${planPath(ctx)}. Pick an open goal, mark it active ([/]), work its subtasks, and when its discriminator is satisfied fill its evidence: list, then call CompleteGoal with the goal's text. Do not mark a goal [x] before CompleteGoal accepts it. Keep the plan file current as you go.`;
 	}
 
 	function clearAutoTimer(): void {
@@ -301,7 +301,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		operation?.abort();
 		operation = null;
 		if (state.supervisor) {
-			try { await supervisorRequest(pi, "stop", { bindingId: state.supervisor.id }); }
+			try { await supervisor.stop(state.supervisor.id); }
 			catch (error) { ctx.ui.notify(`Could not reach the supervisor to stop it: ${String(error)}. Check its pane.`, "warning"); }
 		}
 		state = { ...state, supervisor: null };
@@ -325,12 +325,12 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				if (planHash(readPlan(ctx)) !== approvedDraft) throw new Error("The plan changed during model recovery; select Ready again");
 				if (!workerReady) { state = { ...state, phase: "planning" }; persist(); updateWidget(ctx); return; }
 			}
-			const binding = await startSupervisor(pi, ctx, planPath(ctx), state.supervisor, supervisor => {
+			const binding = await startSupervisor(pi, supervisor, ctx, planPath(ctx), state.supervisor, supervisor => {
 				if (signal.aborted) return;
 				state = { ...state, supervisor }; persist();
 			}, signal);
 			if (signal.aborted || state.planVersion !== version || !state.stewardEnabled) return;
-			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisorRequest(pi, "stop", { bindingId: binding.id }); state = { ...state, supervisor: null }; throw new Error("The plan changed during initialization; select Ready again"); }
+			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisor.stop(binding.id); state = { ...state, supervisor: null }; throw new Error("The plan changed during initialization; select Ready again"); }
 			state = { ...state, supervisor: binding };
 			persist(); updateWidget(ctx);
 			state = { ...state, modelRecovery: "worker" }; persist();
@@ -341,11 +341,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				return; // Keep the attached pairing inactive and the preference target on worker.
 			}
 			if (signal.aborted || state.planVersion !== version || state.supervisor?.id !== binding.id || !state.stewardEnabled) return;
-			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisorRequest(pi, "stop", { bindingId: binding.id }); state = { ...state, supervisor: null }; throw new Error("The plan changed during model restoration; select Ready again"); }
+			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisor.stop(binding.id); state = { ...state, supervisor: null }; throw new Error("The plan changed during model restoration; select Ready again"); }
 			state = { ...state, modelRecovery: null }; persist();
-			await supervisorRequest(pi, "activate", { bindingId: binding.id }, signal);
+			await supervisor.activate(binding.id, signal);
 			if (signal.aborted || state.planVersion !== version || state.supervisor?.id !== binding.id || !state.stewardEnabled) return;
-			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisorRequest(pi, "stop", { bindingId: binding.id }); state = { ...state, supervisor: null }; throw new Error("The plan changed during activation; select Ready again"); }
+			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisor.stop(binding.id); state = { ...state, supervisor: null }; throw new Error("The plan changed during activation; select Ready again"); }
 			state = { ...state, phase: "working" };
 			persist(); updateWidget(ctx);
 			pi.sendUserMessage(handoff, { deliverAs: "followUp" });
@@ -442,7 +442,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				const value = arg.slice("steward".length).trim() || "status";
 				if (value === "status") {
 					try {
-						const status = await supervisorRequest<{ connected: boolean }>(pi, "status");
+						const status = await supervisor.status();
 						ctx.ui.notify(`Plan supervisor: ${!state.stewardEnabled ? "disabled" : status.connected ? "connected" : "enabled, not connected; starts at Ready"}.`, "info");
 					} catch (error) { ctx.ui.notify(`Plan supervisor: ${state.stewardEnabled ? "enabled" : "disabled"}; ${String(error)}`, "warning"); }
 					return;
@@ -574,7 +574,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		lastSeenWorkingSet = workingSet;
-		if (state.supervisor && state.phase === "working") void supervisorRequest(pi, "update", { bindingId: state.supervisor.id }).catch((error: Error) => ctx.ui.notify(error.message, "warning"));
 		turnsStale = 0;
 		updateWidget(ctx);
 	});
@@ -690,7 +689,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (bootstrap) {
 			supervisorOnly = true;
 			pi.setActiveTools(pi.getActiveTools().filter(tool => tool !== "CompleteGoal" && tool !== "RequestPlanReview"));
-			if (await models.enter("supervisor", ctx)) initializeSupervisor(pi, ctx, bootstrap, lifetime.signal);
+			if (await models.enter("supervisor", ctx)) initializeSupervisor(supervisor, ctx, bootstrap, lifetime.signal);
 			return;
 		}
 		const last = ctx.sessionManager
@@ -752,17 +751,28 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
 			if (state.phase === "planning" || state.phase === "starting") return result("Planning is not approved. Wait for the steward or choose Ready before signing off a goal.", true);
-			const plan = readPlan(ctx);
+			let plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
 
 			if (supervisorOnly) throw new Error("Only the worker can complete its plan goals");
+			if (signal?.aborted || lifetime.signal.aborted) return result("Sign-off aborted.", true);
+			// A model may tick before calling this tool. The submitted goal is still under review;
+			// a rejection or cancellation must not leave that premature success visible.
+			const submitted = scanGoals(plan).filter(goal => goal.subject.toLowerCase() === params.goal.trim().toLowerCase());
+			if (submitted.length === 1 && submitted[0].status === "done") {
+				const lines = plan.split("\n");
+				lines[submitted[0].line] = lines[submitted[0].line].replace(/\[[xX]\]/, "[/]");
+				plan = lines.join("\n");
+				writePlan(ctx, plan);
+				updateWidget(ctx);
+			}
 			if (state.stewardEnabled) {
 				if (!state.supervisor) return result("No supervisor is paired. Retry Ready or use /goals steward off.", true);
 				const bindingId = state.supervisor.id;
 				const hash = planHash(plan);
 				try {
 					onUpdate?.({ content: [{ type: "text", text: "Supervisor checking trajectory and scope…" }], details: {} });
-					const decision = await supervisorRequest<SupervisorDecision>(pi, "review", { bindingId, goal: params.goal, planHash: hash }, AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]));
+					const decision = await supervisor.review(bindingId, params.goal, hash, AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]));
 					if (state.supervisor?.id !== bindingId || planHash(readPlan(ctx)) !== hash || decision.bindingId !== bindingId || decision.goal !== params.goal || decision.planHash !== hash) return result("Plan or pairing changed during goal review; retry.", true);
 					if (decision.decision !== "approve") return result(`Supervisor: ${decision.decision}. ${decision.reason}`, true);
 				} catch (error) { return result(`Supervisor review failed: ${String(error)}`, true); }
@@ -813,11 +823,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		},
 	});
 	// Registered after role restoration, so rejoin cannot start a supervisor turn on the worker model.
-	supervise(pi, () => models.ready);
+	const supervisor = supervise(pi, () => models.ready);
 	function modelRecovered(ctx: ExtensionContext): void {
 		if (supervisorOnly) {
 			const bootstrap = supervisorBootstrap(ctx);
-			if (bootstrap) initializeSupervisor(pi, ctx, bootstrap, lifetime.signal);
+			if (bootstrap) initializeSupervisor(supervisor, ctx, bootstrap, lifetime.signal);
 		} else if (state.modelRecovery && models.ready) {
 			// Do not await a UI dialog inside Pi's model_select dispatch.
 			setImmediate(() => { void reviewPlan(ctx).catch(error => ctx.ui.notify(String(error), "error")); });
@@ -906,7 +916,11 @@ export async function decideSignOff(
 
 	if (verdict === "accept") {
 		const beforeVerdict = judge.output.slice(0, judge.output.indexOf(verdictLine));
-		const checks = /^#{0,6}\s*(?:\*\*)?checks(?:\*\*)?:\s*$[\s\S]*^[-*]\s+.+$/im.test(beforeVerdict);
+		const heading = /^#{0,6}[ \t]*(?:\*\*)?checks(?:\*\*)?:[ \t]*$/im.exec(beforeVerdict);
+		const checksBody = heading
+			? beforeVerdict.slice(heading.index + heading[0].length).split(/^#{1,6}[ \t]+/m, 1)[0]
+			: "";
+		const checks = /^[ \t]*(?:[-*]|\d+[.)])[ \t]+\S.*$/m.test(checksBody);
 		if (!checks) {
 			return {
 				resultText: `Sign-off REJECTED. Missing:\nchecked-artifact list before VERDICT: accept\n\n--- judge ---\n${reasoning}`,

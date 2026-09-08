@@ -95,27 +95,60 @@ survive clear and reload. Cleared legacy sessions adopt the new defaults on relo
 plans retain their settings so supervision is not attached midway through work.
 
 Install/load **only pi-goals**. Its internal modules contain the supervisor; the package bundles
-`pi-intercom` 0.10.0 and `@sting8k/pi-vcc` 0.5.0 as locked runtime dependencies. Pi's manifest loads
-the bundled Intercom resources through `node_modules/` paths. VCC is used as a compiler, not loaded
-as a separate extension. Pi core stays a peer dependency. **Herdr remains the supported terminal
-host** for launching/focusing the supervisor. Load the package directory (`pi -e .`), not only
-`src/index.ts`, so the manifest can supply Intercom too.
+`pi-intercom` 0.10.0 and `@sting8k/pi-vcc` 0.5.0 as locked runtime dependencies. An already installed
+Intercom is reused; otherwise pi-goals initializes its bundled copy after installed extensions load.
+There is one Intercom registration per process, not an extra supervisor companion. VCC is used as
+a compiler, not loaded as another extension. Pi core stays a peer dependency. **Herdr remains the
+supported terminal host**. Both panes use the same Pi agent directory and configured package set;
+explicit CLI resource choices are preserved without adding `-e` companions.
 
 Ready is the human's plan approval. Pi-goals forks the planning session, initializes the supervisor
 with the original plan and supervisor policy, and waits for acknowledged pairing before starting the
 worker. The initial supervisor view can steer; it is not another mandatory plan-approval gate.
-The supervisor fork is compacted unless its known context is already at most 20k tokens. Only the
-supervisor is compacted. Its normal context policy checks near 100k tokens, subject to its model limit.
+The supervisor fork is compacted unless its known context is already at most 20k tokens. If native Pi
+reports that no older history is eligible for compaction, startup retains the fork unchanged and continues;
+other compaction failures still block initialization. Pi-goals requests compaction only for the
+supervisor. Later reviews compact above 100k **current-context** tokens (not cumulative
+usage), or earlier for a smaller model context limit. Each model call explicitly supplies the
+supervisor role and current canonical plan while retaining the compacted planning context and judgments.
 
-The internal supervisor provides incremental VCC views and retains its decisions. The plan-aware
-policy checks every 50 model turns or 60 minutes, or when the worker settles with no tracked
-background work. Process/subagent providers that cannot answer are reported as unknown; they do not
-prove the worker is finished. The `SUPERVISOR.md` policy lookup is unchanged: project `.pi/SUPERVISOR.md`, then the Pi agent directory, then the built-in policy. Auto-continue is
+The internal supervisor provides incremental VCC views and retains its decisions. While an assessment
+is active, later routine updates coalesce into one pending marker instead of queuing model turns or
+replacing the active view. Once settled, it requests one fresh VCC overview from the worker's latest
+compaction summary and current branch. This is a bounded high-level summary, not a lossless transcript;
+truncation is labeled and the overview names the read-only source session for omitted detail.
+Each explicit goal checkpoint carries a fresh bounded worker snapshot, including the latest user direction;
+it becomes visible only when that checkpoint is assessed. The canonical plan and checkpoint identity remain
+separate from replaceable routine status.
+The plan-aware policy checks every 50 model turns or 60 minutes, or when the worker settles with no tracked
+background work. Absent optional trackers contribute zero tracked work. Installed process/subagent
+providers that cannot answer remain unknown and do not prove the worker is finished. Unregistered
+detached work is not tracked. The `SUPERVISOR.md` policy lookup is unchanged: project `.pi/SUPERVISOR.md`, then the Pi agent directory, then the built-in policy. Auto-continue is
 suspended while the steward is enabled so there is only one continuation policy.
 
+At each review the supervisor is prompted to visibly give a brief progress assessment and useful
+advice, not just a delivery receipt. Its advice and no-intervention assessment are also displayed
+as durable messages. Supervisor mode allows native read/grep/find/ls and the narrow supervisor
+tools only. Writes, bash (including `!`), process/subagent/scheduler and unknown extension tools
+are blocked at execution as well as hidden, including on reload and in a stopped plan fork.
+This is a model-tool policy, not an OS sandbox for arbitrary trusted extension code.
+
+All worker/supervisor traffic uses Intercom. Local lifecycle calls are ordinary pi-goals module
+calls, with no plan-lifecycle RPC dispatcher or headless live Pi process. Disconnection invalidates
+pending approval and is shown explicitly; a send does not prove receipt or execution.
+
 One `CompleteGoal` call asks this supervisor about direction and scope, then runs the normal fresh
-read-only evidence judge. Approving one goal does not finish supervision. Cancelled, stale or
-mismatched replies do not sign off goals. `/goals steward off` ends this plan's supervision and
+read-only evidence judge. A prematurely checked submitted goal is reopened before review; only accepted
+sign-off checks it again. The judge's checks section accepts ordinary numbered and indented Markdown lists,
+but an empty section cannot borrow a list from a later heading. Approving one goal does not finish supervision. Cancelled, stale or
+mismatched replies do not sign off goals. Goal/revision identity is bound in code to the checkpoint
+actually presented to the supervisor, not copied into a form by the model. Supervisor model checkpoints
+have no arbitrary thinking deadline: slow healthy reviews may finish. Explicit cancellation, replaced
+plans, disconnects and actual settled provider failures still fail safely; startup/attachment deadlines
+are separate. A genuinely settled empty response returns an incomplete assessment, not an invented
+human-input dependency. Later worker progress/cadence can resume supervision without a human poke,
+and failure does not immediately retry the same view. A required completion checkpoint may wait, but routine supervision does not block worker
+work. `/goals steward off` ends this plan's supervision and
 cancels pending goal requests; it does not close the human's terminal pane.
 
 Navigation: `/goals supervisor` focuses the supervisor, `/goals worker` returns to the worker, and
@@ -149,8 +182,8 @@ old pi-subagents reviewer runs are not reused as supervisor sessions.
 
 ### Migrating an already-running installation
 
-After validating this package, remove the old standalone supervisor and standalone Intercom entries
-from Pi's package list, leaving pi-goals. **Reload existing workers before selecting Ready again**:
+After validating this package, remove any old standalone supervisor entry. A compatible standalone
+Intercom may remain: pi-goals reuses it rather than registering a second copy. **Reload existing workers before selecting Ready again**:
 an old worker still has old launch arguments in memory and can launch both old and internal copies.
 Reload both sides of a retained pairing. Do not add extra `-e` supervisor/Intercom arguments.
 Duplicate Intercom registries are diagnosed and plan bootstrap is refused; Pi also reports conflicting
@@ -195,7 +228,7 @@ Planning/judge text lives in [`src/prompts.ts`](src/prompts.ts); supervisor poli
 ## Develop
 
 ```bash
-pi -e .                     # package manifest includes bundled Intercom
+pi -e .                     # one package; reuses installed or bundled Intercom
 npm test                    # unit/flow/RPC + inherited node:test supervisor regressions
 npm run test:rpc             # real-Pi conversational review, local offline model
 npm run test:supervisor      # inherited lifecycle/VCC/correlation/recovery regressions
@@ -215,12 +248,15 @@ goal reviews, and judge isolation without relying on a live terminal.
 
 The moved VCC dependency is source-only and has upstream type incompatibilities with current Pi/Intl
 unions. `tsconfig.build.json` maps just its four imported API surfaces to narrow local declarations;
-the actual pinned VCC source still runs in tests and production. All pi-goals source is typechecked
+the actual pinned VCC source still runs in tests and production. The Intercom extension factory
+has the same narrow declaration boundary; no dependency code is rewritten. All pi-goals source is typechecked
 and linted; the node:test suite is run separately, not silently collected/skipped by Vitest.
 
-Validation (2026-09-07): **67 Vitest tests and 118 internal supervisor tests passed, with no skips**,
+Baseline validation (2026-09-07, before the current supervision changes): **67 Vitest tests and 118 internal supervisor tests passed, with no skips**,
 including the packed real-Pi/Intercom flow. Typecheck, lint, build and diff checks passed. Independent
 review and targeted recheck are complete. See the [saved validation and review disposition](docs/reviews/2026-09-07_single-package-role-models.md).
+
+The current isolated-worktree validation is recorded in [the approved supervision plan](docs/slop/plans/20260908_simple-visible-supervision.md). Packed registration/reload is also tested with Intercom loaded before or after pi-goals. The full Intercom peer flow and Herdr UAT need host Unix-socket/control access; do not treat registration alone as a successful supervision trial.
 
 Neither automated test proves visual Herdr rendering/navigation or measured token savings. The
 previous live trial contained a historical tool call without a saved result, which can still block

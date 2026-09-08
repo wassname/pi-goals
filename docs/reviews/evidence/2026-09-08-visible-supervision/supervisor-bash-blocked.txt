@@ -1,0 +1,37 @@
+ does not end supervision. A
+ later worker view will
+ report the worker state.
+
+
+
+ [supervisor_brief]
+
+ Progress assessment: The
+ worker states: "Per the
+ execution gate in the plan,
+ I am now PAUSED and waiting
+ for your explicit
+ instruction before
+ implementing Goal 2 (CLI)."
+ This matches the required
+ user-controlled pause.
+
+
+──────────────────────────────
+ $ printf
+ EXECUTION_SHOULD_BE_BLOCKED_
+ 42
+
+ Supervisor mode is
+ inspection-only. Run
+ commands in the worker pane.
+
+ (exit 1)
+──────────────────────────────
+
+──────────────────────────────
+
+──────────────────────────────
+/tmp/pi-goals-herdr-uat.TGX...
+↑84 ↓4.0k R534k W153k CH99....
+👁 watching 1

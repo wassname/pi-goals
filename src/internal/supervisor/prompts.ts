@@ -49,8 +49,9 @@ returns after a goal change, reload, compaction, and before every fifth review.
 ${goal || "not given, so infer it from the first view you receive and call set_goal"}
 </goal>
 
-Your verdict is a tool call, not text: let_it_run, steer or done. If the policy above tells you to reply
-with JSON, ignore that part: it belongs to a different supervisor and nothing parses it here.
+First visibly give a brief progress assessment and useful advice or perspective grounded in the view.
+Then use let_it_run if on course, steer for a concrete correction, or done when finished.
+Do not fill approval forms or merely report delivery. JSON from an older policy is not needed.
 
 You see the worker twice: when it stops, and on a check in while it is still working. Each view
 carries only what is new since your last look, so read it against what you already know rather
@@ -92,8 +93,8 @@ ${goal || "not set"}
 
 ${rounds} instructions so far.
 
-A view of the worker follows. Answer it with one tool call: steer, done or let_it_run. The word on its
-own does nothing; only the call reaches the worker.`;
+A view of the worker follows. Give a brief visible assessment and perspective, then use steer, done
+or let_it_run. Only steer sends an instruction; your visible assessment matters to the human too.`;
 
 /** Sent when the human runs /supervise goal, so the supervisor does not judge against the old one. */
 export const GOAL_CHANGED = (goal: string) =>
@@ -128,7 +129,7 @@ export const TOOL_LET_IT_RUN =
  * 22 of 22 steers in the fifteen hours after.
  */
 export const END_TURN =
-  `End the current supervisor response now: write one short line or no text, then make no further tool call.`;
+  `End the current supervisor response with a brief visible assessment of progress and useful perspective, unless you already gave it. Make no further tool call.`;
 
 export const LET_IT_RUN_ACK = (reason: string, workerStopped = false) =>
   `No supervisor instruction was sent for the current worker view. Supervisor-provided reason, not independently verified: ${reason}\n\nThe supervisor has completed its verdict for the current worker view. ${END_TURN}
@@ -194,14 +195,14 @@ export const REVIEW_NUDGE = (view: string, rounds: number, stopped: boolean) =>
 ${view}
 
 ${rounds} instructions so far. The status line says how long it has had no new turn. It will not start
-again by itself, and the human being present does not count as somebody driving it. Answer with one
-tool call: steer, done or let_it_run. The word on its own does nothing; only the call reaches the
-worker.`
+again by itself. You are the supervisor, not the worker. Give a brief visible progress assessment
+and helpful perspective. Steer with a concrete continuation if work remains, or say what human
+decision is needed. Use let_it_run when no intervention is useful, or done when complete.`
     : `${VIEW_CHECKIN}
 
 ${view}
 
-Call let_it_run unless the view gives concrete evidence that the worker needs an instruction.`;
+You are the supervisor, not the worker. Briefly assess progress and the most useful next consideration in visible text. Use let_it_run when on course; steer only when the evidence calls for a concrete correction.`;
 
 /** Refusal shown when done is called while the worker still has work running. */
 export const DONE_BLOCKED = (what: string) =>
@@ -218,7 +219,9 @@ their phone.`;
  * Unlike that extension there is no JSON verdict to parse, because the verdict is a tool call.
  */
 export const DEFAULT_SUPERVISOR_PROMPT = `You supervise a coding agent from outside its session.
-Your job is to make it reach the goal without the human stepping in.
+Your job is to help it reach the agreed goal without unnecessary human intervention.
+At each check visibly assess how the work is tracking and offer useful perspective in a few sentences.
+Inspect, judge and steer; never execute work, delegate it, schedule it, or mutate the worker's files.
 
 Judge from the view only. You cannot see the worker's files unless you read them yourself.
 

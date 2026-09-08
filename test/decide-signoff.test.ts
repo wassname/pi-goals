@@ -19,6 +19,26 @@ describe("decideSignOff (fail-forward invariant)", () => {
 		expect(out.resultText).toContain("evidence.txt: `PASS`");
 	});
 
+	it.each(["1. ", "1) ", "  - "])("accepts a real checked-artifact list using Markdown marker %s", async marker => {
+		const output = `## checks:\n${marker}converter.mjs: \`export function convert\`; inspected the actual export.\n\nVERDICT: accept\nmissing:`;
+		const out = await decideSignOff(input, undefined, vi.fn().mockResolvedValue({ output }));
+		expect(out.isError).toBe(false);
+		expect(out.logEntry).toContain("judge accept");
+	});
+
+	it.each(["1. ", "- "])("does not borrow %s items from a later section when checks is empty", async marker => {
+		const output = `## checks:\n\n## Next steps\n${marker}Run the tests later\n\nVERDICT: accept\nmissing:`;
+		const out = await decideSignOff(input, undefined, vi.fn().mockResolvedValue({ output }));
+		expect(out.isError).toBe(true);
+		expect(out.logEntry).toContain("no checked-artifact list");
+	});
+
+	it("rejects an empty checks heading", async () => {
+		const out = await decideSignOff(input, undefined, vi.fn().mockResolvedValue({ output: "## checks:\n\nVERDICT: accept\nmissing:" }));
+		expect(out.isError).toBe(true);
+		expect(out.logEntry).toContain("no checked-artifact list");
+	});
+
 	it("rejects an accept verdict without a checked-artifact list", async () => {
 		const runJudge = vi.fn().mockResolvedValue({ output: "VERDICT: accept\nmissing:" });
 		const out = await decideSignOff(input, undefined, runJudge);

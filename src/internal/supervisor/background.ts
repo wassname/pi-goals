@@ -2,15 +2,19 @@ import { randomUUID } from "node:crypto";
 
 export interface BackgroundState { quiet: boolean; description: string }
 
-/** Public process-local protocols only. Missing owners remain explicitly unknown. */
+/** Optional trackers are queried afresh. Absent tools mean no tracked work; an installed
+ * tracker that cannot report stays unknown. Detached/unregistered work is not OS-wide idleness. */
 export async function backgroundState(pi: any): Promise<BackgroundState> {
+  const tools = pi.getAllTools();
+  const hasProcesses = tools.some((tool: any) => tool.name === "process");
+  const hasSubagents = tools.some((tool: any) => tool.name === "subagent");
   let processes: unknown;
   pi.events.emit("processes:request:list", { reply: (value: unknown) => { processes = value; } });
-  const rows = Array.isArray(processes) ? processes : null;
+  const rows = Array.isArray(processes) ? processes : !hasProcesses && processes === undefined ? [] : null;
   const processKnown = rows?.every(p => p && ["running", "terminating", "terminate_timeout", "exited", "killed"].includes(p.status));
   const activeProcesses = processKnown ? rows!.filter(p => !["exited", "killed"].includes(p.status)).length : null;
-  let activeSubagents: number | null = null;
-  if (pi.getAllTools?.().some((tool: any) => tool.name === "subagent")) {
+  let activeSubagents: number | null = hasSubagents ? null : 0;
+  if (hasSubagents) {
     const requestId = randomUUID();
     activeSubagents = await new Promise<number | null>(resolve => {
       let unsubscribe: unknown;

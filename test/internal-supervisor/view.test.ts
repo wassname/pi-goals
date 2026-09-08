@@ -19,6 +19,30 @@ function toolResult(toolName: string, text: string, isError = false): Entry {
   return { type: "message", message: { role: "toolResult", toolName, isError, content: [{ type: "text", text }] } };
 }
 
+test("latest user direction survives bounded summaries, compaction and later supervisor echoes", () => {
+  const direction = "You are now explicitly authorized to implement goal two. Keep converter requirements intact. Stop after goal two is signed off.";
+  const entries: Entry[] = [
+    { type: "message", message: { role: "user", content: direction } },
+    { type: "compaction", summary: "Older summary still says to pause the CLI. ".repeat(200) },
+    ...Array.from({ length: 200 }, (_, n) => assistant(`Evidence ${n} ${"detail ".repeat(200)}`)),
+    { type: "message", message: { role: "user", content: "[supervisor] An older supervisor instruction is not new human direction." } },
+  ];
+  const view = buildView({ goal: "goal two", status: "checkpoint", entries, sourceSession: "/history/worker.jsonl" });
+  assert.ok(Buffer.byteLength(view) <= MAX_VIEW_BYTES);
+  assert.ok(view.includes(direction));
+  assert.ok(view.indexOf(direction) < view.indexOf("Older summary"), "latest direction is separate from older summarized context");
+  assert.match(view, /latest user direction/i);
+});
+
+test("oversized user direction is visibly bounded with a source reference", () => {
+  const view = buildView({ goal: "g", status: "checkpoint", sourceSession: "/history/worker.jsonl", entries: [
+    { type: "message", message: { role: "user", content: "Long direction ".repeat(2000) } },
+  ] });
+  assert.ok(Buffer.byteLength(view) <= MAX_VIEW_BYTES);
+  assert.match(view, /user direction truncated/);
+  assert.match(view, /source session: \/history\/worker.jsonl/);
+});
+
 test("a one-line goal stays whole while a multi-line goal has a locator", () => {
   assert.equal(goalPreview("fix the parser"), "fix the parser");
   assert.equal(goalPreview("Build the causal evaluation.\nThe full rubric follows."), "Build the causal evaluation. [...]");
@@ -311,4 +335,10 @@ test("pi's own branch logic drops the abandoned fork, on a session file", async 
 test("a long goal cannot push the view past the broker limit", () => {
   const view = buildView({ goal: "x".repeat(60000), status: "idle", entries: [assistant("hi")] });
   assert.ok(Buffer.byteLength(view, "utf-8") <= MAX_VIEW_BYTES, `view was ${Buffer.byteLength(view)} bytes`);
+});
+
+test("a bounded complete overview explicitly labels a truncated worker compaction summary", () => {
+  const view = buildView({ goal: "Check the cumulative evidence", status: "stopped", sourceSession: "/fixture/worker.jsonl", entries: [{ type: "compaction", summary: "evidence ".repeat(1_000) }] });
+  assert.match(view, /source session: \/fixture\/worker.jsonl/);
+  assert.match(view, /worker compaction summary truncated; inspect the worker session for full evidence/);
 });

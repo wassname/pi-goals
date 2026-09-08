@@ -67,7 +67,7 @@ describe("actual goals and supervisor package hooks (Herdr and judge mocked)", (
 				appendEntry: (name: string, data: any) => manager.appendCustomEntry(name, data),
 				getActiveTools: () => active, setActiveTools: (names: string[]) => { active = names; },
 				getCommands: () => [{ name: "supervise", sourceInfo: { path: "internal-supervisor" } }],
-				getAllTools: () => [{ name: "subagent" }, { name: "intercom", sourceInfo: { path: "intercom-test-only" } }],
+				getAllTools: () => [...["read", "grep", "find", "ls"].map(name => ({ name, sourceInfo: { source: "builtin" } })), { name: "subagent" }, { name: "intercom", sourceInfo: { path: "intercom-test-only" } }],
 				sendUserMessage: (text: string) => messages.push(text), sendMessage: (message: any) => contexts.push(message),
 				exec: async (command: string, args: string[]) => {
 					expect(command).toBe("herdr"); herdrCalls.push(args);
@@ -187,12 +187,26 @@ describe("actual goals and supervisor package hooks (Herdr and judge mocked)", (
 			expect(supervisor.compactions).toBe(1); expect(worker.compactions).toBe(0);
 			expect(worker.messages.filter((m: string) => m.startsWith("Work the goals"))).toHaveLength(1);
 			expect(supervisor.pi.getActiveTools()).not.toContain("CompleteGoal");
+			await supervisor.tools.get("let_it_run").execute("ready-assessed", { reason: "Worker is ready" }, undefined, undefined, supervisor.ctx);
+			await supervisor.hook("agent_settled");
 			await worker.commands.get("goals").handler("judge offline/judge", worker.ctx);
+			writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal: first", "[x] goal: first"));
+			const premature = worker.tools.get("CompleteGoal").execute("", { goal: "first" }, undefined, undefined, worker.ctx);
+			await tick();
+			expect(readFileSync(path, "utf8")).toContain("[/] goal: first");
+			await supervisor.hook("context", { messages: supervisor.contexts });
+			await supervisor.tools.get("review_goal").execute("", { decision: "needs_work", reason: "The overflow test does not exercise overflow" });
+			await supervisor.hook("agent_settled");
+			expect((await premature).isError).toBe(true);
+			expect(readFileSync(path, "utf8")).not.toContain("[x] goal: first");
+			expect(judge.calls).toHaveLength(0);
 			for (const goal of ["first", "second"]) {
 				const completion = worker.tools.get("CompleteGoal").execute("", { goal }, undefined, undefined, worker.ctx);
 				await tick(); const request = wires.findLast((w: any) => w.t === "goal_review");
 				expect(request.goal).toBe(goal);
-				await supervisor.tools.get("review_goal").execute("", { requestId: request.requestId, decision: "approve", reason: "Within the requested scope" });
+				await supervisor.hook("context", { messages: supervisor.contexts });
+				await supervisor.tools.get("review_goal").execute("", { decision: "approve", reason: "Within the requested scope" });
+				await supervisor.hook("agent_settled");
 				const completed = await completion;
 				expect(completed.isError, JSON.stringify(completed)).toBe(false);
 				expect(readFileSync(path, "utf8")).toContain(`[x] goal: ${goal}`);

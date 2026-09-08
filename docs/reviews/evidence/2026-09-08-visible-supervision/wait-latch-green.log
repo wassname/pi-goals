@@ -1,0 +1,10 @@
+✔ failed assessment resumes on later worker progress without a human poke (stop) (22.112625ms)
+✔ failed assessment resumes on later worker progress without a human poke (error) (3.617584ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1889.732341

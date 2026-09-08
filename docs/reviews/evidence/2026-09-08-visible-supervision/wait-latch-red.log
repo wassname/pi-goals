@@ -1,0 +1,46 @@
+✖ failed assessment resumes on later worker progress without a human poke (stop) (29.280507ms)
+✖ failed assessment resumes on later worker progress without a human poke (error) (5.669199ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1895.833929
+
+✖ failing tests:
+
+test at test/internal-supervisor/plan.test.ts:1:12636
+✖ failed assessment resumes on later worker progress without a human poke (stop) (29.280507ms)
+  AssertionError [ERR_ASSERTION]: ordinary worker progress must resume supervision without user input
+
+  1 !== 2
+
+      at TestContext.<anonymous> (/home/ubuntu/.pi/agent/worktrees/pi-goals-simple-visible-supervision/test/internal-supervisor/plan.test.ts:200:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/internal-supervisor/plan.test.ts:1:12636
+✖ failed assessment resumes on later worker progress without a human poke (error) (5.669199ms)
+  AssertionError [ERR_ASSERTION]: ordinary worker progress must resume supervision without user input
+
+  1 !== 2
+
+      at TestContext.<anonymous> (/home/ubuntu/.pi/agent/worktrees/pi-goals-simple-visible-supervision/test/internal-supervisor/plan.test.ts:200:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

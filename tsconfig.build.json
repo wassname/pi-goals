@@ -2,6 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {
+      "pi-intercom": ["./src/intercom-package.d.ts"],
       "@sting8k/pi-vcc/src/*": [
         "./src/internal/supervisor/vcc.d.ts"
       ]

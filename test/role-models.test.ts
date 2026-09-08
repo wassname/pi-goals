@@ -46,14 +46,15 @@ describe("role-models storage and public model_select", () => {
 		const dir = join(process.env.PI_CODING_AGENT_DIR!, "pi-goals");
 		const h = harness(dir);
 		await h.enter("planning"); h.select("cycle", { provider: "planner", id: "persisted" });
-		await Promise.all(["worker", "supervisor"].map(role => promisify(execFile)(process.execPath, ["--import", "tsx", resolve("test/fixtures/role-model-process.ts"), dir, role, `${role}-provider`, "persisted"])));
+		// Two cold Pi/tsx imports compete with the packed-session tests in the full suite.
+		await Promise.all(["worker", "supervisor"].map(role => promisify(execFile)(process.execPath, ["--import", "tsx", resolve("test/fixtures/role-model-process.ts"), dir, role, `${role}-provider`, "persisted"], { timeout: 20_000 })));
 		const fresh = harness(dir, { provider: "unrelated", id: "start" });
 		for (const role of ["planning", "worker", "supervisor"] as const) {
 			await fresh.enter(role);
 			expect(fresh.ctx.model).toEqual({ provider: role === "planning" ? "planner" : `${role}-provider`, id: "persisted" });
 			expect(Object.keys(stored(dir, role))).toEqual(["provider", "id"]);
 		}
-	});
+	}, 30_000);
 
 	it.each(["unavailable", "unauthenticated"])("visibly pauses a %s remembered model without replacing it", async failure => {
 		const dir = join(process.env.PI_CODING_AGENT_DIR!, "pi-goals");

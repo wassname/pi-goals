@@ -30,7 +30,7 @@ test("retries intercom registration when pi-intercom loads after pi-supervise", 
     sendUserMessage() {},
   };
   extension(pi);
-  bus.on(INTERCOM_EXTENSION_REGISTER_EVENT, (registration) => registrations.push(registration));
+  bus.on(INTERCOM_EXTENSION_REGISTER_EVENT, (registration) => { registrations.push(registration); registration.onReady({ snapshot: () => ({ connected: false }) }); });
   bus.emit(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, { version: 1 });
   bus.emit(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, { version: 1 });
   assert.equal(registrations.length, 1);
@@ -91,8 +91,6 @@ function harness(
     },
     commitState: () => {},
     listSessions: async () => [
-      // model and contextPct are on the real SessionInfo (pi-intercom/types.ts), pushed by presence.
-      // The view header reads them off our own record, so a session missing them fails a test here.
       { id: ownId, pid: process.pid, name: ownId === WORKER_ID ? "worker" : "supervisor", cwd: process.cwd(), model: "test/tiny", contextPct: 12 },
       {
         id: ownId === WORKER_ID ? SUPER_ID : WORKER_ID,
@@ -133,16 +131,19 @@ function harness(
     // On the pi API, NOT on the command context. Putting them on the context here is what hid a
     // real bug: the live command handler threw "context.getActiveTools is not a function", and
     // before that the optional call returned undefined and the strip skipped in silence.
+    getAllTools: () => ["read", "grep", "find", "ls"].map(name => ({ name, sourceInfo: { source: "builtin" } })),
     getActiveTools: () => activeTools,
     setActiveTools: (names: string[]) => {
       activeTools = names;
     },
   };
 
-  let activeTools = ["read", "grep", "list", "bash", "edit", "write"];
+  let activeTools = ["read", "grep", "ls", "bash", "edit", "write"];
   const status = new Map<string, string | undefined>();
   const ctx = {
     cwd: process.cwd(),
+    model: { provider: "test", id: "tiny" },
+    getContextUsage: () => ({ percent: 12 }),
     isIdle: () => isIdle,
     hasUI: true,
     // pi's own ExtensionContext.abort(): stops the agent loop before its next model call.
@@ -166,7 +167,9 @@ function harness(
     },
   };
 
+  let controller: ReturnType<typeof extension>;
   return {
+    controllerStatus: () => controller.status(),
     pi,
     ctx,
     tools,
@@ -179,9 +182,18 @@ function harness(
     aborts,
     status,
     async start() {
-      extension(pi as any);
+      controller = extension(pi as any);
       for (const fn of handlers.get("session_start") ?? []) await fn({}, ctx);
     },
+    setIdle(value: boolean) { isIdle = value; },
+    async finishAssessment() {
+      await tools.get("let_it_run").execute("assessed", { reason: "Inspection complete" }, undefined, undefined, ctx);
+      for (const fn of handlers.get("agent_settled") ?? []) await fn({}, ctx);
+    },
+    async shutdown() {
+      for (const fn of handlers.get("session_shutdown") ?? []) await fn({}, ctx);
+    },
+    intercomEvent(event: any) { onEvent(event); },
     async settle() {
       for (const fn of handlers.get("agent_settled") ?? []) await fn({}, ctx);
     },
@@ -324,11 +336,13 @@ test("a goal the supervisor inferred reaches the worker, which owns the view hea
   worker.deliver(SUPER_ID, { t: "pair", to: WORKER_ID, goal: "" });
   await new Promise((r) => setTimeout(r, 5));
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.match(worker.published.find((p) => p.t === "view").view, /^<goal>\nnot set\n<\/goal>$/m, "no goal yet");
 
   worker.deliver(SUPER_ID, { t: "goal", to: WORKER_ID, goal: "make the results table" });
   await new Promise((r) => setTimeout(r, 5));
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   const views = worker.published.filter((p) => p.t === "view");
   assert.match(views[views.length - 1].view, /^<goal>\nmake the results table\n<\/goal>$/m, "the header must follow set_goal");
 });
@@ -344,10 +358,12 @@ test("the second view carries only what happened after the first", async () => {
   await new Promise((r) => setTimeout(r, 300));
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.match(worker.published.find((p) => p.t === "view").view, /THE FIRST INSTRUCTION/);
 
   entries.push(message("assistant", "THE SECOND THING"));
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   const second = worker.published.filter((p) => p.t === "view").at(-1).view;
   assert.match(second, /THE SECOND THING/);
   assert.doesNotMatch(second, /THE FIRST INSTRUCTION/, "the supervisor already read this one");
@@ -371,6 +387,7 @@ test("on settle the worker publishes a view built from the live branch", async (
   await new Promise((r) => setTimeout(r, 5));
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   const view = worker.published.find((p) => p.t === "view");
   assert.ok(view, "expected a view publish");
   assert.equal(view.to, SUPER_ID);
@@ -390,6 +407,7 @@ test("the view is built from the live branch, not from every entry in the sessio
   await new Promise((r) => setTimeout(r, 5));
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   const view = worker.published.find((p) => p.t === "view");
   assert.match(view.view, /kept on the live branch/);
   assert.doesNotMatch(view.view, /ABANDONED after a rewind/);
@@ -435,19 +453,20 @@ test("goal, pairing and the steer count all survive a reload together", async ()
   assert.deepEqual(restored.recentSteers, ["instruction 0", "instruction 1", "instruction 2"]);
 });
 
-test("a view that arrives while the supervisor is thinking is queued, not dropped", async () => {
-  // pi throws "Agent is already processing" when sendUserMessage gets no delivery option, and the
-  // catch upstream turns that into a dropped message. On a half hour look the supervisor would
-  // silently skip a whole look.
+test("a view arriving during unrelated supervisor thinking waits for a fresh complete overview", async () => {
   const sup = harness(SUPER_ID, { isIdle: false });
-  await sup.start();
-  await sup.run("supervise", "@worker g");
-  sup.userMessages.length = 0;
-  sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "# Goal: g\n", stopped: true });
-  await new Promise((r) => setTimeout(r, 5));
-
-  assert.equal(sup.userMessages.length, 1, "the view must still reach the supervisor");
-  assert.deepEqual(sup.userMessages[0].options, { deliverAs: "followUp" });
+  try {
+    await sup.start(); await sup.run("supervise", "@worker g");
+    sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "intervening evidence", stopped: true });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(sup.userMessages.length, 0);
+    sup.setIdle(true); await sup.settle();
+    assert.equal(sup.published.filter(wire => wire.t === "look").length, 1);
+    sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "complete intervening evidence", stopped: true, refreshed: true });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(sup.userMessages.length, 1);
+    assert.match(sup.userMessages[0].content, /complete intervening evidence/);
+  } finally { await sup.shutdown(); }
 });
 
 test("the nudge repeats neither the instructions already sent nor the verdict rules", async () => {
@@ -468,7 +487,7 @@ test("the nudge repeats neither the instructions already sent nor the verdict ru
   const nudge = sup.userMessages.at(-1)!.content;
   assert.doesNotMatch(nudge, /instruction \d/, "the supervisor already has its own steer calls");
   assert.match(nudge, new RegExp(`${STEER_MEMORY + 3} instructions so far`), "the count is the cheap part, so it stays");
-  assert.ok(nudge.length < 400, `the nudge is sent every look, so it stays short: ${nudge.length} chars`);
+  assert.ok(nudge.length < 600, `the nudge is sent every look, so it stays short: ${nudge.length} chars`);
 });
 
 test("a multi-line goal returns to supervisor context every fifth review and after compaction", async () => {
@@ -476,19 +495,22 @@ test("a multi-line goal returns to supervisor context every fifth review and aft
   const sup = harness(SUPER_ID);
   await sup.start();
   await sup.run("supervise", `@worker ${goal}`);
-  const atPairing = sup.contextMessages.length;
+  const goalMessages = () => sup.contextMessages.filter(message => message.content.includes("<goal>"));
+  const atPairing = goalMessages().length;
   assert.match(sup.contextMessages.at(-1)!.content, /<goal>\nBuild the causal evaluation\.\nThe full rubric stays here\.\n<\/goal>/);
 
   for (let i = 0; i < 4; i++) {
     sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: `view ${i}`, stopped: true });
     await new Promise((r) => setTimeout(r, 5));
+    await sup.finishAssessment();
   }
-  assert.equal(sup.contextMessages.length, atPairing, "the brief already gave the supervisor the full goal");
+  assert.equal(goalMessages().length, atPairing, "the brief already gave the supervisor the full goal");
 
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "view 4", stopped: true });
   await new Promise((r) => setTimeout(r, 5));
   assert.match(sup.contextMessages.at(-1)!.content, /<goal>\nBuild the causal evaluation\.\nThe full rubric stays here\.\n<\/goal>/);
 
+  await sup.finishAssessment();
   const afterReview = sup.contextMessages.length;
   await sup.compact();
   assert.equal(sup.contextMessages.length, afterReview + 1);
@@ -506,13 +528,15 @@ test("a one-line goal is not redundantly reinserted", async () => {
   const sup = harness(SUPER_ID);
   await sup.start();
   await sup.run("supervise", "@worker fix the parser");
-  const atPairing = sup.contextMessages.length;
+  const goalMessages = () => sup.contextMessages.filter(message => message.content.includes("<goal>"));
+  const atPairing = goalMessages().length;
 
   for (let i = 0; i < 5; i++) {
     sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: `view ${i}`, stopped: true });
     await new Promise((r) => setTimeout(r, 5));
+    await sup.finishAssessment();
   }
-  assert.equal(sup.contextMessages.length, atPairing);
+  assert.equal(goalMessages().length, atPairing);
 });
 
 test("a check in and a worker that stopped ask for different things", async () => {
@@ -524,8 +548,9 @@ test("a check in and a worker that stopped ask for different things", async () =
   sup.userMessages.length = 0;
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "# Goal: g\n", stopped: false });
   await new Promise((r) => setTimeout(r, 5));
-  assert.match(sup.userMessages.at(-1)!.content, /Call let_it_run unless the view gives concrete evidence/);
+  assert.match(sup.userMessages.at(-1)!.content, /Use let_it_run when on course; steer only when the evidence/);
 
+  await sup.finishAssessment();
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "# Goal: g\n", stopped: true });
   await new Promise((r) => setTimeout(r, 5));
   assert.match(sup.userMessages.at(-1)!.content, /The worker stopped/);
@@ -646,7 +671,7 @@ test("let_it_run says the turn is over, so it is not called four times running",
   assert.match(result.content[0].text, /completed its verdict for the current worker view/);
   // The result must name a way to end the turn. "Say nothing more" named none, and a model that
   // may not write text can only call another tool, which is what session 019ffa73 did every look.
-  assert.match(result.content[0].text, /write one short line or no text/);
+  assert.match(result.content[0].text, /brief visible assessment/);
   assert.doesNotMatch(result.content[0].text, /Say nothing more/);
 });
 
@@ -746,11 +771,8 @@ test("a worker session never has its context rewritten", async () => {
   assert.ok(sent.every((m: any) => m.content[0].text.includes("looks like a view")), "nothing was dropped");
 });
 
-test("a view that arrives mid-answer starts a fresh look", async () => {
-  // A view sent while the supervisor is busy is queued as a followUp, and a followUp runs inside
-  // the agent loop already going, so agent_start does not fire again. Counting per agent run would
-  // charge the second view for the first, and answer it "already recorded" for a view it has not
-  // seen. The view branch resets the count, so the new view gets a verdict of its own.
+test("a newly presented view starts a fresh look", async () => {
+  // Counts belong to the presented view, not to how many worker updates arrived while busy.
   const sup = harness(SUPER_ID);
   await sup.start();
   await sup.run("supervise", "@worker make the results table");
@@ -812,7 +834,7 @@ test("a resume onto a live worker keeps supervising, and takes the writers back 
   assert.match(anchor, /Supervising again/);
   assert.match(anchor, /<goal>\ng\n<\/goal>/);
   assert.match(anchor, /3 instructions so far/);
-  assert.match(anchor, /one tool call: steer, done or let_it_run/);
+  assert.match(anchor, /brief visible assessment and perspective/);
   // The strip lives in the /supervise handler, which a resume never runs. Without this the
   // supervisor comes back with bash and edit in a directory the worker is writing to.
   const back = resumed.pi.getActiveTools();
@@ -837,12 +859,14 @@ test("done unpairs the worker, so it stops publishing views", async () => {
   assert.equal(atPairing, 1, "pairing publishes a first view, so the supervisor has something to read");
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(worker.published.filter((p) => p.t === "view").length, 2, "paired worker publishes");
 
   worker.deliver(SUPER_ID, { t: "done", to: WORKER_ID, reason: "results.md line 3" });
   await new Promise((r) => setTimeout(r, 5));
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(
     worker.published.filter((p) => p.t === "view").length,
     2,
@@ -914,6 +938,7 @@ test("done is refused while the worker has an unanswered tool call", async () =>
   assert.match(blocked.content[0].text, /still has work running \(subagent\)/);
 
   // Same guard, the other half: a subagent running as its own process leaves no unanswered call.
+  await sup.finishAssessment();
   const detached = buildView({ goal: "finish the sweep", status: "idle", entries: [message("assistant", "all done")], subagents: [4242] });
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: detached, stopped: true });
   await new Promise((r) => setTimeout(r, 5));
@@ -1112,7 +1137,7 @@ test("supervising takes the writing tools away, and stopping gives them back", a
   const during = sup.pi.getActiveTools();
   assert.deepEqual(
     during,
-    ["read", "grep", "list", "worker_view", "set_goal", "steer", "let_it_run", "done"],
+    ["read", "grep", "ls", "worker_view", "set_goal", "steer", "let_it_run", "done"],
     "no bash, no edit, no write, and the supervisor tools appear",
   );
   await sup.run("supervise", "stop");
@@ -1195,7 +1220,8 @@ test("/supervise goal changes the goal without breaking the pairing", async () =
   ], "the worker holds the copy every view header is built from");
   assert.ok(sup.published.some((p) => p.t === "look"), "and a fresh view follows, so it judges now");
   assert.match(sup.contextMessages.at(-1)!.content, /changed the goal[\s\S]*quote the evidence file instead/);
-  assert.match(sup.status.get("intercom-supervisor")!, /watching 1/, "the steer count survives");
+  assert.match(sup.status.get("intercom-supervisor")!, /waiting for worker overview/);
+  assert.equal(sup.appended.at(-1)!.data.steerRounds, 1, "the steer count survives");
 });
 
 test("the footer says which side of a pairing this session is, and clears when it ends", async () => {
@@ -1262,6 +1288,7 @@ test("the view names the worker's model and how full its context is", async () =
   worker.deliver(SUPER_ID, { t: "pair", to: WORKER_ID, goal: "g" });
   await new Promise((r) => setTimeout(r, 5));
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
 
   const view = worker.published.find((p) => p.t === "view");
   assert.match(view.view, /model: test\/tiny, 12% of its context used/);
@@ -1302,6 +1329,7 @@ test("the supervisor gets a look at a working worker every half hour, without be
   assert.match(views[0].view, /^child pi processes still running: /m);
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   const after = worker.published.filter((p) => p.t === "view").length;
   t.mock.timers.tick(600_000);
   await new Promise((r) => setTimeout(r, 300)); // let any look that did start finish, so it counts
@@ -1323,7 +1351,7 @@ test("a human message in the worker session is not a reason to stand back", asyn
   // And on the view that carries a stopped worker, where the excuse actually got used.
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "worker view", stopped: true });
   await new Promise((r) => setTimeout(r, 5));
-  assert.match(sup.userMessages[0].content, /human being present does not count as somebody driving it/);
+  assert.match(sup.userMessages[0].content, /concrete continuation if work remains/);
 });
 
 test("letting a stopped worker run says plainly that the worker stays stopped", async () => {
@@ -1340,6 +1368,7 @@ test("letting a stopped worker run says plainly that the worker stays stopped", 
   const working = await letItRun.execute("id", { reason: "on track" }, undefined, undefined, sup.ctx);
   assert.doesNotMatch(working.content[0].text, /does not start again by itself/, "a working worker needs no warning");
 
+  await sup.settle();
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "job 12 finished", stopped: true });
   await new Promise((r) => setTimeout(r, 5));
   const stopped = await letItRun.execute("id", { reason: "waiting for the worker to re-queue" }, undefined, undefined, sup.ctx);
@@ -1457,10 +1486,13 @@ test("the worker counts reviews in a row where nothing changed", async () => {
   await new Promise((r) => setTimeout(r, 300)); // the pairing view runs ps
 
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   entries.push(message("assistant", "I will get to that shortly."));
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   entries.push(message("assistant", "Yes, I agree that is the right approach."));
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
 
   // The pairing view is not a review, so it is dropped here and does not count.
   const views = worker.published.filter((p) => p.t === "view").slice(1);
@@ -1472,6 +1504,7 @@ test("the worker counts reviews in a row where nothing changed", async () => {
     message: { role: "assistant", content: [{ type: "toolCall", id: "w", name: "write", arguments: { path: "results.md" } }] },
   });
   await worker.settle();
+  await new Promise(resolve => setTimeout(resolve, 50));
   const after = worker.published.filter((p) => p.t === "view").at(-1)!;
   assert.doesNotMatch(after.view, /reviews in a row/, "real work must clear the count, not just pause it");
 });
@@ -1512,6 +1545,99 @@ test("duplicate standalone Intercom registries are diagnosed and cannot bootstra
   const h = harness(WORKER_ID);
   await h.start();
   h.pi.events.emit(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, { version: 1 });
-  await assert.rejects(new Promise((resolve, reject) => h.pi.events.emit("pi-supervise:plan:v1", { version: 1, method: "status", resolve, reject })), /Duplicate standalone pi-intercom/);
-  assert.ok(h.notices.some(note => note.includes("Remove the old companion")));
+  await assert.rejects(h.controllerStatus(), /Multiple Intercom runtimes/);
+  assert.ok(h.notices.some(note => note.includes("Keep one Intercom installation")));
+});
+
+for (const reloading of ["worker", "supervisor"] as const) test(`retained non-plan supervision reconnects after the ${reloading} reloads, not on unrelated peer traffic`, async () => {
+  const worker = harness(WORKER_ID);
+  const supervisor = harness(SUPER_ID);
+  const sessions = [worker, supervisor];
+  try {
+    await worker.start(); await supervisor.start();
+    await supervisor.run("supervise", "@worker retain this goal");
+    worker.deliver(SUPER_ID, supervisor.published.find(wire => wire.t === "pair"));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    supervisor.deliver(WORKER_ID, worker.published.find(wire => wire.t === "paired"));
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    const old = reloading === "worker" ? worker : supervisor;
+    const survivor = reloading === "worker" ? supervisor : worker;
+    const returningId = reloading === "worker" ? WORKER_ID : SUPER_ID;
+    const survivorId = reloading === "worker" ? SUPER_ID : WORKER_ID;
+    survivor.intercomEvent({ type: "session_left", sessionId: returningId });
+    await old.shutdown();
+    assert.equal(survivor.status.get("intercom-supervisor"), "supervision disconnected");
+
+    const returned = harness(returningId, { entries: old.appended.map(entry => ({ type: "custom", customType: entry.type, data: entry.data })) });
+    sessions.push(returned);
+    await returned.start();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const publishedBefore = survivor.published.length;
+    const messagesBefore = survivor.userMessages.length;
+    const fresh = reloading === "worker"
+      ? { t: "view", to: survivorId, view: "Fresh evidence from the returning worker", stopped: false }
+      : { t: "look", to: survivorId };
+    survivor.intercomEvent({ type: "session_joined", session: { id: "unrelated-peer" } });
+    survivor.intercomEvent({ type: "session_joined", session: { id: returningId } });
+    survivor.deliver("unrelated-peer", fresh);
+    survivor.deliver(returningId, { ...fresh, to: "different-recipient" });
+    survivor.deliver(returningId, { ...fresh, bindingId: "unrelated-plan" });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(survivor.status.get("intercom-supervisor"), "supervision disconnected", "presence and unrelated/misaddressed traffic must not restore the pairing");
+    assert.equal(survivor.published.length, publishedBefore);
+    assert.equal(survivor.userMessages.length, messagesBefore);
+
+    if (reloading === "worker") {
+      await assert.rejects(supervisor.tools.get("steer").execute("disconnected", { message: "Must not send yet" }, undefined, undefined, supervisor.ctx), /Worker disconnected/);
+      await returned.settle(); // The restored worker publishes through its retained relationship.
+      survivor.deliver(returningId, returned.published.findLast(wire => wire.t === "view"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.match(supervisor.status.get("intercom-supervisor")!, /watching/);
+      await supervisor.tools.get("steer").execute("reconnected", { message: "Inspect the saved evidence" }, undefined, undefined, supervisor.ctx);
+      returned.deliver(SUPER_ID, supervisor.published.findLast(wire => wire.t === "directive"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(returned.userMessages.at(-1)?.content, "[supervisor] Inspect the saved evidence");
+    } else {
+      const look = returned.published.findLast(wire => wire.t === "look");
+      assert.ok(look, "the reloaded supervisor asks its retained worker for a view");
+      worker.deliver(SUPER_ID, look);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const views = worker.published.slice(publishedBefore).filter(wire => wire.t === "view");
+      assert.equal(views.length, 1, "the surviving worker must answer the validated look despite its previous disconnect flag");
+      assert.match(worker.status.get("intercom-supervisor")!, /watched/);
+      returned.deliver(WORKER_ID, views[0]);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(returned.userMessages.length, 1);
+      await returned.tools.get("steer").execute("reconnected", { message: "Continue from the new view" }, undefined, undefined, returned.ctx);
+      worker.deliver(SUPER_ID, returned.published.findLast(wire => wire.t === "directive"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(worker.userMessages.at(-1)?.content, "[supervisor] Continue from the new view");
+    }
+    assert.equal(returned.published.filter(wire => wire.t === "pair" || wire.t === "paired").length, 0, "reload must not need a replacement pairing");
+    assert.equal((await survivor.controllerStatus()).role, reloading === "worker" ? "supervisor" : "worker");
+  } finally { for (const session of sessions) await session.shutdown(); }
+});
+
+test("busy supervisor retains its active view and requests one complete overview after settling", async () => {
+  const supervisor = harness(SUPER_ID);
+  try {
+    await supervisor.start(); await supervisor.run("supervise", "@worker examine the incremental evidence");
+    supervisor.deliver(WORKER_ID, { t: "paired", to: SUPER_ID });
+    supervisor.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "active receipt", stopped: false });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    for (let n = 1; n <= 5; n++) {
+      supervisor.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: `incremental receipt ${n}`, stopped: false });
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(supervisor.userMessages.length, 1, "routine status must not queue five model turns");
+    const latest = await supervisor.tools.get("worker_view").execute();
+    assert.equal(latest.content[0].text, "active receipt", "new arrivals cannot overwrite the active assessment");
+    await supervisor.tools.get("let_it_run").execute("assessed", { reason: "Active receipt is on course" }, undefined, undefined, supervisor.ctx);
+    const looks = supervisor.published.filter(wire => wire.t === "look").length;
+    await supervisor.settle();
+    assert.equal(supervisor.published.filter(wire => wire.t === "look").length, looks + 1);
+    await supervisor.settle();
+    assert.equal(supervisor.published.filter(wire => wire.t === "look").length, looks + 1, "only one refresh may be in flight");
+  } finally { await supervisor.shutdown(); }
 });

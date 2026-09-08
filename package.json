@@ -54,8 +54,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts",
-      "./node_modules/pi-intercom/index.ts"
+      "./src/index.ts"
     ],
     "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png",
     "skills": [

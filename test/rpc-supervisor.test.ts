@@ -40,8 +40,8 @@ describe("two real Pi sessions with the actual Intercom broker (Herdr mocked)", 
 				if (last.role === "tool") return stream(res, { content: "Check complete." });
 				if (names.includes("review_goal")) {
 					supervisorModels.push(body.model);
-					const request = text.match(/Goal sign-off request ([^ .]+)\./);
-					if (request) { reviewCalls++; return call("review_goal", { requestId: request[1], decision: "approve", reason: "This goal remains faithful to the plan." }); }
+					const request = text.includes("Goal sign-off:");
+					if (request) { reviewCalls++; return call("review_goal", { decision: "approve", reason: "This goal remains faithful to the plan." }); }
 					return call("let_it_run", { reason: "Ready selected; worker starting" });
 				}
 				if (text.includes("intercom status")) return call("intercom", { action: "status" });
@@ -56,6 +56,7 @@ describe("two real Pi sessions with the actual Intercom broker (Herdr mocked)", 
 		await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
 		const address = server.address(); if (!address || typeof address === "string") throw new Error("Offline HTTP server did not start");
 		const agentDir = join(cwd, ".agent"); mkdirSync(agentDir);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
 		writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { offline: { baseUrl: `http://127.0.0.1:${address.port}`, apiKey: "test", api: "openai-completions", models: ["test", "planning", "worker", "supervisor", "judge"].map(id => ({ id, name: `Offline ${id}`, reasoning: false, input: ["text"], contextWindow: 200_000, maxTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) } } }));
 		const modelDir = join(agentDir, "pi-goals"); mkdirSync(modelDir);
 		for (const role of ["worker", "supervisor"]) writeFileSync(join(modelDir, `${role}-model.json`), JSON.stringify({ provider: "offline", id: role }));

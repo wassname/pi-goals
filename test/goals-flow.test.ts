@@ -79,6 +79,19 @@ async function settleDraft(flow: ReturnType<typeof setup>) {
 }
 
 describe("/goals draft flow", () => {
+	it("reopens a prematurely ticked submitted goal before a failed sign-off", async () => {
+		const flow = setup([]);
+		try {
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: true, autoIntervalMs: null } });
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			const file = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			writeFileSync(file, "# Plan\n1. [x] goal: first\n  - [x] subtask\n2. [ ] goal: second\n");
+			const outcome = await flow.tools.get("CompleteGoal").execute("", { goal: "first" }, undefined, undefined, flow.ctx);
+			expect(outcome.isError).toBe(true);
+			expect(readFileSync(file, "utf8")).toBe("# Plan\n1. [/] goal: first\n  - [x] subtask\n2. [ ] goal: second\n");
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
 	it("enables steward and hourly auto by default in new and cleared legacy sessions", async () => {
 		for (const legacy of [false, true]) {
 			const flow = setup([]);

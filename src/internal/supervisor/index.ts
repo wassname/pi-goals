@@ -9,13 +9,16 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
   IntercomExtensionChannel,
   IntercomExtensionEvent,
 } from "pi-intercom/extension-api.ts";
 import { Type } from "typebox";
+import { loadBundledIntercom } from "../../intercom.js";
+import { type Bootstrap, pendingReply, planHash, planText, type SupervisorBinding, type SupervisorController, validBinding } from "../../supervisor.js";
 import { backgroundState } from "./background.js";
-import { type GoalDecision, type GoalReview, PLAN_API_EVENT, type PlanApiRequest, type PlanBinding, pendingReply, planHash, planText, validBinding } from "./plan-api.js";
+import type { GoalDecision, GoalReview, GoalReviewRequest } from "./protocol.js";
 
 /**
  * Public event names from the bundled pi-intercom/extension-api.ts protocol. The channel types
@@ -55,11 +58,13 @@ import {
 } from "./prompts.js";
 import {
   EMPTY_STATE,
+  goalReviewWire,
   isWire,
   NAMESPACE,
   OVERLAP_WARN,
   overlap,
   restoreState,
+  reviewIdentity,
   STATE_ENTRY,
   STEER_MEMORY,
   type SuperviseState,
@@ -68,14 +73,12 @@ import {
 import { childPiProcesses } from "./subagents.js";
 import { age, buildView, progressKey, sinceLastTurn, turnsSince } from "./view.js";
 
-/**
- * The worker's model and context use, for the view header, from its own broker presence record.
- *
- * contextPct is missing right after a compaction and on a session with no model selected, so it is
- * left out rather than printed as 0, which would read as an empty context.
- */
-function workerModel(info: { model: string; contextPct?: number }): string {
-  return info.contextPct === undefined ? info.model : `${info.model}, ${info.contextPct}% of its context used`;
+/** Display metadata is local; a roster timeout must not prevent a worker overview. */
+function workerModel(context: Pick<ExtensionContext, "model" | "getContextUsage">): string {
+  const model = context.model ? `${context.model.provider}/${context.model.id}` : "unknown";
+  const percent = context.getContextUsage?.()?.percent;
+  // Unknown after compaction is not zero context use.
+  return percent == null ? model : `${model}, ${Math.round(percent)}% of its context used`;
 }
 
 /**
@@ -148,20 +151,9 @@ const LOOKS_SKIPPED_MAX = 3;
  */
 const bodyOf = (view: string) => view.split("\n").filter((line) => !line.startsWith("status: ")).join("\n");
 
-/**
- * Tools taken away from a supervising session, and given back when supervision ends.
- *
- * The supervisor shares a working directory with the worker, so a supervisor that can write is a
- * second agent editing the same files at the same time. It keeps read, grep and the rest, because
- * checking a claim against a file is its job. If it wants a command run, it steers the worker.
- *
- * A deny list, not an allow list: a read tool named something unexpected stays available rather
- * than silently disappearing. The kept list is printed, so a writer this misses is visible.
- */
-const WRITER_TOOLS = new Set([
-  "bash", "edit", "write", "multi_edit", "multiedit", "apply_patch", "notebook_edit",
-  "edit_file", "write_file", "quick_edit", "target_edit",
-]);
+/** Unknown extension tools can spawn or mutate indirectly. Only native inspection tools and
+ * this module's narrowly owned steering/checkpoint tools are available in supervisor mode. */
+const INSPECTION_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
 /**
  * The tools only a supervisor should have. Hidden in every session that is not supervising.
@@ -174,10 +166,9 @@ const WRITER_TOOLS = new Set([
  */
 const SUPERVISOR_TOOLS = ["worker_view", "set_goal", "steer", "let_it_run", "done", "review_goal"];
 
-export default function (pi: any, modelReady: () => boolean = () => true) {
+export default function (pi: any, modelReady: () => boolean = () => true): SupervisorController {
   let duplicateIntercom = false;
   let channel: IntercomExtensionChannel | undefined;
-  let intercomRegistered = false;
   let sessionInitialized = false;
   let state: SuperviseState = { ...EMPTY_STATE };
   let latestView = "";
@@ -188,9 +179,23 @@ export default function (pi: any, modelReady: () => boolean = () => true) {
   let bootstrapPending = false;
   let compacting: Promise<void> | undefined;
   let pairingGeneration = 0;
-  let attached: ReturnType<typeof pendingReply<unknown>> | undefined;
+  let attached: ReturnType<typeof pendingReply<SupervisorBinding>> | undefined;
   let outgoingReview: (ReturnType<typeof pendingReply<GoalDecision>> & { review: GoalReview }) | undefined;
-  let incomingReview: GoalReview | undefined;
+  let incomingReview: GoalReviewRequest | undefined;
+  let presentedReview: GoalReviewRequest | undefined;
+  let supervisorMode = false;
+  let peerDisconnected = false;
+  let activeAssessment: "view" | "goal" | undefined;
+  let assessmentFailure: string | undefined;
+  let assessmentEmpty = false;
+  let routineDirty = false;
+  let refreshInFlight = false;
+  let advancing = false;
+  let checkpointQueued = false;
+  let awaitingUser = false;
+  let lookPending = false;
+  let publishAgain = false;
+  let publishingLeaf: string | number | undefined;
   /** Supervisor side: whether the worker was stopped in that view, which changes what let_it_run costs. */
   let workerStopped = false;
   let ctx: any;
@@ -229,20 +234,6 @@ export default function (pi: any, modelReady: () => boolean = () => true) {
     showStatus();
   }
 
-  function reanchorPlan() {
-    if (!state.plan || state.role !== "supervisor") return;
-    const policy = loadSupervisorPrompt(ctx.cwd).prompt;
-    pi.sendMessage({ customType: "supervisor_plan", display: false, content: `${policy}
-
-Supervise this plan; use review_goal only for an explicit goal request. The human's Ready approved the plan. Do not start a second worker.
-
-Approved plan:
-${state.goal}
-
-Current plan (${state.plan.planPath}):
-${planText(state.plan)}` }, { triggerTurn: false });
-  }
-
   async function compactSupervisor(force = false) {
     if (!modelReady()) throw new Error("Supervisor model unavailable; select with /model before compaction");
     if (compacting) return compacting;
@@ -251,69 +242,88 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     const measured = typeof tokens === "number" && Number.isFinite(tokens);
     if (force && measured && tokens <= 20_000) {
       ctx.ui.notify("Supervisor fork is already small; compaction skipped.", "info");
-      reanchorPlan();
       return;
     }
     const threshold = Math.min(state.plan.compactTokens, Math.max(1, (ctx.model?.contextWindow ?? 200_000) - 20_000));
-    if (!force && (!measured || tokens < threshold)) return;
-    const generation = pairingGeneration;
-    const bindingId = state.plan.id;
+    if (!force && (!measured || tokens <= threshold)) return;
     compacting = new Promise<void>((resolve, reject) => ctx.compact({
       customInstructions: "Preserve the user's intent, decisions and their reasons, unresolved choices, plan path, and supervisor interventions. You are becoming/remaining the supervisor, not the worker.",
-      onComplete: () => resolve(), onError: reject,
+      onComplete: () => resolve(),
+      onError: (error: Error) => {
+        // Native Pi can retain all recent messages even when total context exceeds our small-fork
+        // shortcut (system/tool tokens are not compactable history). This is not a provider failure.
+        if (force && error.message === "Nothing to compact (session too small)") {
+          ctx.ui.notify("Supervisor fork has no older history eligible for compaction; retaining it unchanged.", "info");
+          resolve();
+        } else reject(error);
+      },
     }));
     try { await compacting; }
     finally { compacting = undefined; }
-    if (!stopping && generation === pairingGeneration && state.plan?.id === bindingId && state.role === "supervisor") reanchorPlan();
   }
 
   function cancelGoalRequests(reason: string) {
     attached?.finish(undefined, new Error(reason)); attached = undefined;
     outgoingReview?.finish(undefined, new Error(reason)); outgoingReview = undefined;
-    if (incomingReview && state.pairedId) send({ t: "goal_cancel", to: state.pairedId, requestId: incomingReview.requestId, bindingId: incomingReview.bindingId });
+    if (incomingReview && state.pairedId && channel?.snapshot().connected) send({ t: "goal_cancel", to: state.pairedId, requestId: incomingReview.requestId, bindingId: incomingReview.bindingId });
     incomingReview = undefined;
+    presentedReview = undefined;
+    checkpointQueued = false;
   }
 
-  async function planRequest(request: PlanApiRequest): Promise<unknown> {
-    if (duplicateIntercom) throw new Error("Duplicate standalone pi-intercom registration. Remove the old pi-intercom companion from Pi settings; pi-goals bundles it. Reload both sessions.");
-    if (request.method !== "stop" && !modelReady()) throw new Error("Role model unavailable; configure the saved model or explicitly select with /model, then retry.");
+  async function ready(signal?: AbortSignal, wait = false) {
+    if (duplicateIntercom) throw new Error("Multiple Intercom runtimes are loaded. Keep one Intercom installation and reload.");
+    if (!modelReady()) throw new Error("Role model unavailable; configure the saved model or explicitly select with /model, then retry.");
     if (!ctx || stopping) throw new Error("Supervisor session is not ready");
-    if (request.signal?.aborted) throw new Error("Supervisor request cancelled");
-    if (["bootstrap", "status", "prepare"].includes(request.method) && !channel?.snapshot().connected) {
-      const connected = pendingReply<void>(request.signal, () => {}, 30_000);
+    signal?.throwIfAborted();
+    if (wait && !channel?.snapshot().connected) {
+      const connected = pendingReply<void>(signal, () => {}, 30_000);
       void intercomConnected.then(() => connected.finish());
       await connected.promise;
     }
-    if (stopping || request.signal?.aborted) throw new Error("Supervisor request cancelled");
-    if (!channel?.snapshot().connected || !channel.snapshot().supported) throw new Error("Bundled Intercom is unavailable. Load the pi-goals package directory, not only src/index.ts, and reload both sessions");
-    if (request.method === "status") {
-      const live = await channel.listSessions();
-      return { workerId: await resolveOwnId(), role: state.role, binding: state.plan, supervisorId: state.pairedId,
+    if (stopping) throw new Error("Supervisor session ended");
+    signal?.throwIfAborted();
+    if (!channel?.snapshot().connected || !channel.snapshot().supported) throw new Error("Intercom is unavailable. Enable a compatible Intercom and reload both sessions.");
+  }
+
+  function workerPlan(bindingId: string): SupervisorBinding {
+    if (!state.plan || bindingId !== state.plan.id) throw new Error("Plan pairing changed or is unavailable");
+    if (state.role !== "worker" || !state.pairedId) throw new Error("Supervisor is not paired; use /goals supervisor or turn the steward off");
+    return state.plan;
+  }
+
+  const controller: SupervisorController = {
+    async status(signal) {
+      await ready(signal, true);
+      const live = await channel!.listSessions();
+      return { workerId: await resolveOwnId(), role: state.role, binding: state.plan,
         connected: state.role === "worker" && !!state.plan && live.some(s => s.id === state.pairedId) };
-    }
-    if (request.method === "prepare") {
-      if (!validBinding(request.binding) || request.binding.workerSession !== ctx.sessionManager.getSessionFile()) throw new Error("Invalid plan binding for this worker session");
+    },
+    async prepare(binding, signal) {
+      await ready(signal, true);
+      if (!validBinding(binding) || binding.workerSession !== ctx.sessionManager.getSessionFile()) throw new Error("Invalid plan binding for this worker session");
       if (state.role !== "none" || state.plan) throw new Error("A supervisor is already associated; stop it before replacing the plan");
-      state = { ...state, plan: request.binding }; save();
-      return { workerId: await resolveOwnId() };
-    }
-    if (request.method === "bootstrap") {
-      if (!validBinding(request.binding) || !request.workerId) throw new Error("Invalid supervisor bootstrap");
-      const binding = { ...request.binding, ...(state.plan?.id === request.binding.id ? state.plan : {}), supervisorSession: ctx.sessionManager.getSessionFile() };
+      state = { ...state, plan: binding }; save();
+    },
+    async bootstrap(bootstrap: Bootstrap, signal) {
+      await ready(signal, true);
+      if (!validBinding(bootstrap.binding) || !bootstrap.workerId) throw new Error("Invalid supervisor bootstrap");
+      const binding = { ...bootstrap.binding, ...(state.plan?.id === bootstrap.binding.id ? state.plan : {}), supervisorSession: ctx.sessionManager.getSessionFile() };
       if (!binding.supervisorSession || binding.supervisorSession === binding.workerSession) throw new Error("Supervisor must use a distinct persisted fork");
       if (state.plan?.id === binding.id && state.plan.stopped) throw new Error("This supervisor was stopped. Start a new pairing from the worker.");
       if (state.role === "supervisor" && state.plan?.id === binding.id && state.planInitialized && state.pairedId) {
-        reanchorPlan(); await rejoinOrDrop(); return state.plan;
+        await rejoinOrDrop(); return state.plan;
       }
       bootstrapPending = true;
       const generation = ++pairingGeneration;
-      const cancelled = () => stopping || generation !== pairingGeneration || state.plan?.id !== binding.id || state.plan.stopped || request.signal?.aborted;
-      state = { ...EMPTY_STATE, role: "supervisor", pairedId: request.workerId, plan: binding, goal: state.plan?.id === binding.id ? state.goal : planText(binding) };
+      const cancelled = () => stopping || generation !== pairingGeneration || state.plan?.id !== binding.id || state.plan.stopped || signal?.aborted;
+      state = { ...EMPTY_STATE, role: "supervisor", pairedId: bootstrap.workerId, plan: binding, goal: state.plan?.id === binding.id ? state.goal : planText(binding) };
+      supervisorMode = true;
       stripWriters(); showSupervisorTools(true); save();
       try {
         await compactSupervisor(true);
         if (cancelled()) throw new Error("Supervisor bootstrap cancelled");
-        const worker = (await channel.listSessions()).find(s => s.id === request.workerId);
+        const worker = (await channel!.listSessions()).find(s => s.id === bootstrap.workerId);
         if (cancelled()) throw new Error("Supervisor bootstrap cancelled");
         if (!worker) throw new Error("The specified worker is no longer connected");
         await startPair(worker, state.goal, ctx, binding);
@@ -321,58 +331,71 @@ ${planText(state.plan)}` }, { triggerTurn: false });
       } catch (error) {
         if (!stopping && generation === pairingGeneration) reset("Supervisor initialization failed; retry from the worker");
         throw error;
+      } finally { bootstrapPending = false; }
+    },
+    async stop(bindingId) {
+      if (!state.plan || bindingId !== state.plan.id) throw new Error("No matching plan pairing to stop");
+      const connected = channel?.snapshot().connected && channel.snapshot().supported;
+      if (connected) {
+        send({ t: "plan_stop", to: "*", bindingId });
+        if (state.pairedId) send({ t: "unpair", to: state.pairedId });
       }
-      finally { bootstrapPending = false; }
-    }
-    if (request.method === "stop") {
-      if (!state.plan || request.bindingId !== state.plan.id) throw new Error("No matching plan pairing to stop");
-      if (state.plan) send({ t: "plan_stop", to: "*", bindingId: state.plan.id });
-      if (state.pairedId) send({ t: "unpair", to: state.pairedId });
-      reset("Plan supervision stopped", true); return {};
-    }
-    if (!state.plan || request.bindingId !== state.plan.id) throw new Error("Plan pairing changed or is unavailable");
-    if (request.method === "attached") {
-      if (state.role === "worker" && (await channel.listSessions()).some(s => s.id === state.pairedId)) return state.plan;
+      reset("Plan supervision stopped", true);
+      if (!connected) throw new Error("Stopped locally; Intercom disconnected so the supervisor may not have received stop. Inspect its recorded pane.");
+    },
+    async attached(bindingId, signal) {
+      await ready(signal);
+      if (!state.plan || bindingId !== state.plan.id) throw new Error("Plan pairing changed or is unavailable");
+      if (state.role === "worker" && (await channel!.listSessions()).some(s => s.id === state.pairedId)) return state.plan;
       if (attached) throw new Error("Already waiting for the supervisor");
-      const pending = pendingReply<unknown>(request.signal, () => { attached = undefined; });
+      const pending = pendingReply<SupervisorBinding>(signal, () => { attached = undefined; });
       attached = pending;
       return pending.promise;
-    }
-    if (state.role !== "worker" || !state.pairedId) throw new Error("Supervisor is not paired; use /goals supervisor or turn the steward off");
-    if (request.method === "activate") {
-      state = { ...state, plan: { ...state.plan, active: true } }; save();
-      send({ t: "plan_activate", to: state.pairedId, bindingId: state.plan!.id });
+    },
+    async activate(bindingId, signal) {
+      await ready(signal); workerPlan(bindingId);
+      state = { ...state, plan: { ...state.plan!, active: true } }; save();
+      send({ t: "plan_activate", to: state.pairedId, bindingId });
       startWatch();
-      // The worker's work handoff is queued already. Never label this as an abandoned stopped worker.
       await publishView(ctx, "Ready selected; worker starting", sentTurns, false, true);
-      return {};
-    }
-    if (request.method === "update") { send({ t: "plan_update", to: state.pairedId, bindingId: state.plan.id }); return {}; }
-    if (request.method === "review") {
+    },
+    async review(bindingId, goal, hash, signal) {
+      await ready(signal);
+      const plan = workerPlan(bindingId);
       if (outgoingReview) throw new Error("A goal review is already pending");
-      if (!request.goal || request.planHash !== planHash(planText(state.plan))) throw new Error("The plan changed before goal review");
-      const bindingId = state.plan.id;
+      if (!goal || hash !== planHash(planText(plan))) throw new Error("The plan changed before goal review");
       const peer = state.pairedId;
-      const pending = pendingReply<GoalDecision>(request.signal, () => {
-        outgoingReview = undefined;
-        send({ t: "goal_cancel", to: peer, requestId: pending.requestId, bindingId });
-      });
-      const review = { requestId: pending.requestId, bindingId, goal: request.goal, planHash: request.planHash };
+      const generation = pairingGeneration;
+      const context = ctx;
+      let sent = false;
+      const pending = pendingReply<GoalDecision>(signal, () => {
+        if (outgoingReview?.requestId === pending.requestId) outgoingReview = undefined;
+        if (sent && channel?.snapshot().connected) send({ t: "goal_cancel", to: peer, requestId: pending.requestId, bindingId });
+      }, null);
+      const review = { requestId: pending.requestId, bindingId, goal, planHash: hash };
       outgoingReview = { ...pending, review };
-      send({ t: "goal_review", to: peer, ...review });
+      // Return the cancellable promise immediately; optional tracker queries must not delay abort.
+      void (async () => {
+        try {
+          const { view } = await captureWorkerView(context, "goal checkpoint", 0);
+          if (outgoingReview?.requestId !== pending.requestId) return;
+          signal?.throwIfAborted();
+          if (stopping || generation !== pairingGeneration || state.pairedId !== peer || peerDisconnected || context.sessionManager.getSessionFile() !== ctx.sessionManager.getSessionFile()) throw new Error("Supervisor checkpoint cancelled while building worker context");
+          if (hash !== planHash(planText(workerPlan(bindingId)))) throw new Error("Plan changed while building worker context");
+          send(goalReviewWire(peer, review, view));
+          sent = true;
+        } catch (error) {
+          if (outgoingReview?.requestId === pending.requestId) pending.finish(undefined, error instanceof Error ? error : new Error(String(error)));
+        }
+      })();
       return pending.promise;
-    }
-    throw new Error("Unsupported plan operation");
-  }
-  pi.events.on(PLAN_API_EVENT, (request: PlanApiRequest) => {
-    if (stopping || request?.version !== 1 || request.handled || typeof request.resolve !== "function" || typeof request.reject !== "function") return;
-    request.handled = true;
-    planRequest(request).then(request.resolve, (error: unknown) => request.reject!(error instanceof Error ? error : new Error(String(error))));
-  });
+    },
+  };
   pi.on("session_shutdown", () => {
     stopping = true;
     pairingGeneration++;
     cancelGoalRequests("Session reloaded or ended; retry the goal review");
+    clearAssessments();
     clearInterval(watchTimer); clearTimeout(pairTimer);
   });
 
@@ -389,13 +412,16 @@ ${planText(state.plan)}` }, { triggerTurn: false });
       ctx.ui.setStatus(STATUS_ID, undefined);
       return;
     }
-    const text = state.role === "supervisor" ? `watching ${state.steerRounds}` : "watched";
+    if (peerDisconnected || !channel?.snapshot().connected) { ctx.ui.setStatus(STATUS_ID, "supervision disconnected"); return; }
+    const text = state.role === "supervisor"
+      ? awaitingUser ? "waiting for user" : refreshInFlight ? "waiting for worker overview" : `watching ${state.steerRounds}${routineDirty ? " · update pending" : ""}`
+      : "watched";
     ctx.ui.setStatus(STATUS_ID, ctx.ui.theme.fg("accent", `${EYE} `) + ctx.ui.theme.fg("dim", text));
   }
 
   function send(message: Wire) {
-    if (!channel) throw new Error("intercom-supervisor: intercom channel is not ready");
-    channel.publish(message, { audience: "capable" });
+    if (!channel?.snapshot().connected || !channel.snapshot().supported) throw new Error("Intercom disconnected: no message was sent. Reconnect the existing sessions.");
+    channel.publish(state.plan ? { ...message, bindingId: state.plan.id } : message, { audience: "capable" });
   }
 
   /**
@@ -482,15 +508,28 @@ ${planText(state.plan)}` }, { triggerTurn: false });
    * context.getActiveTools?.() ?? [], got undefined, kept an empty list, and skipped in silence.
    * Unguarded now, and the list is read back, so a strip that does nothing throws instead.
    */
+  function inspectionAllowed(name: string): boolean {
+    if (SUPERVISOR_TOOLS.includes(name)) return true;
+    return INSPECTION_TOOLS.has(name) && pi.getAllTools().some((tool: any) => tool.name === name && tool.sourceInfo?.source === "builtin");
+  }
+
+  pi.on("tool_call", (event: any, context: any) => {
+    initializeSession(context);
+    if (supervisorMode && !inspectionAllowed(event.toolName)) return { block: true, reason: "Supervisor mode is inspection-only. Steer the worker; do not execute, delegate, schedule, or mutate files." };
+  });
+  pi.on("user_bash", () => {
+    if (supervisorMode) return { result: { output: "Supervisor mode is inspection-only. Run commands in the worker pane.", exitCode: 1, cancelled: false, truncated: false } };
+  });
+
   function stripWriters(): string[] {
     const before: string[] = pi.getActiveTools();
-    const kept = before.filter((t: string) => !WRITER_TOOLS.has(t.toLowerCase()));
+    const kept = before.filter((t: string) => inspectionAllowed(t));
     // Remember the names removed, not the whole list. Other extensions add and remove their own
     // tools while supervision runs (pi-context-prune adds context_prune, pi-telegram suspends its
     // own), so restoring a snapshot taken hours ago would silently undo their decisions.
-    removedWriters = [...new Set([...removedWriters, ...before.filter((t: string) => WRITER_TOOLS.has(t.toLowerCase()))])];
+    removedWriters = [...new Set([...removedWriters, ...before.filter((t: string) => !inspectionAllowed(t))])];
     pi.setActiveTools(kept);
-    const still = pi.getActiveTools().filter((t: string) => WRITER_TOOLS.has(t.toLowerCase()));
+    const still = pi.getActiveTools().filter((t: string) => !inspectionAllowed(t));
     if (still.length) throw new Error(`intercom-supervisor: setActiveTools did not remove ${still.join(", ")}`);
     return kept;
   }
@@ -531,7 +570,6 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     // The strip lives in the /supervise handler and savedTools is memory, so a resumed supervisor
     // has bash and the edit tools back in a directory the worker is writing to.
     stripWriters();
-    reanchorPlan();
     // Say the goal and the answer shape again. A /reload is how a changed prompt reaches a running
     // session, and the brief goes out only at pairing, so without this a wording fix needs a fresh
     // pairing and loses the supervisor's memory of its own steers.
@@ -541,7 +579,7 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     // failure or a /reload holds a stale picture, and answering from a stale picture is how it
     // invents a fact. Only the worker makes views, so it has to ask, and nobody should have to
     // know that: restarting the session is the whole recovery.
-    send({ t: "look", to: state.pairedId });
+    requestFreshView();
     ctx?.ui?.notify?.(`intercom-supervisor: still supervising ${state.pairedId.slice(0, 8)}, asked it for a view`, "info");
   }
 
@@ -558,24 +596,99 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     pairingGeneration++;
     const stoppedPlan = state.plan && (state.plan.stopped || (rememberStop && state.role === "supervisor")) ? { ...state.plan, stopped: true, active: false } : undefined;
     cancelGoalRequests(note);
+    clearAssessments();
     clearTimeout(pairTimer);
     pairTimer = undefined;
     finishPair(new Error(note));
     clearInterval(watchTimer);
     watchTimer = undefined;
-    if (removedWriters.length) {
+    supervisorMode = (state.role === "supervisor" && !!state.plan) || !!ctx?.sessionManager.getBranch().some((entry: any) => entry.type === "custom" && entry.customType === "pi-goals-supervisor");
+    if (removedWriters.length && !supervisorMode) {
       pi.setActiveTools([...pi.getActiveTools(), ...removedWriters]); // give back what we took
       removedWriters = [];
     }
     showSupervisorTools(false);
     state = { ...EMPTY_STATE, ...(stoppedPlan ? { plan: stoppedPlan } : {}) };
     latestView = "";
+    peerDisconnected = false;
     reviewsSinceGoal = 0;
     lastProgress = "";
     staleReviews = 0;
     sentTurns = 0;
     save();
     ctx?.ui?.notify?.(note, "info");
+  }
+
+  function clearAssessments() {
+    activeAssessment = undefined;
+    assessmentFailure = undefined;
+    assessmentEmpty = false;
+    routineDirty = false;
+    refreshInFlight = false;
+    checkpointQueued = false;
+    awaitingUser = false;
+    lookPending = false;
+    publishAgain = false;
+  }
+
+  function failAssessment(reason: string, includeQueued = true) {
+    // A failed assessment is not a human-input dependency. Resume on later worker
+    // progress/cadence, without retrying the same dirty view from agent_settled.
+    awaitingUser = false;
+    routineDirty = false;
+    refreshInFlight = false;
+    ctx.ui.notify(reason, "error");
+    if (incomingReview && (includeQueued || !checkpointQueued)) {
+      if (channel?.snapshot().connected) send({ ...reviewIdentity(incomingReview), t: "goal_decision", to: state.pairedId, decision: "needs_work", reason });
+      incomingReview = undefined; presentedReview = undefined; checkpointQueued = false;
+    }
+    activeAssessment = undefined;
+    showStatus();
+  }
+
+  async function advanceSupervisor() {
+    if (stopping || advancing || activeAssessment || !ctx?.isIdle() || !modelReady() || peerDisconnected || !channel?.snapshot().connected || state.role !== "supervisor" || (state.plan && ((!state.plan.active && !incomingReview) || !state.planInitialized))) return;
+    advancing = true;
+    const generation = pairingGeneration;
+    try {
+      await compactSupervisor();
+      if (stopping || generation !== pairingGeneration || activeAssessment || !ctx.isIdle() || peerDisconnected || !channel?.snapshot().connected) return;
+      if (incomingReview && checkpointQueued) {
+        const review = incomingReview;
+        checkpointQueued = false;
+        activeAssessment = "goal";
+        assessmentFailure = undefined;
+        assessmentEmpty = false;
+        latestView = review.view ?? "No worker snapshot was attached to this checkpoint. Inspect the worker source session for evidence.";
+        workerStopped = false;
+        pi.sendMessage({ customType: "supervisor_checkpoint", display: true, details: { requestId: review.requestId },
+          content: `Goal sign-off: ${review.goal}
+Assess direction and scope against the current plan and evidence. Give a brief useful assessment, then call review_goal. The fresh evidence judge still checks artifacts independently. This is one goal, not the end of supervision.
+
+Worker context frozen for this checkpoint (not a live view):
+${latestView}` },
+          { triggerTurn: true, deliverAs: "followUp" });
+        return;
+      }
+      if (incomingReview || awaitingUser || refreshInFlight || !routineDirty) return;
+      routineDirty = false;
+      refreshInFlight = true;
+      showStatus();
+      send({ t: "look", to: state.pairedId });
+    } catch (error) {
+      if (generation === pairingGeneration && !stopping) failAssessment(`Supervisor review failed: ${String(error)}`);
+    } finally {
+      advancing = false;
+      // Reconnect/checkpoint handlers may have hit the guard while this obsolete compaction
+      // was pending. Re-drive only actual current work, never a same-generation failure loop.
+      if (generation !== pairingGeneration && !stopping && ((incomingReview && checkpointQueued) || (!incomingReview && !awaitingUser && !refreshInFlight && routineDirty))) void advanceSupervisor();
+    }
+  }
+
+  function requestFreshView(retry = false) {
+    if (retry) refreshInFlight = false;
+    routineDirty = true;
+    void advanceSupervisor();
   }
 
   // ---- inbound, one branch per role ------------------------------------------------------
@@ -595,9 +708,12 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     if ((wire.t === "plan_hello" || wire.t === "plan_hello_ack") && state.plan && !state.plan.stopped && !bootstrapPending && (state.role === "worker" || (state.role === "supervisor" && state.planInitialized))) {
       const expected = state.role === "worker" ? state.plan.supervisorSession : state.plan.workerSession;
       if (wire.bindingId !== state.plan.id || wire.role === state.role || wire.sessionFile !== expected || (wire.to !== "*" && wire.to !== me)) return;
+      const returning = peerDisconnected;
+      peerDisconnected = false;
       state = { ...state, pairedId: from }; save();
       if (wire.t === "plan_hello") send({ t: "plan_hello_ack", to: from, bindingId: wire.bindingId, role: state.role as "worker" | "supervisor", sessionFile: ctx.sessionManager.getSessionFile() });
       if (state.role === "worker") { attached?.finish(state.plan); attached = undefined; startWatch(); }
+      else if (returning) requestFreshView();
       return;
     }
     if (wire.to !== me) return;
@@ -609,6 +725,7 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     }
 
     if (wire.t === "pair") {
+      if (supervisorMode && state.plan) return;
       // A plan-owned worker accepts only its prepared pairing, not any peer in the directory.
       if ((wire.plan || state.plan) && (!wire.plan || wire.plan.id !== state.plan?.id || wire.plan.workerSession !== ctx.sessionManager.getSessionFile())) return;
       // Last pair wins. First-wins left a worker bound forever to a supervisor that had died, and
@@ -620,6 +737,7 @@ ${planText(state.plan)}` }, { triggerTurn: false });
       pairTimer = undefined;
       // A same-binding replay must not undo Ready already completed by this worker.
       const plan = wire.plan ? { ...wire.plan, active: state.plan?.active ?? wire.plan?.active } : undefined;
+      peerDisconnected = false;
       state = { ...EMPTY_STATE, role: "worker", pairedId: from, goal: plan ? planText(plan) : wire.goal, ...(plan ? { plan } : {}) };
       latestView = "";
       lastProgress = "";
@@ -641,11 +759,25 @@ ${planText(state.plan)}` }, { triggerTurn: false });
     if (from !== state.pairedId) return; // ignore anything from a session we are not paired with
 
     if ("bindingId" in wire && wire.bindingId !== state.plan?.id) return;
+    if (state.plan && ["view", "look", "directive", "done", "unpair"].includes(wire.t) && wire.bindingId !== state.plan.id) return;
+    // Non-plan reloads retain the Intercom ID without a new handshake. Only addressed,
+    // role-appropriate traffic from that validated peer restores connectivity, not presence.
+    if (peerDisconnected && !state.plan && !stopping && (
+      (state.role === "worker" && ["look", "directive", "goal"].includes(wire.t)) ||
+      (state.role === "supervisor" && wire.t === "view")
+    )) {
+      peerDisconnected = false;
+      showStatus();
+    }
     if (wire.t === "plan_activate") { state = { ...state, plan: { ...state.plan!, active: true } }; save(); return; }
-    if (wire.t === "plan_update") { reanchorPlan(); return; }
     if (wire.t === "goal_cancel") {
       if (outgoingReview?.requestId === wire.requestId) outgoingReview.finish(undefined, new Error("Supervisor cancelled the review; retry"));
-      if (incomingReview?.requestId === wire.requestId) { incomingReview = undefined; ctx.abort(); }
+      if (incomingReview?.requestId === wire.requestId) {
+        const active = activeAssessment === "goal" && !checkpointQueued;
+        incomingReview = undefined; presentedReview = undefined; checkpointQueued = false;
+        if (active) ctx.abort();
+        else void advanceSupervisor();
+      }
       return;
     }
     if (wire.t === "goal_decision") {
@@ -653,21 +785,22 @@ ${planText(state.plan)}` }, { triggerTurn: false });
       if (!pending || pending.review.requestId !== wire.requestId || pending.review.goal !== wire.goal || pending.review.planHash !== wire.planHash) return;
       outgoingReview = undefined;
       pending.finish(wire, planHash(planText(state.plan!)) !== wire.planHash ? new Error("Plan changed during supervisor review") : undefined);
+      if (lookPending) void publishView(ctx, "requested complete overview", 0, false, false, true).catch(error => ctx.ui.notify(`Worker overview failed: ${String(error)}`, "error"));
       return;
     }
     if (wire.t === "goal_review" && state.role === "supervisor") {
       if (incomingReview || planHash(planText(state.plan!)) !== wire.planHash) {
-        send({ ...wire, t: "goal_decision", to: from, decision: "needs_work", reason: "Another review is pending or the plan changed; retry." }); return;
+        send({ ...reviewIdentity(wire), t: "goal_decision", to: from, decision: "needs_work", reason: "Another review is pending or the plan changed; retry." }); return;
       }
-      incomingReview = wire;
-      await compactSupervisor();
-      if (incomingReview !== wire || stopping) return;
-      reanchorPlan();
-      pi.sendUserMessage(`Goal sign-off request ${wire.requestId}. Goal: ${wire.goal}
-Judge direction and scope against the approved plan and current evidence. A fresh judge will check artifacts independently. Call review_goal with this requestId and approve, needs_work, or needs_user. Do not call done: this is one goal, not the end of supervision.`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+      incomingReview = { ...reviewIdentity(wire), view: wire.view };
+      checkpointQueued = true;
+      awaitingUser = false;
+      if (refreshInFlight) { refreshInFlight = false; routineDirty = true; }
+      await advanceSupervisor();
       return;
     }
     if (wire.t === "paired" && state.role === "supervisor") {
+      peerDisconnected = false;
       if (state.plan) {
         if (wire.plan?.id !== state.plan.id || pendingPair?.workerId !== from) return;
         state = { ...state, plan: { ...state.plan, active: wire.plan.active }, planInitialized: true }; save();
@@ -693,7 +826,7 @@ Judge direction and scope against the approved plan and current evidence. A fres
       // Its answer to a stale context is to invent, so give it real data instead.
       // From turn 0, not the diff. A supervisor only asks after a crash or a /reload, when its own
       // copy is gone, and answering that with "0 new turns since your last look" leaves it inventing.
-      if (!state.plan || state.plan.active) await publishView(ctx, "sent because you asked for a view", 0);
+      if (!state.plan || state.plan.active) await publishView(ctx, "sent because you asked for a view", 0, false, false, true);
       return;
     }
 
@@ -707,17 +840,30 @@ Judge direction and scope against the approved plan and current evidence. A fres
     }
 
     if (wire.t === "view" && state.role === "supervisor") {
+      if (state.plan && (!state.plan.active || !state.planInitialized)) return;
+      if (wire.refreshed) {
+        if (!refreshInFlight) { routineDirty = true; return; }
+        refreshInFlight = false;
+      } else if (refreshInFlight) { routineDirty = true; return; }
+      if (activeAssessment || !ctx.isIdle() || advancing || compacting || incomingReview || awaitingUser) {
+        routineDirty = true;
+        return;
+      }
+      activeAssessment = "view";
+      assessmentFailure = undefined;
+      assessmentEmpty = false;
       const generation = pairingGeneration;
       const bindingId = state.plan?.id;
       if (state.plan) {
         if (!state.plan.active || !state.planInitialized) return;
-        await compactSupervisor();
+        try { await compactSupervisor(); }
+        catch (error) { if (generation === pairingGeneration && !stopping) failAssessment(`Supervisor compaction failed: ${String(error)}`); return; }
       }
-      if (stopping || generation !== pairingGeneration || state.role !== "supervisor" || from !== state.pairedId || state.plan?.id !== bindingId || (state.plan && !state.plan.active)) return;
-      if (state.plan) reanchorPlan();
+      if (stopping || generation !== pairingGeneration || state.role !== "supervisor" || from !== state.pairedId || state.plan?.id !== bindingId || peerDisconnected || !channel?.snapshot().connected || (state.plan && !state.plan.active)) return;
       latestView = wire.view;
+      showStatus();
       workerStopped = wire.stopped;
-      if (reviewsSinceGoal >= GOAL_REVIEW_INTERVAL - 1) tellGoal();
+      if (!state.plan && reviewsSinceGoal >= GOAL_REVIEW_INTERVAL - 1) tellGoal();
       else reviewsSinceGoal += 1;
       // A new view is a new look, so it gets its own verdict. agent_start alone is not enough: a
       // followUp is consumed inside the running agent loop, so no second agent_start fires and the
@@ -747,6 +893,20 @@ Judge direction and scope against the approved plan and current evidence. A fres
     verdictsThisLook = 0;
   });
 
+  pi.on("input", (event: any) => {
+    if (event.source !== "extension") awaitingUser = false;
+  });
+  pi.on("agent_end", (event: any) => {
+    if (state.role !== "supervisor" || !activeAssessment) return;
+    const last = event.messages?.findLast((message: any) => message.role === "assistant");
+    // Low-level runs may retry. Only the final settled failure ends a checkpoint.
+    assessmentFailure = last?.stopReason === "error" || last?.stopReason === "aborted"
+      ? `Supervisor assessment ${last.stopReason}: ${last.errorMessage || "no completed assessment"}` : undefined;
+    assessmentEmpty = last?.stopReason === "stop" && (typeof last.content === "string"
+      ? !last.content.trim()
+      : Array.isArray(last.content) && last.content.every((block: any) => block.type === "thinking" || (block.type === "text" && !block.text?.trim())));
+  });
+
   /**
    * A finished look keeps its verdict and loses the raw material behind it.
    *
@@ -767,8 +927,17 @@ Judge direction and scope against the approved plan and current evidence. A fres
   const LOOKS_KEPT = 3;
   pi.on("context", (event: any) => {
     if (state.role !== "supervisor") return;
-    const lastPlan = event.messages.findLastIndex((m: any) => m.customType === "supervisor_plan");
-    const messages = event.messages.filter((m: any, i: number) => m.customType !== "supervisor_plan" || i === lastPlan);
+    const checkpoint = event.messages.findLast((m: any) => m.customType === "supervisor_checkpoint");
+    presentedReview = checkpoint?.details?.requestId === incomingReview?.requestId ? incomingReview : undefined;
+    const messages = event.messages.filter((m: any) => m.customType !== "supervisor_plan");
+    if (state.plan) messages.unshift({ role: "custom", customType: "supervisor_plan", display: false, timestamp: Date.now(),
+      content: `${loadSupervisorPrompt(ctx.cwd).prompt}
+
+You are the supervisor, not the worker. Inspect and advise; do not execute or delegate work.
+The human's Ready approved this plan. Give a brief visible progress assessment at every review.
+
+Current canonical plan (${state.plan.planPath}):
+${planText(state.plan)}` });
     const isView = (m: any) =>
       m.role === "user" && m.content?.some?.((c: any) => c.type === "text" && isViewText(c.text));
 
@@ -795,7 +964,6 @@ Judge direction and scope against the approved plan and current evidence. A fres
     // Pi retries overflow recovery immediately after this event. Queue the rubric for its next
     // ordinary turn, so the failed assistant remains final and can be removed.
     if (state.role === "supervisor") {
-      if (state.plan && !event.willRetry) reanchorPlan();
       if (event.willRetry) reviewsSinceGoal = GOAL_REVIEW_INTERVAL - 1;
       else tellGoal();
     }
@@ -807,7 +975,7 @@ Judge direction and scope against the approved plan and current evidence. A fres
     onReady: (value: IntercomExtensionChannel) => {
       if (channel && channel !== value) {
         duplicateIntercom = true;
-        ctx?.ui?.notify?.("Duplicate standalone pi-intercom registration. Remove the old companion package; pi-goals bundles Intercom. Reload both sessions.", "error");
+        ctx?.ui?.notify?.("Multiple Intercom runtimes are loaded. Keep one Intercom installation and reload both sessions.", "error");
         return;
       }
       channel = value;
@@ -816,6 +984,23 @@ Judge direction and scope against the approved plan and current evidence. A fres
       if (ctx) rejoinOrDrop().catch((err: Error) => debug("rejoin failed", { error: err.message }));
     },
     onEvent: (event: IntercomExtensionEvent) => {
+      if (event.type === "connection" && !event.connected) {
+        pairingGeneration++; clearAssessments();
+        if (state.role === "supervisor") ctx?.abort();
+        cancelGoalRequests("Intercom disconnected; retry the checkpoint after reconnecting");
+        ctx?.ui?.notify?.("Intercom disconnected. Supervision is paused; no delivery or approval is confirmed. Keep both sessions and reconnect.", "warning");
+        if (ctx?.hasUI && state.role !== "none") ctx.ui.setStatus(STATUS_ID, "supervision disconnected");
+        return;
+      }
+      if (event.type === "session_left" && event.sessionId === state.pairedId) {
+        pairingGeneration++; clearAssessments();
+        peerDisconnected = true;
+        if (state.role === "supervisor") ctx?.abort();
+        cancelGoalRequests("Supervisor peer disconnected; retry the checkpoint after reconnecting");
+        ctx?.ui?.notify?.("Supervision peer disconnected. Retaining the plan and this session for reconnect.", "warning");
+        if (ctx?.hasUI) ctx.ui.setStatus(STATUS_ID, "supervision disconnected");
+        return;
+      }
       if (event.type === "connection" && event.connected) {
         resolveIntercomConnected();
         if (ctx) rejoinOrDrop().catch((err: Error) => debug("rejoin failed", { error: err.message }));
@@ -833,15 +1018,15 @@ Judge direction and scope against the approved plan and current evidence. A fres
   };
 
   function registerIntercom() {
-    if (intercomRegistered || channel) return;
-    intercomRegistered = pi.events.emit(INTERCOM_EXTENSION_REGISTER_EVENT, intercomRegistration);
+    if (channel) return;
+    pi.events.emit(INTERCOM_EXTENSION_REGISTER_EVENT, intercomRegistration);
   }
 
   pi.events.on(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, () => {
     // A registry announces itself once. If we already registered, another standalone copy loaded.
-    if (intercomRegistered || channel) {
+    if (channel) {
       duplicateIntercom = true;
-      ctx?.ui?.notify?.("Duplicate standalone pi-intercom registration. Remove the old companion package; pi-goals bundles Intercom. Reload both sessions.", "error");
+      ctx?.ui?.notify?.("Multiple Intercom runtimes are loaded. Keep one Intercom installation and reload both sessions.", "error");
       return;
     }
     registerIntercom();
@@ -850,12 +1035,13 @@ Judge direction and scope against the approved plan and current evidence. A fres
 
   function initializeSession(context: any) {
     ctx = context;
-    if (duplicateIntercom) ctx.ui.notify("Duplicate standalone pi-intercom registration. Remove the old companion package; pi-goals bundles Intercom. Reload both sessions.", "error");
+    if (duplicateIntercom) ctx.ui.notify("Multiple Intercom runtimes are loaded. Keep one Intercom installation and reload both sessions.", "error");
     if (sessionInitialized) return;
     sessionInitialized = true;
-    state = restoreState(context.sessionManager.getEntries());
+    state = restoreState(context.sessionManager.getBranch());
+    supervisorMode = state.role === "supervisor" || context.sessionManager.getBranch().some((entry: any) => entry.type === "custom" && entry.customType === "pi-goals-supervisor");
     // A fresh fork may not yet have supervise-state, especially if model restoration paused it.
-    if (context.sessionManager.getBranch().some((entry: any) => entry.type === "custom" && entry.customType === "pi-goals-supervisor")) stripWriters();
+    if (supervisorMode) stripWriters();
     // Before anything else, because a worker that can see steer and worker_view starts guessing
     // that it is a supervisor. rejoinOrDrop below may still drop the pairing and hide them again.
     showSupervisorTools(state.role === "supervisor");
@@ -866,56 +1052,72 @@ Judge direction and scope against the approved plan and current evidence. A fres
     }
   }
 
-  pi.on("session_start", async (_event: unknown, context: any) => {
+  pi.on("session_start", async (event: any, context: any) => {
     initializeSession(context);
     registerIntercom();
+    if (!channel) {
+      try { await loadBundledIntercom(pi, event, context); }
+      catch (error) { context.ui.notify(`Intercom startup failed: ${String(error)}`, "error"); }
+    }
+    if (supervisorMode) stripWriters();
   });
   pi.on("before_agent_start", async (_event: unknown, context: any) => {
     initializeSession(context);
     registerIntercom();
+    if (supervisorMode) stripWriters();
   });
+
+  /** Capture after tracker queries so intervening user direction is included in the frozen view. */
+  async function captureWorkerView(context: any, why: string, since: number, starting = false) {
+    const background = state.plan ? await backgroundState(pi) : undefined;
+    const subagents = state.plan ? [] : await childPiProcesses();
+    const entries = context.sessionManager.getBranch();
+    const idle = !starting && context.isIdle() && (!background || background.quiet);
+    const view = buildView({
+      goal: state.goal,
+      sourceSession: context.sessionManager.getSessionFile?.(),
+      status: `${idle ? "stopped" : "working"}, ${why}, no new turn for ${age(sinceLastTurn(entries))}`,
+      entries, since,
+      stale: state.plan ? undefined : staleReviews,
+      subagents,
+      model: workerModel(context),
+      background: background?.description,
+    });
+    return { view, idle, entries };
+  }
 
   /**
    * Publish what the worker looks like right now. Used at pairing, on a timer and when asked.
    * `since` is the turn the view starts at: the diff for a routine look, 0 when the supervisor
    * needs the whole picture again.
    */
-  async function publishView(context: any, why: string, since = sentTurns, onlyIfChanged = false, starting = false) {
-    if (!modelReady() || publishing || outgoingReview || (state.plan && !state.plan.active)) return;
+  async function publishView(context: any, why: string, since = sentTurns, onlyIfChanged = false, starting = false, refresh = false) {
+    if (refresh) lookPending = true;
+    if (state.role !== "worker") return;
+    if (!modelReady() || peerDisconnected || outgoingReview || (state.plan && !state.plan.active)) return;
+    const leaf = context.sessionManager.getLeafId?.() ?? context.sessionManager.getBranch().length;
+    if (publishing) { if (leaf !== publishingLeaf) publishAgain = true; return; }
+    publishingLeaf = leaf;
+    publishAgain = false;
+    const refreshed = lookPending;
+    if (refreshed) since = 0;
     publishing = true;
+    let published = false;
+    const generation = pairingGeneration;
     const bindingId = state.plan?.id;
     const peer = state.pairedId;
     try {
     // Claimed before the await, not after. ps takes long enough that a second timer tick would
     // otherwise start its own look while this one is still waiting.
     lastLook = Date.now();
-    const entries = context.sessionManager.getBranch() as any;
-    // Checked here too. This view replaces the one done reads, so leaving it out would report
-    // "child pi processes still running: none" and unblock done while a subagent is running.
-    const background = state.plan ? await backgroundState(pi) : undefined;
-    const subagents = state.plan ? [] : await childPiProcesses();
-    if (state.pairedId !== peer || state.plan?.id !== bindingId || stopping) return;
-    // Asked at pairing and on a rejoin, and the worker is often sitting at the prompt then. Saying
-    // "working" there sends the supervisor a check-in nudge about a worker that is waiting on it.
-    const idle = !starting && context.isIdle() && (!background || background.quiet);
-    // One clock for both ways of being stuck: at the prompt, and inside a command that never
-    // returns. It goes in the status line because bodyOf strips that line, so a number that moves
-    // on its own cannot defeat the unchanged-view skip below.
-    let view = buildView({
-      goal: state.goal,
-      status: `${idle ? "stopped" : "working"}, ${why}, no new turn for ${age(sinceLastTurn(entries))}`,
-      entries,
-      since,
-      subagents,
-      model: workerModel(await ownSession()),
-    });
-    if (background) view += `\ntracked background work: ${background.description}\n`;
+    const { view, idle, entries } = await captureWorkerView(context, why, since, starting);
+    if (generation !== pairingGeneration || state.pairedId !== peer || state.plan?.id !== bindingId || stopping || peerDisconnected || outgoingReview) return;
     // A timer look at a worker that has done nothing since the last one wakes the supervisor to read
     // a view it has already read. Session 019ffa73: 13 of 92 verdicts were "check-in with no new
     // turns ... nothing to judge". The supervisor loses nothing by not being asked, because the view
     // is the same view. It is asked anyway after LOOKS_SKIPPED_MAX, since a worker that has not moved
     // for hours is itself worth seeing, and the elapsed seconds in the status line say so.
-    if (onlyIfChanged) {
+    if (onlyIfChanged && !refreshed) {
       if (bodyOf(view) === lastViewBody && looksSkipped < LOOKS_SKIPPED_MAX) {
         looksSkipped += 1;
         debug("look skipped, nothing new since the last view", { looksSkipped });
@@ -923,14 +1125,20 @@ Judge direction and scope against the approved plan and current evidence. A fres
       }
       looksSkipped = 0;
     }
+    send({ t: "view", to: state.pairedId, view, stopped: idle, ...(refreshed ? { refreshed: true } : {}) });
+    published = true;
+    if (refreshed) lookPending = false;
     lastViewBody = bodyOf(view);
-
     modelTurns = 0;
     settledCheck = false;
     sentTurns = turnsSince(entries);
-    send({ t: "view", to: state.pairedId, view, stopped: idle });
     debug("published view", { why, to: state.pairedId, sentTurns, idle });
-    } finally { publishing = false; }
+    } finally {
+      publishing = false;
+      // Keep a failed refresh pending for routine progress/the cadence or explicit look. Only a
+      // successful publication may drain coalesced work here; failure must not spin in finally.
+      if (published && (lookPending || publishAgain) && !outgoingReview && !stopping && !peerDisconnected && channel?.snapshot().connected && state.role === "worker") void publishView(ctx, "worker updated during publication", 0).catch(error => ctx.ui.notify(`Worker overview failed: ${String(error)}`, "error"));
+    }
   }
 
   /**
@@ -950,7 +1158,7 @@ Judge direction and scope against the approved plan and current evidence. A fres
     watchTimer = setInterval(() => {
       if (!modelReady()) return;
       if (state.plan && settledCheck && ctx.isIdle()) {
-        void backgroundState(pi).then(background => { if (background.quiet) return publishView(ctx, "tracked background work finished"); }).catch(() => {});
+        void backgroundState(pi).then(background => { if (background.quiet && ctx.isIdle() && Date.now() - lastLook > 1_000) return publishView(ctx, "tracked background work finished"); }).catch(() => {});
       }
       if (Date.now() - lastLook < (state.plan?.intervalMs ?? WATCH_INTERVAL_MS)) return;
       // A stopped worker is always reported, never skipped as unchanged: an unchanged stopped worker
@@ -982,7 +1190,7 @@ Judge direction and scope against the approved plan and current evidence. A fres
   for (const event of ["processes:ended", "subagent:async-complete"]) pi.events.on(event, () => {
     if (state.plan?.active && state.role === "worker" && ctx?.isIdle()) {
       settledCheck = true;
-      void backgroundState(pi).then(background => { if (background.quiet) return publishView(ctx, "tracked background work finished"); }).catch(() => {});
+      void backgroundState(pi).then(background => { if (background.quiet && ctx.isIdle() && Date.now() - lastLook > 1_000) return publishView(ctx, "tracked background work finished"); }).catch(() => {});
     }
   });
 
@@ -991,6 +1199,21 @@ Judge direction and scope against the approved plan and current evidence. A fres
     ctx = context;
     showStatus();
     debug("agent_settled", { role: state.role, hasChannel: Boolean(channel) });
+    if (state.role === "supervisor") {
+      const unresolved = (activeAssessment === "goal" && incomingReview && !checkpointQueued) || (activeAssessment === "view" && verdictsThisLook === 0);
+      if (activeAssessment && assessmentFailure) failAssessment(assessmentFailure, false);
+      else if (unresolved && assessmentEmpty) failAssessment("Supervisor assessment incomplete: empty final response without a verdict or user question. Retry the checkpoint.", false);
+      assessmentFailure = undefined;
+      assessmentEmpty = false;
+      const completed = activeAssessment;
+      activeAssessment = undefined;
+      if ((completed === "goal" && incomingReview && !checkpointQueued) || (completed === "view" && verdictsThisLook === 0)) {
+        awaitingUser = true;
+        context.ui.notify("Supervisor is waiting for user input or an explicit checkpoint decision; routine refresh is paused.", "info");
+      }
+      await advanceSupervisor();
+      return;
+    }
     if (state.role !== "worker" || !channel) return;
     if (state.plan) {
       if (!state.plan.active || outgoingReview) return;
@@ -1003,24 +1226,10 @@ Judge direction and scope against the approved plan and current evidence. A fres
     try {
       // A subagent runs as its own process and leaves no unanswered tool call, so a settled worker
       // can still be spending. Report it and let the supervisor steer; do not wait here.
-      const subagents = await childPiProcesses();
-      const entries = context.sessionManager.getBranch() as any;
-      const progress = progressKey(entries);
+      const progress = progressKey(context.sessionManager.getBranch());
       staleReviews = progress === lastProgress ? staleReviews + 1 : 0;
       lastProgress = progress;
-      const view = buildView({
-        goal: state.goal,
-        status: "stopped, just now, no new turn for 0s",
-        entries,
-        since: sentTurns,
-        stale: staleReviews,
-        subagents,
-        model: workerModel(await ownSession()),
-      });
-      sentTurns = turnsSince(entries);
-      send({ t: "view", to: state.pairedId, view, stopped: true });
-      lastLook = Date.now();
-      debug("published view", { bytes: Buffer.byteLength(view), to: state.pairedId, stale: staleReviews, subagents });
+      await publishView(context, "worker settled");
     } catch (err) {
       // Nothing awaits this handler, so rethrowing would be an unhandled rejection nobody sees,
       // and the supervisor would silently never wake again.
@@ -1031,12 +1240,14 @@ Judge direction and scope against the approved plan and current evidence. A fres
 
   // ---- supervisor side: one command and three tools ---------------------------------------
 
-  function startPair(worker: any, goal: string, context: any, plan?: PlanBinding): Promise<void> {
+  function startPair(worker: any, goal: string, context: any, plan?: SupervisorBinding): Promise<void> {
     if (!channel) throw new Error("intercom-supervisor: intercom is not connected");
     if (state.role !== "none" && !(plan && bootstrapPending && state.pairedId === worker.id && state.plan?.id === plan.id)) throw new Error(`intercom-supervisor: already paired with ${state.pairedId.slice(0, 8)} as ${state.role}`);
     const target = worker.name ?? worker.id.slice(0, 8);
+    supervisorMode = true;
     state = { ...EMPTY_STATE, role: "supervisor", pairedId: worker.id, goal, ...(plan ? { plan } : {}) };
     latestView = "";
+    peerDisconnected = false;
     reviewsSinceGoal = 0;
     save();
     const kept = stripWriters();
@@ -1097,8 +1308,9 @@ Judge direction and scope against the approved plan and current evidence. A fres
           context.ui?.notify?.("intercom-supervisor: not supervising, so there is nothing to look at", "error");
           return;
         }
-        send({ t: "look", to: state.pairedId });
-        context.ui?.notify?.(`asked ${state.pairedId.slice(0, 8)} for a view`, "info");
+        awaitingUser = false;
+        requestFreshView(true);
+        context.ui?.notify?.(`requested a complete view from ${state.pairedId.slice(0, 8)}; waiting for the worker overview`, "info");
         return;
       }
       // Change the goal without breaking the pairing. Stopping and pairing again is the only other
@@ -1121,10 +1333,12 @@ Judge direction and scope against the approved plan and current evidence. A fres
         // waiting up to half an hour for the next look.
         tellSupervisor(GOAL_CHANGED(goal));
         reviewsSinceGoal = 0;
-        send({ t: "look", to: state.pairedId });
+        awaitingUser = false;
+        requestFreshView();
         context.ui?.notify?.(`goal changed: ${goal}`, "info");
         return;
       }
+      if (supervisorMode && state.plan) { context.ui.notify("This is a plan supervisor fork. Recover or start supervision from the worker's Ready flow.", "warning"); return; }
       if (state.role !== "none") {
         context.ui?.notify?.(
           `intercom-supervisor: already paired with ${state.pairedId.slice(0, 8)} as ${state.role}. Run /supervise stop first.`,
@@ -1216,15 +1430,20 @@ Judge direction and scope against the approved plan and current evidence. A fres
 
   pi.registerTool({
     name: "review_goal", label: "Review goal",
-    description: "Answer the explicit goal sign-off request using its requestId. Approve trajectory/scope, request further work, or name a human decision. This does not complete the goal or stop supervision.",
-    parameters: Type.Object({ requestId: Type.String(), decision: Type.String({ enum: ["approve", "needs_work", "needs_user"] }), reason: Type.String() }),
-    execute: async (_id: string, params: { requestId: string; decision: GoalDecision["decision"]; reason: string }) => {
+    description: "Assess the current goal checkpoint: approve trajectory/scope, request further work, or name a human decision. The extension binds the decision to the exact goal and revision you were shown. This does not complete the goal or stop supervision.",
+    parameters: Type.Object({ decision: Type.String({ enum: ["approve", "needs_work", "needs_user"] }), reason: Type.String() }),
+    execute: async (_id: string, params: { decision: GoalDecision["decision"]; reason: string }) => {
       const review = incomingReview;
-      if (state.role !== "supervisor" || !review || review.requestId !== params.requestId) throw new Error("No matching pending goal request");
+      if (state.role !== "supervisor" || !review || review !== presentedReview) throw new Error("No matching pending goal request");
       if (!["approve", "needs_work", "needs_user"].includes(params.decision) || !params.reason.trim()) throw new Error("A decision and reason are required");
-      if (planHash(planText(state.plan!)) !== review.planHash) throw new Error("Plan changed; ask the worker to retry");
-      send({ ...review, ...params, t: "goal_decision", to: state.pairedId });
+      if (planHash(planText(state.plan!)) !== review.planHash) {
+        failAssessment("Plan changed during supervisor review; retry the checkpoint");
+        throw new Error("Plan changed; ask the worker to retry");
+      }
+      send({ ...reviewIdentity(review), decision: params.decision, reason: params.reason, t: "goal_decision", to: state.pairedId });
+      tellSupervisor(`Goal assessment — ${review.goal}: ${params.decision}. ${params.reason}`);
       incomingReview = undefined;
+      awaitingUser = params.decision === "needs_user";
       return { content: [{ type: "text", text: "Goal decision sent. Supervision remains active. End this response." }], terminate: true };
     },
   });
@@ -1301,7 +1520,10 @@ Tell them in your reply, quoting it, so they can correct it.`,
         .map((old, i) => ({ old, n: first + i, score: overlap(old, params.message) }))
         .sort((a, b) => b.score - a.score)[0];
 
+      if (state.plan && !state.plan.active) throw new Error("The worker has not activated this plan; wait for Ready.");
+      if (peerDisconnected) throw new Error("Worker disconnected; no instruction was sent. Reconnect the existing session.");
       send({ t: "directive", to: state.pairedId, text: params.message });
+      tellSupervisor(`Advice to worker: ${params.message}`);
       state = {
         ...state,
         steerRounds: state.steerRounds + 1,
@@ -1335,6 +1557,7 @@ Tell them in your reply, quoting it, so they can correct it.`,
         return { content: [{ type: "text", text: "Not supervising." }], isError: true };
       }
       const first = endLook(context);
+      if (first) tellSupervisor(`Progress assessment: ${params.reason}`);
       return { content: [{ type: "text", text: first ? LET_IT_RUN_ACK(params.reason, workerStopped) : LET_IT_RUN_AGAIN }] };
     },
   });
@@ -1348,6 +1571,7 @@ Tell them in your reply, quoting it, so they can correct it.`,
       if (state.role !== "supervisor") {
         return { content: [{ type: "text", text: "Not supervising." }], isError: true };
       }
+      if (routineDirty || refreshInFlight) throw new Error("New worker progress awaits a complete overview; do not finish from the older assessment.");
       if (state.plan && (incomingReview || /^\s*(?:\d+\.|[-*])\s*\[[ /]\]\s*goal:/im.test(planText(state.plan)))) throw new Error("Open plan goals remain. Use review_goal for an individual goal request.");
       if (state.plan && /tracked background work:.*unknown|tracked background work:.*(?:processes|subagents): [1-9]/.test(latestView)) throw new Error("Tracked background work is active or unknown");
       // "done" while a delegated tool call has no result is a false completion: the worker settled
@@ -1368,4 +1592,5 @@ Tell them in your reply, quoting it, so they can correct it.`,
       return { content: [{ type: "text", text: `Supervision finished after ${rounds} instructions.` }] };
     },
   });
+  return controller;
 }
