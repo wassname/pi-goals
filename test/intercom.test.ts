@@ -42,14 +42,16 @@ describe("pi-intercom transport", () => {
 		const resumed = setup("supervisor", [...first.entries]);
 		resumed.link.markReady();
 		await resumed.link.waitReady();
-		expect(resumed.fixture.sent.filter(message => message.kind === "steer")).toMatchObject([{ id, text: "Read the full output." }]);
+		const retries = resumed.fixture.sent.filter(message => message.kind === "steer");
+		expect(retries.length).toBeGreaterThan(0);
+		for (const retry of retries) expect(retry).toMatchObject({ id, text: "Read the full output." });
 		resumed.fixture.receive({ binding: "binding", role: "worker", kind: "received", id });
 		resumed.fixture.connect(false);
 		expect(resumed.link.connected).toBe(false);
 		expect(() => resumed.link.steer("Must not send.")).toThrow("disconnected");
 		resumed.fixture.connect(true);
 		await resumed.link.waitReady();
-		expect(resumed.fixture.sent.filter(message => message.kind === "steer")).toHaveLength(1);
+		expect(resumed.fixture.sent.filter(message => message.kind === "steer")).toHaveLength(retries.length);
 	});
 
 	it("advances the incremental overview only after acknowledgment", async () => {

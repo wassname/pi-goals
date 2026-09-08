@@ -5,7 +5,9 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "../src/approval.js";
+import { GoalIntercom } from "../src/intercom.js";
 import { intercomFixture } from "./intercom-fixture.js";
+import { pairedIntercomFixture } from "./paired-intercom-fixture.js";
 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
@@ -13,7 +15,7 @@ const shutdowns: Array<() => Promise<void>> = [];
 vi.mock("../src/herdr.js", () => ({ openSupervisorPane, closeSupervisorPane }));
 const { default: piGoalsExtension, isMainSession } = await import("../src/index.js");
 
-function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = []) {
+function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = [], events?: ExtensionAPI["events"]) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-flow-"));
 	writeFileSync(join(cwd, ".gitignore"), ".pi/\n");
 	writeFileSync(join(cwd, "verify.txt"), "PASS\n");
@@ -51,7 +53,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 	};
 	openSupervisorPane.mockImplementation(async () => "pane-2");
 	const pi = {
-		events: transport.events,
+		events: events ?? transport.events,
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (name: string, handler: any) => {
 			const prior = hooks.get(name);
@@ -239,10 +241,14 @@ describe("/goals flow", () => {
 				verifyOutputPath: "verify.txt",
 				supervisor: { sessionId: "supervisor", runId: null }, timestamp: new Date().toISOString(),
 			});
-			writeFileSync(planPath, `${plan}- Appended manual log after approval.\n`);
+			writeFileSync(planPath, `${plan}- Appended manual log after approval.\n1. [ ] goal: make the file\n2. [ ] goal: historical only\n`);
 			const signed = await flow.tools.get("CompleteGoal").execute("id", { goal }, undefined, undefined, flow.ctx);
 			expect(signed.isError).toBe(false);
 			expect(readFileSync(planPath, "utf8")).toContain("1. [x] goal: make the file");
+			expect(readFileSync(planPath, "utf8")).toContain("1. [ ] goal: make the file");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null });
+			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -372,5 +378,101 @@ it("does not persist startup results or launch work after session shutdown", asy
 		await starting;
 		expect(flow.entries).toHaveLength(entries);
 		expect(flow.messages).toHaveLength(messages);
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("keeps a failed Ready model not-ready and recovers the same real supervisor binding", async () => {
+	const wire = pairedIntercomFixture();
+	const flow = setup(["Ready", "Ready"], [], wire.worker.events as ExtensionAPI["events"]);
+	const supervisorEntries: any[] = [];
+	const supervisor = new GoalIntercom({ events: wire.supervisor.events, on: () => {}, appendEntry: (customType: string, data: unknown) => supervisorEntries.push({ type: "custom", customType, data }) } as unknown as ExtensionAPI);
+	const supervisorCtx = { sessionManager: { getEntries: () => supervisorEntries }, ui: { notify: vi.fn() } };
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		mkdirSync(join(flow.cwd, ".pi/pi-goals/models"), { recursive: true });
+		writeFileSync(join(flow.cwd, ".pi/pi-goals/models/worker.json"), JSON.stringify({ provider: "gone", id: "expired" }));
+		flow.ctx.modelRegistry.find = () => undefined as any;
+		openSupervisorPane.mockImplementationOnce(async (input: any) => {
+			supervisor.configure(input.approvalId, "supervisor", supervisorCtx as any, true);
+			return "pane-2";
+		});
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		const binding = (flow.entries.at(-1)?.data as any).approvalId;
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", planVersion: 1 });
+		expect(wire.worker.sent.filter(message => message.kind === "hello" && message.ready)).toHaveLength(0);
+		expect(supervisor.connected).toBe(false);
+		expect(() => supervisor.steer("Must wait.")).toThrow("disconnected");
+		await flow.hooks.get("model_select")({ source: "set", model: { provider: "test", id: "chosen" } }, flow.ctx);
+		flow.ctx.modelRegistry.find = (provider, id) => ({ provider, id });
+		await flow.commands.get("goals").handler("reconnect", flow.ctx);
+		expect(supervisor.connected).toBe(false); // Planning is not implementation readiness.
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(supervisor.connected).toBe(true);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", approvalId: binding, planVersion: 1 });
+		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(closeSupervisorPane).not.toHaveBeenCalled();
+		await flow.commands.get("goals").handler("reconnect", flow.ctx);
+		supervisor.steer("Recovered instruction.");
+		await new Promise(resolve => setImmediate(resolve));
+		expect(flow.messages.filter(message => message.content === "[supervisor] Recovered instruction.")).toHaveLength(1);
+		expect(supervisorCtx.ui.notify).not.toHaveBeenCalled();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("points a present-but-paused peer recovery at the supervisor pane", async () => {
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		flow.transport.replyToHello(false);
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: false });
+		expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", [expect.stringContaining("Supervisor is present but not ready")]);
+		const prompt = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+		expect(prompt.systemPrompt).toContain("/goals reconnect in the supervisor pane");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("clear during the initial Ready wait cancels immediately and cannot resurrect the plan", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		const path = approvedPlan(flow.cwd);
+		flow.transport.replyToHello(false);
+		const starting = flow.hooks.get("agent_settled")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(flow.entries.at(-1)?.data).toMatchObject({ supervisorPaneId: "pane-2" });
+		await flow.commands.get("goals").handler("clear", flow.ctx);
+		await starting; // No timer advancement: detach must cancel the five-minute wait.
+		const entryCount = flow.entries.length;
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(flow.entries).toHaveLength(entryCount);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null, approvalId: null });
+		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
+		expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", undefined);
+		expect(readFileSync(path, "utf8")).toContain("make the file");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("clear before the launcher resolves rejects late pane callbacks without restoring the binding", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		let finish!: () => void;
+		openSupervisorPane.mockImplementationOnce((_input: any, opened: any) => new Promise((resolve, reject) => {
+			finish = () => { try { opened("late-pane"); resolve("late-pane"); } catch (error) { reject(error); } };
+		}));
+		const starting = flow.hooks.get("agent_settled")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		await flow.commands.get("goals").handler("clear", flow.ctx);
+		const entryCount = flow.entries.length;
+		finish(); await starting;
+		expect(flow.entries).toHaveLength(entryCount);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null, approvalId: null });
+		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });

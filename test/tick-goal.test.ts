@@ -26,7 +26,14 @@ describe("tickGoal (sign-off ticks the goal; agent only ticks on wording drift)"
 	});
 
 	it("returns null when the subject matches more than one goal line", () => {
-		const dup = `${plan}3. [ ] goal: Ship the docs\n`;
+		const dup = plan.replace("## Log", "3. [ ] goal: Ship the docs\n\n## Log");
 		expect(tickGoal(dup, "Ship the docs")).toBeNull();
+	});
+
+	it("ignores a historical duplicate below the Log and leaves it unchanged", () => {
+		const historical = `${plan}3. [ ] goal: Ship the docs\n`;
+		const result = tickGoal(historical, "Ship the docs");
+		expect(result).toContain("2. [x] goal: Ship the docs");
+		expect(result).toContain("## Log\n3. [ ] goal: Ship the docs\n");
 	});
 });

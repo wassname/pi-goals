@@ -271,3 +271,20 @@ it("keeps a supervisor unready after model restoration failure, then recovers ex
 		expect(runtime.ready()).toBe(true);
 	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });
+
+it("warns once on unavailable usage but stays quiet for Pi's post-compaction null token sample", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-usage-"));
+	try {
+		const runtime = setup(cwd, join(cwd, "plan.md"));
+		await runtime.start();
+		runtime.ctx.ui.notify.mockClear();
+		runtime.ctx.getContextUsage = () => ({ tokens: null }) as any;
+		await runtime.hooks.get("agent_settled")({}, runtime.ctx);
+		expect(runtime.ctx.ui.notify).not.toHaveBeenCalled();
+		runtime.ctx.getContextUsage = () => undefined;
+		await runtime.hooks.get("agent_settled")({}, runtime.ctx);
+		await runtime.hooks.get("agent_settled")({}, runtime.ctx);
+		expect(runtime.ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("custom 100k compaction trigger cannot be checked"), "warning");
+		expect(runtime.ctx.compact).not.toHaveBeenCalled();
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
-const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*goal:\s*(.*)$/i;
+import { foldPlan, GOAL_LINE } from "./plan.js";
 
 export interface ApprovalRecord {
 	version: 3;
@@ -42,7 +42,7 @@ export function repositoryState(cwd: string): { repoRoot: string; head: string; 
 }
 
 export function goalBlock(plan: string, goal: string): string | null {
-	const lines = plan.split(/^##\s+Log\s*$/im, 1)[0].split("\n");
+	const lines = foldPlan(plan).split("\n");
 	const wanted = goal.trim().toLowerCase();
 	const hits = lines.flatMap((line, index) => {
 		const match = GOAL_LINE.exec(line);

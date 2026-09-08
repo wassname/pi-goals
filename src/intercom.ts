@@ -4,7 +4,7 @@ import type { IntercomExtensionChannel, IntercomExtensionEvent } from "pi-interc
 
 export type Role = "worker" | "supervisor";
 export interface View { id: string; text: string; reason: string; through?: string; backgroundQuiet: boolean }
-interface Message { binding: string; role: Role; kind: "hello" | "view" | "steer" | "received"; id: string; text?: string; reason?: string; ready?: boolean; through?: string; backgroundQuiet?: boolean }
+interface Message { binding: string; role: Role; kind: "hello" | "view" | "steer" | "received"; id: string; text?: string; reason?: string; ready?: boolean; reply?: boolean; through?: string; backgroundQuiet?: boolean }
 const STATE = "pi-goals-intercom";
 
 export class GoalIntercom {
@@ -19,7 +19,7 @@ export class GoalIntercom {
 	private peerReady = false;
 	private pending = new Map<string, Message>();
 	private received = new Set<string>();
-	private waiters = new Set<() => void>();
+	private waiters = new Set<(error?: Error) => void>();
 	latestView?: View;
 	acknowledgedEntry?: string;
 	onView: (view: View) => void = () => {};
@@ -41,6 +41,7 @@ export class GoalIntercom {
 	}
 
 	configure(binding: string, role: Role, ctx: ExtensionContext, ready = role === "worker"): void {
+		for (const wake of this.waiters) wake(new Error("Supervision readiness wait cancelled by reconfiguration."));
 		this.binding = binding;
 		this.role = role;
 		this.ctx = ctx;
@@ -76,21 +77,33 @@ export class GoalIntercom {
 		this.peerReady = false;
 		this.latestView = undefined;
 		this.pending.clear();
+		for (const wake of this.waiters) wake(new Error("Supervision readiness wait cancelled: plan detached."));
 		if (this.ctx) this.onConnectionChange(this.ctx);
 	}
 
-	markReady(): void { if (!this.stopped) { this.ready = true; this.hello(); } }
+	markReady(): void { this.setReady(true); }
+	markNotReady(): void { this.setReady(false); }
+	private setReady(ready: boolean): void {
+		if (this.stopped) return;
+		this.ready = ready;
+		this.hello();
+		if (this.ctx) this.onConnectionChange(this.ctx);
+	}
 	get ended(): boolean { return this.stopped; }
 	get bound(): boolean { return !this.stopped && Boolean(this.binding); }
-	get connected(): boolean { return Boolean(!this.stopped && this.ready && this.binding && this.channel?.snapshot().connected && this.peerReady); }
+	get peerPresent(): boolean { return Boolean(this.bound && this.peer && this.channel?.snapshot().connected); }
+	get connected(): boolean { return this.ready && this.peerPresent && this.peerReady; }
 
-	async waitReady(timeoutMs = 300_000): Promise<void> {
-		if (this.connected) return;
+	// Startup can wait for the supervisor while the worker is still in planning/model recovery.
+	async waitReady(timeoutMs = 300_000, { peerOnly = false } = {}): Promise<void> {
+		const ready = () => this.connected || (peerOnly && this.peerPresent && this.peerReady);
+		if (ready()) return;
 		await new Promise<void>((resolve, reject) => {
-			const finish = () => {
-				if (!this.connected && !this.stopped) return;
+			const finish = (error?: Error) => {
+				if (!error && !ready() && !this.stopped) return;
 				clearTimeout(timer); this.waiters.delete(finish);
-				if (this.stopped) reject(new Error("Session ended while waiting for Intercom readiness."));
+				if (error) reject(error);
+				else if (this.stopped) reject(new Error("Session ended while waiting for Intercom readiness."));
 				else resolve();
 			};
 			const timer = setTimeout(() => { this.waiters.delete(finish); reject(new Error("Supervisor did not become ready through pi-intercom; inspect its pane.")); }, timeoutMs);
@@ -125,8 +138,8 @@ export class GoalIntercom {
 		if (!this.channel?.snapshot().supported) throw new Error("pi-intercom broker does not support extension channels.");
 		this.channel.publish(message, { audience: "capable" });
 	}
-	private hello(): void {
-		if (!this.stopped && this.binding && this.channel?.snapshot().connected) this.publish({ binding: this.binding, role: this.role, kind: "hello", id: "hello", ready: this.ready });
+	private hello(reply = false): void {
+		if (!this.stopped && this.binding && this.channel?.snapshot().connected) this.publish({ binding: this.binding, role: this.role, kind: "hello", id: "hello", ready: this.ready, reply });
 	}
 	private receive(event: IntercomExtensionEvent): void {
 		if (this.stopped) return;
@@ -154,12 +167,12 @@ export class GoalIntercom {
 			const changed = !this.peer || this.peerReady !== Boolean(message.ready);
 			this.peer = event.fromSessionId;
 			this.peerReady = Boolean(message.ready);
-			if (changed) {
-				this.hello();
-				if (this.peerReady && this.ready) {
-					if (this.role === "worker" && this.latestView) this.publish({ binding: this.binding, role: this.role, kind: "view", ...this.latestView });
-					for (const pending of this.pending.values()) this.publish(pending);
-				}
+			// Every request gets one reply, even if only the sender forgot its peer.
+			// Replies never elicit hellos; own-ready transitions also trigger replay here.
+			if (!message.reply) this.hello(true);
+			if (this.peerReady && this.ready) {
+				if (this.role === "worker" && this.latestView) this.publish({ binding: this.binding, role: this.role, kind: "view", ...this.latestView });
+				for (const pending of this.pending.values()) this.publish(pending);
 			}
 			if (changed && this.ctx) this.onConnectionChange(this.ctx);
 			for (const wake of this.waiters) wake();

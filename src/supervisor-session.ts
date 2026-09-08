@@ -93,6 +93,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
 	let bootstrapping = false;
+	let warnedUnknownUsage = false;
 	let modelError: string | null = null;
 	const intercom = new GoalIntercom(pi);
 	const models = new RoleModels(pi);
@@ -167,7 +168,14 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	});
 	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (compacting || (ctx.getContextUsage()?.tokens ?? 0) < COMPACT_AT_TOKENS) return;
+		if (compacting) return;
+		const usage = ctx.getContextUsage();
+		if (!usage && !warnedUnknownUsage) {
+			warnedUnknownUsage = true;
+			ctx.ui.notify("Supervisor context usage unavailable; the custom 100k compaction trigger cannot be checked. Pi's default auto-compaction is unchanged.", "warning");
+		}
+		// Pi reports tokens:null after compaction until a fresh assistant usage sample.
+		if (typeof usage?.tokens !== "number" || usage.tokens < COMPACT_AT_TOKENS) return;
 		compacting = true;
 		ctx.compact({
 			customInstructions: `Keep the user's high-level intent, current plan state, unresolved risks, approval decisions, and the supervisor's own concise findings. Remove old worker views and implementation detail. The canonical plan remains ${settings.planPath}.`,

@@ -50,13 +50,15 @@ If a required model or supervisor is unavailable, the widget says **goals paused
 - `/goals restart` explicitly closes only the tracked supervisor pane and starts a replacement for a working plan, preserving its file/version but invalidating old approvals. During planning it clears the failed pane so Ready can launch again.
 - In the supervisor pane, use `/model` then `/goals reconnect` to recover an unavailable supervisor model.
 
+Both sessions must load the updated transport for the request/reply reconnect fix; mixed-version peers are not a supported recovery configuration. Ready announces worker readiness only after its model is restored, and clearing a plan cancels its pending readiness wait.
+
 A new supervisor may still need up to five minutes for initial compaction. Recovery does not terminate background jobs. Planning/diagnostic command checks are guardrails, not an OS sandbox; loaded extensions and repository Git configuration must be trusted.
 
 Model choices are remembered per project and role in `.pi/pi-goals/models/`. Use `/model` in planning, worker, or supervisor sessions to change that role's choice. Ready restores the worker choice after the planning fork is ready. An unavailable saved model stops the transition instead of substituting another. `/goals model <model>` explicitly overrides the supervisor choice for launch. -- Pi/OpenAI
 
 ## Plan format
 
-A goal is a checkbox line whose text starts with `goal:`:
+Current goals belong above `## Log`; goal-shaped historical checklists below it are ignored by the widget, approval matching and sign-off. A goal is a checkbox line whose text starts with `goal:`:
 
 ```md
 1. [ ] goal: Produce the report
@@ -67,6 +69,8 @@ A goal is a checkbox line whose text starts with `goal:`:
 ```
 
 The worker saves verification output in a nonempty repository file, adds that path to evidence, and commits it. The supervisor calls `ApproveGoal` with the inspected path; the worker then calls `CompleteGoal` with the exact goal text.
+
+If context usage is unavailable, the supervisor warns once that its custom 100k compaction trigger cannot be checked. Pi's normal post-compaction `tokens: null` sample does not produce that warning; default auto-compaction is unchanged.
 
 ## Development
 

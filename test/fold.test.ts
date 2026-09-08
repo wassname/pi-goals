@@ -61,3 +61,8 @@ describe("openSubtasks (the widget shows the next action, so the plan IS the tas
 		expect(openSubtasks(plan, active)).not.toContain("write the readme");
 	});
 });
+
+it("does not show historical Log subtasks under the last active goal", () => {
+	const plan = "1. [/] goal: current\n  - [ ] current task\n\n## Log\n  - [ ] historical task\n";
+	expect(openSubtasks(plan, 0)).toEqual(["current task"]);
+});

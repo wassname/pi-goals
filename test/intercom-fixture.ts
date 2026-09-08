@@ -18,7 +18,7 @@ export function intercomFixture() {
 					snapshot: () => ({ connected, supported: true }),
 					publish: (message: any) => {
 						sent.push(message);
-						if (message.kind === "hello" && autoHello) queueMicrotask(() => receive({ ...message, role: message.role === "worker" ? "supervisor" : "worker", ready: true }));
+						if (message.kind === "hello" && !message.reply && autoHello) queueMicrotask(() => receive({ ...message, role: message.role === "worker" ? "supervisor" : "worker", ready: true, reply: true }));
 					},
 				});
 				return true;
