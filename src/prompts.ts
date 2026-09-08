@@ -3,7 +3,7 @@
  *
  * Design: the plan file is for LLMs and the human, not for TypeScript. No parser and no schema;
  * the skeleton below is a convention the drafting prompt teaches. The main session implements it,
- * while a visible forked Pi session supervises through a durable mailbox.
+ * while a visible forked Pi session supervises through pi-intercom.
  *
  * THE FOLD: everything above "## Log" is the short current-goal section. Everything below it
  * (Log, Learnings, Appendix) is durable memory: unlimited, read on demand, and sent in full at
@@ -164,7 +164,7 @@ export function resync(plan: string, planRel: string, why: string): string {
 <system-reminder>
 ${why} This is the whole plan file (${planRel}), appendix included. You are the implementation worker.
 Keep the high-level goal and human intent stable and do the work directly. A visible read-only Pi
-session supervises you through a durable mailbox. The human's latest message outranks the plan: if it
+session supervises you through pi-intercom. The human's latest message outranks the plan: if it
 changes scope, amend the plan rather than preserving an obsolete decision.
 
 ${plan}

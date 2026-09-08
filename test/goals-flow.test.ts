@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "../src/approval.js";
-import { workerViewsAfter, writeWorkerSteer } from "../src/mailbox.js";
+import { intercomFixture } from "./intercom-fixture.js";
 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
@@ -19,6 +19,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 	execFileSync("git", ["init", "-q"], { cwd });
 	execFileSync("git", ["add", ".gitignore", "verify.txt"], { cwd });
 	execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd });
+	const transport = intercomFixture();
 	const commands = new Map<string, any>();
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
@@ -47,16 +48,20 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 	};
 	openSupervisorPane.mockImplementation(async () => "pane-2");
 	const pi = {
+		events: transport.events,
 		registerCommand: (name: string, command: any) => commands.set(name, command),
-		on: (name: string, handler: any) => hooks.set(name, handler),
-		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		on: (name: string, handler: any) => {
+			const prior = hooks.get(name);
+			hooks.set(name, async (...args: any[]) => { await prior?.(...args); return handler(...args); });
+		},
+		appendEntry: (customType: string, data: unknown) => { if (customType === "pi-goals-state") entries.push({ type: "custom", customType, data }); },
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		getAllTools: () => [],
 		sendMessage: (message: { content: string; display?: boolean }) => messages.push(message),
 		sendUserMessage: (content: string) => messages.push({ content }),
 	};
 	piGoalsExtension(pi as unknown as ExtensionAPI);
-	return { commands, ctx, cwd, entries, hooks, messages, notifications, tools };
+	return { commands, ctx, cwd, entries, hooks, messages, notifications, tools, transport };
 }
 
 function writePlan(cwd: string, content: string): string {
@@ -83,21 +88,21 @@ describe("/goals flow", () => {
 			await flow.commands.get("goals").handler("make the file", flow.ctx);
 			const path = approvedPlan(flow.cwd);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			const mailbox = (flow.entries.at(-1)?.data as { mailboxPath: string }).mailboxPath;
+			const views = () => flow.transport.sent.filter(message => message.kind === "view");
 			await vi.advanceTimersByTimeAsync(60 * 60_000);
-			expect(workerViewsAfter(mailbox, 0).at(-1)?.text).toMatch(/^The worker stopped\./);
+			expect(views().at(-1)?.text).toMatch(/^The worker stopped\./);
 			flow.ctx.isIdle.mockReturnValue(false);
 			await flow.hooks.get("agent_start")({}, flow.ctx);
-			expect(workerViewsAfter(mailbox, 0).at(-1)?.text).toMatch(/^The worker is still working\./);
+			expect(views().at(-1)?.text).toMatch(/^The worker is still working\./);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(workerViewsAfter(mailbox, 0).at(-1)?.text).toMatch(/^The worker is still working\./);
+			expect(views().at(-1)?.text).toMatch(/^The worker is still working\./);
 			flow.ctx.isIdle.mockReturnValue(true);
 			writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", "[x] goal:"));
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			const count = workerViewsAfter(mailbox, 0).length;
+			const count = views().length;
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null });
 			await vi.advanceTimersByTimeAsync(60 * 60_000);
-			expect(workerViewsAfter(mailbox, 0)).toHaveLength(count);
+			expect(views()).toHaveLength(count);
 		} finally {
 			await flow.hooks.get("session_shutdown")();
 			vi.useRealTimers();
@@ -135,8 +140,7 @@ describe("/goals flow", () => {
 				sourceSessionFile: join(flow.cwd, "session.jsonl"),
 				workerSessionId: "session-a",
 				planPath,
-				mailboxPath: expect.stringContaining(".pi/goals-supervision/session-a/"),
-			}));
+			}), expect.any(Function));
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
 			expect(flow.messages.at(-1)?.content).toBe("The plan is approved. Begin implementation as the worker.");
 			const prompt = await flow.hooks.get("before_agent_start")({}, flow.ctx);
@@ -165,14 +169,14 @@ describe("/goals flow", () => {
 		}
 	});
 
-	it("delivers a mailbox instruction to the worker", async () => {
+	it("delivers an Intercom instruction to the worker",  async () => {
 		const flow = setup(["Ready"]);
 		try {
 			await flow.commands.get("goals").handler("make the file", flow.ctx);
 			approvedPlan(flow.cwd);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			const mailboxPath = (flow.entries.at(-1)?.data as { mailboxPath: string }).mailboxPath;
-			writeWorkerSteer(mailboxPath, "Run the focused test.");
+			const binding = (flow.entries.at(-1)?.data as { approvalId: string }).approvalId;
+			flow.transport.receive({ binding, role: "supervisor", kind: "steer", id: "steer-1", text: "Run the focused test." });
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			expect(flow.messages.some((message) => message.content === "[supervisor] Run the focused test.")).toBe(true);
 		} finally {

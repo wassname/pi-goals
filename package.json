@@ -43,6 +43,9 @@
     "lint": "biome check src/ test/",
     "lint:fix": "biome check --fix src/ test/"
   },
+  "dependencies": {
+    "pi-intercom": "^0.13.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
     "@earendil-works/pi-coding-agent": "^0.84.1",

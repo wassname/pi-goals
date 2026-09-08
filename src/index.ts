@@ -1,6 +1,6 @@
 /**
  * PI: pi-goals owns one versioned plan per session. After Ready, the main session implements the
- * plan while a compacted, visible fork supervises it through a durable mailbox.
+ * plan while a compacted, visible fork supervises it through pi-intercom.
  *
  * Each /goals call makes `.pi/plan/<session_id>-vN.md`. The selected version survives resume and
  * compaction. Old plans stay on disk but inactive. A session with no selected plan has no widget,
@@ -22,7 +22,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { approvalMatches, approvalPath, goalBlock, hashGoalBlock, readApproval, repositoryState } from "./approval.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
-import { createMailbox, workerSteersAfter, writeWorkerView } from "./mailbox.js";
+import { GoalIntercom } from "./intercom.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
 import { isVisibleSupervisor, registerVisibleSupervisor } from "./supervisor-session.js";
 import { workerView } from "./worker-view.js";
@@ -96,8 +96,6 @@ interface PlanState {
 	supervisorModel: string | null;
 	supervisorPaneId: string | null;
 	approvalId: string | null;
-	mailboxPath: string | null;
-	lastSteer: number;
 	planVersion: number | null;
 }
 
@@ -107,13 +105,16 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return;
 	}
 	if (!isMainSession()) return;
+	const intercom = new GoalIntercom(pi);
+	intercom.onSteer = (instruction) => {
+		if (state.phase !== "working") throw new Error("Worker plan is not active; instruction rejected.");
+		pi.sendUserMessage(`[supervisor] ${instruction}`, { deliverAs: "steer" });
+	};
 	let state: PlanState = {
 		phase: null,
 		supervisorModel: null,
 		supervisorPaneId: null,
 		approvalId: null,
-		mailboxPath: null,
-		lastSteer: 0,
 		planVersion: null,
 	};
 	let planningContextPending = false;
@@ -141,8 +142,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			rmSync(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), goal.subject), { force: true });
 		}
 		const approvalId = randomUUID();
-		const mailbox = createMailbox(ctx.cwd, ctx.sessionManager.getSessionId(), approvalId, planPath(ctx));
-		state = { ...state, approvalId, mailboxPath: mailbox.path, lastSteer: 0 };
+		state = { ...state, approvalId };
+		intercom.configure(approvalId, "worker", ctx);
 		persist();
 	}
 
@@ -154,6 +155,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		repositoryRoot(ctx.cwd);
 		const sourceSessionFile = ctx.sessionManager.getSessionFile();
 		if (!sourceSessionFile) throw new Error("The current session is not persisted, so it cannot be forked.");
+		if (state.supervisorPaneId && state.approvalId) {
+			intercom.configure(state.approvalId, "worker", ctx);
+			await intercom.waitReady();
+			return;
+		}
 		beginReview(ctx);
 		let paneId: string | null = null;
 		try {
@@ -163,9 +169,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				workerSessionId: ctx.sessionManager.getSessionId(),
 				planPath: planPath(ctx),
 				approvalId: state.approvalId!,
-				mailboxPath: state.mailboxPath!,
 				extensionPath: fileURLToPath(import.meta.url),
 				model: state.supervisorModel,
+			}, (opened) => {
+				state = { ...state, supervisorPaneId: opened };
+				persist();
 			});
 		} catch (error) {
 			if (paneId) throw new Error(`Supervisor startup failed in Herdr pane ${paneId}; it remains open for inspection. ${error instanceof Error ? error.message : String(error)}`);
@@ -173,20 +181,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 		state = { ...state, supervisorPaneId: paneId };
 		persist();
+		await intercom.waitReady();
 	}
 
 	let workerTurns = 0;
 	let viewTimer: ReturnType<typeof setInterval> | undefined;
-	let steerTimer: ReturnType<typeof setInterval> | undefined;
-
-	function mailbox(ctx: ExtensionContext) {
-		if (!state.approvalId || !state.mailboxPath) throw new Error("No active supervisor mailbox.");
-		return createMailbox(ctx.cwd, ctx.sessionManager.getSessionId(), state.approvalId, planPath(ctx));
-	}
 
 	function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started"): void {
 		if (state.phase !== "working") return;
-		writeWorkerView(mailbox(ctx), reason, workerView(ctx.sessionManager.getBranch(), reason, reason !== "started" && ctx.isIdle()));
+		intercom.view(workerView(ctx.sessionManager.getBranch(), reason, reason !== "started" && ctx.isIdle()), reason);
 		const goals = scanGoals(readPlan(ctx));
 		if (goals.length > 0 && goals.every((goal) => goal.status === "done" || goal.status === "cancelled")) {
 			stopWorkerTimers();
@@ -195,25 +198,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function deliverWorkerSteers(ctx: ExtensionContext): void {
-		if (state.phase !== "working") return;
-		for (const steer of workerSteersAfter(mailbox(ctx).path, state.lastSteer)) {
-			state = { ...state, lastSteer: steer.sequence };
-			persist();
-			pi.sendUserMessage(`[supervisor] ${steer.instruction}`, { deliverAs: "followUp" });
-		}
-	}
-
 	function startWorkerTimers(ctx: ExtensionContext): void {
 		if (!viewTimer) viewTimer = setInterval(() => publishWorkerView(ctx, "interval"), 60 * 60_000);
-		if (!steerTimer) steerTimer = setInterval(() => deliverWorkerSteers(ctx), 1_000);
 	}
 
 	function stopWorkerTimers(): void {
 		if (viewTimer) clearInterval(viewTimer);
-		if (steerTimer) clearInterval(steerTimer);
 		viewTimer = undefined;
-		steerTimer = undefined;
 	}
 
 	async function stopSupervisor(): Promise<boolean> {
@@ -274,7 +265,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify("Could not close the visible supervisor; the plan remains connected.", "warning");
 					return;
 				}
-				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, mailboxPath: null, lastSteer: 0, planVersion: null };
+				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, planVersion: null };
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
@@ -290,7 +281,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				const ref = arg.slice("model".length).trim();
-				state = { ...state, supervisorModel: ref || null, supervisorPaneId: null, approvalId: null, mailboxPath: null, lastSteer: 0 };
+				state = { ...state, supervisorModel: ref || null, supervisorPaneId: null, approvalId: null };
 				persist();
 				ctx.ui.notify(`Goal-supervisor model ${ref ? `set to ${ref}` : "reset to the current Pi default"}.`, "info");
 				return;
@@ -299,7 +290,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Could not close the visible supervisor; no new plan was started.", "warning");
 				return;
 			}
-			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, mailboxPath: null, lastSteer: 0, planVersion: nextVersion(ctx) };
+			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx) };
 			planningContextPending = true;
 			resyncReason = null;
 			writePlan(ctx, "");
@@ -329,7 +320,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (state.phase === "working") {
 			return {
-				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the implementation worker for ${planRel(ctx)}. Keep the full conversation and do the work directly. A stronger read-only supervisor watches this session through its durable mailbox and can steer you. Commit clean evidence before asking for sign-off. Stop when a goal appears complete so the supervisor can inspect a settled worker view. Call CompleteGoal only after the supervisor says it recorded approval. -- PI[Kimi K3]`,
+				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the implementation worker for ${planRel(ctx)}. Keep the full conversation and do the work directly. A stronger read-only supervisor watches this session through pi-intercom and can steer you. Commit clean evidence before asking for sign-off. Stop when a goal appears complete so the supervisor can inspect a settled worker view. Call CompleteGoal only after the supervisor says it recorded approval. -- PI[Kimi K3]`,
 			};
 		}
 		if (!planningContextPending) return;
@@ -392,7 +383,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (state.phase === "working") {
-			deliverWorkerSteers(ctx);
 			publishWorkerView(ctx, "settled");
 			return;
 		}
@@ -424,7 +414,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			}
 			if (choice === "Cancel") {
 				rmSync(planPath(ctx), { force: true });
-				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, mailboxPath: null, lastSteer: 0, planVersion: null };
+				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, planVersion: null };
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify("Plan discarded.", "info");
@@ -443,7 +433,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				pi.sendUserMessage("The plan is approved. Begin implementation as the worker.");
 			} catch (error) {
 				ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)}`, "warning");
-				state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, mailboxPath: null, lastSteer: 0 };
+				state = { ...state, phase: "planning" };
 				persist();
 				updateWidget(ctx);
 			}
@@ -461,13 +451,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			supervisorModel: last?.data?.supervisorModel ?? null,
 			supervisorPaneId: last?.data?.supervisorPaneId ?? null,
 			approvalId: last?.data?.approvalId ?? null,
-			mailboxPath: last?.data?.mailboxPath ?? null,
-			lastSteer: last?.data?.lastSteer ?? 0,
 			planVersion: last?.data?.planVersion ?? null,
 		};
 		planningContextPending = state.phase === "planning";
 		resyncReason = state.phase === "working" ? "New session." : null;
-		if (state.phase === "working") startWorkerTimers(ctx);
+		if (state.phase === "working") {
+			intercom.configure(state.approvalId!, "worker", ctx);
+			startWorkerTimers(ctx);
+		}
 		updateWidget(ctx);
 	});
 

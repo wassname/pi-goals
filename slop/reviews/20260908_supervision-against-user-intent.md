@@ -65,7 +65,7 @@ The transport rewrite is an implementation choice, not the user's goal.
 
 ## Reproduction
 
-Run `node_modules/.bin/tsx slop/reviews/20260908_supervisor-intent-reproduction.ts`.
+The mailbox reproduction script is historical; retrieve it at commit `386305a`. The Intercom migration removes that implementation. Current transport checks are in `test/intercom.test.ts` and `test/intercom-broker.test.ts`.
 
 [Saved output](20260908_supervisor-intent-reproduction.txt) records the exact observations quoted above. The harness uses only temporary mailbox files and mocked Pi lifecycle events; it neither launches Pi nor contacts another session. It asserts the currently observed failure, not desired behavior.
 

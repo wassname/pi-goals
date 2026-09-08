@@ -8,18 +8,18 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 2. Pi asks only material questions, writes the plan, and shows **Ready / Refine / Edit / Cancel**.
 3. **Ready** opens a second Herdr pane. The new Pi session explicitly forks the planning session and compacts that fork.
 4. The original session becomes the implementation worker. It keeps the full conversation and normal tools.
-5. The fork becomes a read-only supervisor. Worker views and supervisor instructions use a session-scoped mailbox under ignored `.pi/goals-supervision/`.
-6. Ready waits for the supervisor's durable readiness receipt; the worker does not begin before the fork has compacted and started.
+5. The fork becomes a read-only supervisor. Worker views and supervisor instructions travel over pi-intercom's extension channel, scoped to this plan pairing.
+6. Ready waits for the supervisor's Intercom readiness message; the worker does not begin before the fork has compacted and started.
 7. The supervisor compacts again when its context reaches 100k tokens.
 8. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean commit, evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
 
 The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly. Supervisor instructions are shown in full, including in collapsed tool rows; ordinary messages and emitted thinking use Pi's display settings. The supervisor is prompted to give brief progress assessments and use judgment about when to intervene.
 
-On resume, monitoring and read-only tools are restored. Periodic views report whether Pi is idle; they do not measure background jobs. Readiness is a startup receipt, not a continuous health check. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
+On resume, monitoring and read-only tools are restored. Periodic views report whether Pi is idle; they do not measure background jobs. Intercom disconnects are reported; unsent current views and unacknowledged instructions are retained in Pi session history for reconnect. A receipt confirms transport handling, not execution. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
 
 ## Install
 
-This branch requires Herdr 0.7.5 or newer and one Pi package:
+This branch requires Herdr 0.7.5 or newer and one Pi package. It reuses installed pi-intercom or loads its pi-intercom dependency when none is registered:
 
 ```bash
 pi install npm:@wassname2/pi-goals
@@ -66,6 +66,6 @@ npm run typecheck
 npm run lint
 ```
 
-`test/rpc-review.test.ts` runs the planning review flow through Pi's real RPC protocol with a local deterministic model. The Herdr launcher and visible supervisor bootstrap have focused tests; use a real Herdr session for the final two-pane check.
+`test/intercom-broker.test.ts` checks readiness and exact message delivery through an isolated real Intercom broker. `test/rpc-review.test.ts` runs the planning review flow through Pi's real RPC protocol with a local deterministic model. The Herdr launcher and visible supervisor bootstrap have focused tests; use a real Herdr session for the final two-pane check.
 
 -- PI[gpt-5.6-sol]

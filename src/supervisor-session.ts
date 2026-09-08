@@ -1,10 +1,10 @@
-import { readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
-import { readyMailbox, workerViewsAfter, writeWorkerSteer } from "./mailbox.js";
+import { GoalIntercom } from "./intercom.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
 const INITIAL_COMPACT_AT_TOKENS = 20_000;
@@ -16,7 +16,6 @@ interface SupervisorConfig {
 	ownerSessionId: string;
 	planPath: string;
 	approvalId: string;
-	mailboxPath: string;
 }
 
 function result(text: string, isError = false) {
@@ -35,7 +34,6 @@ function config(): SupervisorConfig {
 		ownerSessionId: requiredEnv("PI_GOALS_OWNER_SESSION_ID"),
 		planPath: resolve(requiredEnv("PI_GOALS_PLAN_PATH")),
 		approvalId: requiredEnv("PI_GOALS_APPROVAL_ID"),
-		mailboxPath: resolve(requiredEnv("PI_GOALS_MAILBOX_PATH")),
 	};
 }
 
@@ -94,19 +92,11 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
 	let bootstrapping = false;
-	let deliveredView = 0;
-	let viewTimer: ReturnType<typeof setInterval> | undefined;
-
-	const deliverWorkerViews = (): void => {
-		const view = workerViewsAfter(settings.mailboxPath, deliveredView).at(-1);
-		if (view) {
-			if (view.reason !== "started") pi.sendUserMessage(view.text, { deliverAs: "followUp" });
-			deliveredView = view.sequence;
-		}
-	};
+	const intercom = new GoalIntercom(pi);
+	intercom.onView = (view) => pi.sendUserMessage(view.text, { deliverAs: "followUp" });
 
 	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
-		if (bootstrapping) return;
+		if (bootstrapping || intercom.ended) return;
 		const entries = ctx.sessionManager.getEntries();
 		bootstrapping = true;
 		try {
@@ -117,18 +107,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			if (!entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) {
 				pi.appendEntry(BOOTSTRAPPED, { version: 2, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
 			}
-			for (const entry of entries) {
-				const message = (entry as { message?: { role?: string; content?: unknown } }).message;
-				if (message?.role !== "user" || !Array.isArray(message.content)) continue;
-				for (const part of message.content) {
-					if (part.type !== "text" || !part.text.startsWith("The worker ")) continue;
-					const sequence = /^worker view sequence: (\d+)$/m.exec(part.text);
-					if (sequence) deliveredView = Math.max(deliveredView, Number(sequence[1]));
-				}
-			}
-			readyMailbox(settings.mailboxPath);
-			viewTimer = setInterval(deliverWorkerViews, 1_000);
-			deliverWorkerViews();
+			intercom.markReady();
 		} catch (error) {
 			ctx.ui.notify(`Supervisor startup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
@@ -146,24 +125,22 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			customInstructions: `Preserve the user's high-level intent, decisions, unresolved risks, and the supervisor's remit. The canonical plan is ${settings.planPath}; it remains available directly and must not be replaced by this summary.`,
 			onComplete: () => {
 				compacting = false;
+				if (intercom.ended) return;
 				ctx.ui.notify("Supervisor planning context compacted before work started.", "info");
 				void bootstrap(ctx);
 			},
 			onError: (error) => {
 				compacting = false;
+				if (intercom.ended) return;
 				ctx.ui.notify(`Supervisor startup compaction failed: ${error.message}`, "error");
 			},
 		});
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		rmSync(join(settings.mailboxPath, "ready.json"), { force: true });
+		intercom.configure(settings.approvalId, "supervisor", ctx);
 		pi.setActiveTools(pi.getActiveTools().filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
 		setImmediate(() => { bootstrapAfterInitialCompaction(ctx); });
-	});
-	pi.on("session_shutdown", async () => {
-		if (viewTimer) clearInterval(viewTimer);
-		rmSync(join(settings.mailboxPath, "ready.json"), { force: true });
 	});
 	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -173,10 +150,12 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			customInstructions: `Keep the user's high-level intent, current plan state, unresolved risks, approval decisions, and the supervisor's own concise findings. Remove old worker views and implementation detail. The canonical plan remains ${settings.planPath}.`,
 			onComplete: () => {
 				compacting = false;
+				if (intercom.ended) return;
 				ctx.ui.notify("Supervisor context compacted at 100k tokens.", "info");
 			},
 			onError: (error) => {
 				compacting = false;
+				if (intercom.ended) return;
 				ctx.ui.notify(`Supervisor compaction failed: ${error.message}`, "error");
 			},
 		});
@@ -194,8 +173,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		async execute(_id, params) {
 			const instruction = params.instruction.trim();
 			if (!instruction) return result("A worker instruction cannot be empty.", true);
-			const steer = writeWorkerSteer(settings.mailboxPath, instruction);
-			return result(`Worker instruction ${steer.sequence} recorded. Worker receipt and execution are not confirmed.`);
+			const id = intercom.steer(instruction);
+			return result(`Worker instruction ${id} sent through pi-intercom. Receipt and execution are not confirmed by this result.`);
 		},
 	});
 
@@ -210,8 +189,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const view = latestWorkerView(ctx);
-			const newest = workerViewsAfter(settings.mailboxPath, 0).at(-1);
-			if (!newest || view !== newest.text) return result("Cannot approve without inspecting the latest worker view.", true);
+			const newest = intercom.latestView;
+			if (!intercom.connected || !newest || view !== newest.text) return result("Cannot approve without inspecting the latest worker view.", true);
 			if (!view?.startsWith("The worker stopped.")) return result("Cannot approve without a current stopped-worker view.", true);
 			const pendingTool = view.match(/^tool calls with no result: (?!none$)(.+)$/m);
 			const pendingChild = view.match(/^child pi processes still running: (?!none$)(.+)$/m);
