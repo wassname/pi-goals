@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, writeApproval } from "../src/approval.js";
-import { writeWorkerSteer } from "../src/mailbox.js";
+import { workerViewsAfter, writeWorkerSteer } from "../src/mailbox.js";
 
 const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
@@ -28,6 +28,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 	const ctx = {
 		cwd,
 		hasUI: true,
+		isIdle: vi.fn(() => true),
 		getSystemPrompt: () => "base prompt",
 		sessionManager: {
 			getSessionId: () => "session-a",
@@ -75,6 +76,34 @@ afterEach(() => {
 });
 
 describe("/goals flow", () => {
+	it("reports actual idle state, invalidates stopped views on start, and stops completed plans", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const flow = setup(["Ready"]);
+		try {
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			const path = approvedPlan(flow.cwd);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			const mailbox = (flow.entries.at(-1)?.data as { mailboxPath: string }).mailboxPath;
+			await vi.advanceTimersByTimeAsync(60 * 60_000);
+			expect(workerViewsAfter(mailbox, 0).at(-1)?.text).toMatch(/^The worker stopped\./);
+			flow.ctx.isIdle.mockReturnValue(false);
+			await flow.hooks.get("agent_start")({}, flow.ctx);
+			expect(workerViewsAfter(mailbox, 0).at(-1)?.text).toMatch(/^The worker is still working\./);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(workerViewsAfter(mailbox, 0).at(-1)?.text).toMatch(/^The worker is still working\./);
+			flow.ctx.isIdle.mockReturnValue(true);
+			writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", "[x] goal:"));
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			const count = workerViewsAfter(mailbox, 0).length;
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null });
+			await vi.advanceTimersByTimeAsync(60 * 60_000);
+			expect(workerViewsAfter(mailbox, 0)).toHaveLength(count);
+		} finally {
+			await flow.hooks.get("session_shutdown")();
+			vi.useRealTimers();
+			rmSync(flow.cwd, { recursive: true, force: true });
+		}
+	});
 	it("preserves drafts, records the interview, and keeps planning read-only", async () => {
 		const flow = setup(["Refine"], ["Keep two columns."]);
 		try {

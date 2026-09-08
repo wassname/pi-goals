@@ -23,7 +23,10 @@ function runtime() {
     on: (name: string, handler: any) => hooks.set(name, handler),
     registerTool: (tool: any) => tools.set(tool.name, tool),
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-    sendUserMessage: (message: string) => messages.push(message),
+    sendUserMessage: (text: string) => {
+      messages.push(text);
+      entries.push({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
+    },
     getActiveTools: () => activeTools,
     setActiveTools: (tools: string[]) => { activeTools = tools; },
   };
@@ -44,17 +47,20 @@ try {
       await new Promise(setImmediate);
       console.log(`${name}: deliveredViews=${run.messages.length}, activeTools=${run.activeTools().join(",")}, readyReceipt=${supervisorReady(mailbox.path)}`);
       assert.equal(run.messages.length, name === "fresh" ? 1 : 0);
-      assert.deepEqual(run.activeTools(), name === "fresh" ? ["read"] : ["read", "write", "bash"]);
+      assert.deepEqual(run.activeTools(), ["read"]);
       if (name === "fresh") {
         const tool = run.tools.get("SteerWorker");
         const result = await tool.execute("id", { instruction: "Compare the signs in the two saved outputs." });
+        assert.equal(typeof tool.renderCall, "function");
         console.log(`steer: renderCall=${typeof tool.renderCall}, result=${result.content[0].text}`);
       }
     } finally {
       await run.hooks.get("session_shutdown")();
     }
   }
-  console.log(`interval view without any work: ${workerView([], "interval").split("\n")[0]}`);
+  const idleView = workerView([], "interval", true).split("\n")[0];
+  assert.equal(idleView, "The worker stopped.");
+  console.log(`interval view without any work: ${idleView}`);
 } finally {
   rmSync(cwd, { recursive: true, force: true });
 }

@@ -38,10 +38,10 @@ function outstandingTools(entries: SessionEntry[]): string[] {
 	return [...calls].filter(([id]) => !results.has(id)).map(([, name]) => name);
 }
 
-export function workerView(entries: SessionEntry[], reason: "ready" | "settled" | "turns" | "interval"): string {
+export function workerView(entries: SessionEntry[], reason: "ready" | "settled" | "turns" | "interval" | "started", idle: boolean): string {
 	const summary = [...entries].reverse().find((entry) => entry.type === "compaction" && entry.summary)?.summary;
 	const recent = entries.flatMap((entry) => entry.type === "message" && entry.message ? [text(entry.message)] : []).filter(Boolean).slice(-12).join("\n\n").slice(-12_000);
 	const outstanding = outstandingTools(entries);
-	const state = reason === "settled" ? "stopped" : reason === "ready" ? "is ready to begin" : "is still working";
-	return `The worker ${state}.\n\nreview trigger: ${reason}\ntool calls with no result: ${outstanding.join(", ") || "none"}\n\n${summary ? `last compaction summary:\n${summary}\n\n` : ""}recent worker transcript:\n${recent || "none"}`;
+	const state = reason === "ready" ? "is ready to begin" : idle ? "stopped" : "is still working";
+	return `The worker ${state}.\n\nreview trigger: ${reason}\ntool calls with no result: ${outstanding.join(", ") || "none"}\nbackground job state: not measured; inspect job evidence before approval\n\n${summary ? `last compaction summary:\n${summary}\n\n` : ""}recent worker transcript:\n${recent || "none"}`;
 }

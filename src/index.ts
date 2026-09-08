@@ -184,9 +184,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return createMailbox(ctx.cwd, ctx.sessionManager.getSessionId(), state.approvalId, planPath(ctx));
 	}
 
-	function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval"): void {
+	function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started"): void {
 		if (state.phase !== "working") return;
-		writeWorkerView(mailbox(ctx), reason, workerView(ctx.sessionManager.getBranch(), reason));
+		writeWorkerView(mailbox(ctx), reason, workerView(ctx.sessionManager.getBranch(), reason, reason !== "started" && ctx.isIdle()));
+		const goals = scanGoals(readPlan(ctx));
+		if (goals.length > 0 && goals.every((goal) => goal.status === "done" || goal.status === "cancelled")) {
+			stopWorkerTimers();
+			state = { ...state, phase: null };
+			persist();
+		}
 	}
 
 	function deliverWorkerSteers(ctx: ExtensionContext): void {
@@ -348,6 +354,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
 		if (state.phase === "planning" && event.source !== "extension") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
+	});
+
+	pi.on("agent_start", async (_event, ctx) => {
+		publishWorkerView(ctx, "started");
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {

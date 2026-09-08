@@ -1,6 +1,24 @@
 # Review against user intent
 
-Verdict: not achieved.
+## Follow-up: code fixes, full goal still unproven
+
+Implemented directly after the subagent runner failed and the user authorized direct work. The tests now exercise full advice in real Pi tool components (collapsed, expanded, restored, streaming arguments), emitted thinking/text display, resume without replay of persisted views, latest-view coalescing, actual idle/busy status, stale-view approval rejection, and stopping completed-plan timers. The supervisor prompt now asks for a brief evidence-based progress assessment and useful judgment instead of instruction-only reviews. Background job status is explicitly unmeasured; approval still requires the supervisor to inspect job evidence when relevant.
+
+[Saved validation output](20260908_supervision-fixes-validation.txt):
+
+> Tests  34 passed (34)
+> resumed: deliveredViews=0, activeTools=read, readyReceipt=true
+> interval view without any work: The worker stopped.
+
+Typecheck and lint also succeeded in that log. The reproduction script now asserts the corrected behavior; the original reproduction output below is retained as historical evidence. Readiness is cleared on startup and normal shutdown, but it is not a heartbeat or proof of worker receipt. The review here is my own source/diff review, not the independent review that failed to launch. Existing user panes and the separate pi-supervise worktree were not modified.
+
+Remaining acceptance: a real isolated two-pane run with the intended model pair, observed useful advice and worker response, plus measured token/cost totals. Prompt assertions do not establish judgment quality. No full-goal completion is claimed.
+
+-- Pi/OpenAI
+
+## Original review
+
+Verdict at `06794bf`: not achieved.
 
 Reviewed `experiment/goals-owned-supervision` at `4ebb4d1` against [AGENTS.md](../../AGENTS.md#user-intent-for-this-branch). This is a source review and isolated runtime reproduction by Pi/OpenAI, not an independent model review or a real two-pane acceptance test. No existing session or pane was operated.
 

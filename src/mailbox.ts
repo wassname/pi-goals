@@ -15,7 +15,7 @@ export interface SupervisorMailbox {
 export interface WorkerView {
 	version: 1;
 	sequence: number;
-	reason: "ready" | "settled" | "turns" | "interval";
+	reason: "ready" | "settled" | "turns" | "interval" | "started";
 	text: string;
 	timestamp: string;
 }
@@ -71,7 +71,8 @@ export function supervisorReady(path: string): boolean {
 
 export function writeWorkerView(mailbox: SupervisorMailbox, reason: WorkerView["reason"], text: string): WorkerView {
 	const directory = join(mailbox.path, VIEWS);
-	const view: WorkerView = { version: 1, sequence: nextSequence(directory, "view"), reason, text, timestamp: new Date().toISOString() };
+	const sequence = nextSequence(directory, "view");
+	const view: WorkerView = { version: 1, sequence, reason, text: `${text}\n\nworker view sequence: ${sequence}`, timestamp: new Date().toISOString() };
 	writeJson(join(directory, `view-${view.sequence}.json`), view);
 	return view;
 }

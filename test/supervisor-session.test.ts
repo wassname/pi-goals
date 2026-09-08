@@ -2,11 +2,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { AssistantMessageComponent, type ExtensionAPI, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath } from "../src/approval.js";
-import { createMailbox, supervisorReady, workerSteersAfter } from "../src/mailbox.js";
+import { createMailbox, supervisorReady, workerSteersAfter, writeWorkerView } from "../src/mailbox.js";
 import { registerVisibleSupervisor } from "../src/supervisor-session.js";
+
+const shutdowns: Array<() => Promise<void>> = [];
 
 function setup(cwd: string, planPath: string, tokens: number | null = 10, onCompact: (options: any) => void = (options) => options.onComplete()) {
 	const mailbox = createMailbox(cwd, "worker-session", "approval-1", planPath);
@@ -38,12 +41,93 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 		setActiveTools: (next: string[]) => { activeTools = next; },
 	};
 	registerVisibleSupervisor(pi as unknown as ExtensionAPI);
+	shutdowns.push(() => hooks.get("session_shutdown")());
 	return { activeTools: () => activeTools, branch: (value: any[]) => { branch = value; }, ctx, entries, hooks, mailbox, messages, tools };
 }
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(async () => {
+	for (const shutdown of shutdowns.splice(0)) await shutdown();
+	vi.useRealTimers();
+	vi.unstubAllEnvs();
+});
 
 describe("visible supervisor session", () => {
+	it("restores monitoring and read-only tools without replaying persisted views", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-resume-"));
+		try {
+			const first = setup(cwd, join(cwd, "plan.md"));
+			const view = writeWorkerView(first.mailbox, "settled", "The worker stopped.");
+			await first.hooks.get("session_start")({}, first.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(first.messages).toEqual([view.text]);
+			await first.hooks.get("session_shutdown")();
+			expect(supervisorReady(first.mailbox.path)).toBe(false);
+			const resumed = setup(cwd, join(cwd, "plan.md"), 30_000);
+			resumed.entries.push(...first.entries, { type: "message", message: { role: "user", content: [{ type: "text", text: view.text }] } });
+			await resumed.hooks.get("session_start")({}, resumed.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(resumed.activeTools()).toEqual(["read", "grep"]);
+			expect(resumed.ctx.compact).not.toHaveBeenCalled();
+			expect(resumed.messages).toEqual([]);
+			writeWorkerView(resumed.mailbox, "interval", "The worker stopped.\nOld view.");
+			const latest = writeWorkerView(resumed.mailbox, "interval", "The worker stopped.\nCurrent view.");
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(resumed.messages).toEqual([latest.text]);
+			writeWorkerView(resumed.mailbox, "started", "The worker is still working.");
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(resumed.messages).toEqual([latest.text]);
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
+	it("renders all advice in real Pi tool rows, including collapsed and restored rows", () => {
+		initTheme("dark");
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-render-"));
+		try {
+			const runtime = setup(cwd, join(cwd, "plan.md"));
+			const tool = runtime.tools.get("SteerWorker");
+			const lines = Array.from({ length: 18 }, (_, i) => `Advice ${i + 1}: inspect evidence.`);
+			const instruction = lines.join("\n");
+			for (const restored of [false, true]) {
+				const row = new ToolExecutionComponent("SteerWorker", "call", restored ? { instruction } : {}, {}, tool, { requestRender() {} } as any, cwd);
+				expect(stripVTControlCharacters(row.render(40).join("\n"))).not.toContain("undefined");
+				row.updateArgs({ instruction });
+				row.setArgsComplete();
+				row.updateResult({ content: [{ type: "text", text: "Receipt unconfirmed." }], isError: false });
+				for (const expanded of [false, true]) {
+					row.setExpanded(expanded);
+					for (const width of [40, 100]) {
+						const output = stripVTControlCharacters(row.render(width).join("\n"));
+						for (const line of lines) expect(output).toContain(line);
+						expect(output).toContain("Receipt unconfirmed.");
+					}
+				}
+			}
+			const assistant = new AssistantMessageComponent(undefined, false);
+			for (const streaming of [true, false]) {
+				assistant.updateContent({ role: "assistant", content: [
+					{ type: "thinking", thinking: "The signs disagree. Inspect the outputs." },
+					{ type: "text", text: "Progress is mixed; the second check still fails." },
+					{ type: "toolCall", id: "call", name: "SteerWorker", arguments: { instruction } },
+				] } as any, streaming);
+				const output = stripVTControlCharacters(assistant.render(100).join("\n"));
+				expect(output).toContain("The signs disagree.");
+				expect(output).toContain("Progress is mixed;");
+			}
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
+	it("asks for judgment and useful recaps without inventing instructions", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-prompt-"));
+		try {
+			const runtime = setup(cwd, join(cwd, "plan.md"));
+			const { systemPrompt } = await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
+			expect(systemPrompt).toContain("brief visible recap");
+			expect(systemPrompt).toContain("your judgment");
+			expect(systemPrompt).toContain("do not invent work");
+			expect(systemPrompt).toContain("stop issuing instructions");
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
 	it("writes readiness only after removing writing tools", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
@@ -104,10 +188,15 @@ describe("visible supervisor session", () => {
 			execFileSync("mkdir", ["-p", join(cwd, ".pi/plan")]);
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [ ] goal: make the file\n  - discriminator: output exists\n  - evidence:\n    - `result.txt`: contains ok\n\n## Log\n");
 			const runtime = setup(cwd, planPath);
-			runtime.branch([{ type: "message", message: { role: "user", content: [{ type: "text", text: "The worker stopped.\n\ntool calls with no result: none" }] } }]);
+			const view = writeWorkerView(runtime.mailbox, "settled", "The worker stopped.\n\ntool calls with no result: none");
+			runtime.branch([{ type: "message", message: { role: "user", content: [{ type: "text", text: view.text }] } }]);
 			const approved = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
 			expect(approved.isError).toBe(false);
 			expect(existsSync(approvalPath(cwd, "worker-session", "make the file"))).toBe(true);
+			writeWorkerView(runtime.mailbox, "started", "The worker is still working.");
+			const stale = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
+			expect(stale.isError).toBe(true);
+			expect(stale.content[0].text).toContain("latest worker view");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
 });

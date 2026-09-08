@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
 import { readyMailbox, workerViewsAfter, writeWorkerSteer } from "./mailbox.js";
@@ -70,7 +71,7 @@ function latestWorkerView(ctx: ExtensionContext): string | null {
 function supervisorPrompt(settings: SupervisorConfig): string {
 	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
 
-Use SteerWorker to give one concrete instruction when work is incomplete. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. When its discriminator is positively satisfied and the worker view says no work is active, call ApproveGoal with that repository-relative path. Then call SteerWorker and tell the worker to call CompleteGoal with the exact goal text. Do not call done until every plan goal is [x]. -- PI[Kimi K3]`;
+At each review, give a brief visible recap of how work is tracking against the goal: what the evidence shows and your judgment about the next step. Add perspective rather than repeating the worker's account. Distinguish observations from guesses. Read more evidence when needed; keep routine recaps short, but do not suppress useful explanation or thinking. Use SteerWorker when a correction or continuation is warranted. If the worker is making useful progress, say why and let it continue; do not invent work or repeat an instruction already awaiting execution. When idle with unfinished goals, give a concrete next step unless blocked on the human. Do not edit files. For each open goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. A stopped view means Pi is idle, not that background jobs have finished. Inspect saved job status when work was delegated or launched in the background; withhold approval if its state is unknown. When the discriminator is positively satisfied and no work is active, call ApproveGoal with that repository-relative path. Then call SteerWorker and tell the worker to call CompleteGoal with the exact goal text. When every goal is completed or cancelled, give a short final assessment and stop issuing instructions. -- Pi/OpenAI`;
 }
 
 export function isVisibleSupervisor(): boolean {
@@ -85,23 +86,34 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	let viewTimer: ReturnType<typeof setInterval> | undefined;
 
 	const deliverWorkerViews = (): void => {
-		for (const view of workerViewsAfter(settings.mailboxPath, deliveredView)) {
+		const view = workerViewsAfter(settings.mailboxPath, deliveredView).at(-1);
+		if (view) {
+			if (view.reason !== "started") pi.sendUserMessage(view.text, { deliverAs: "followUp" });
 			deliveredView = view.sequence;
-			pi.sendUserMessage(view.text, { deliverAs: "followUp" });
 		}
 	};
 
 	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
 		if (bootstrapping) return;
 		const entries = ctx.sessionManager.getEntries();
-		if (entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) return;
 		bootstrapping = true;
 		try {
 			const active = pi.getActiveTools();
 			pi.setActiveTools(active.filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
 			const writers = pi.getActiveTools().filter((tool) => WRITER_TOOLS.has(tool.toLowerCase()));
 			if (writers.length) throw new Error(`Could not remove supervisor writing tools: ${writers.join(", ")}`);
-			pi.appendEntry(BOOTSTRAPPED, { version: 2, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
+			if (!entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) {
+				pi.appendEntry(BOOTSTRAPPED, { version: 2, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
+			}
+			for (const entry of entries) {
+				const message = (entry as { message?: { role?: string; content?: unknown } }).message;
+				if (message?.role !== "user" || !Array.isArray(message.content)) continue;
+				for (const part of message.content) {
+					if (part.type !== "text" || !part.text.startsWith("The worker ")) continue;
+					const sequence = /^worker view sequence: (\d+)$/m.exec(part.text);
+					if (sequence) deliveredView = Math.max(deliveredView, Number(sequence[1]));
+				}
+			}
 			readyMailbox(settings.mailboxPath);
 			viewTimer = setInterval(deliverWorkerViews, 1_000);
 			deliverWorkerViews();
@@ -112,7 +124,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 
 	const bootstrapAfterInitialCompaction = (ctx: ExtensionContext): void => {
 		const tokens = ctx.getContextUsage()?.tokens;
-		if (typeof tokens === "number" && tokens <= INITIAL_COMPACT_AT_TOKENS) {
+		const resumed = ctx.sessionManager.getEntries().some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED);
+		if (resumed || (typeof tokens === "number" && tokens <= INITIAL_COMPACT_AT_TOKENS)) {
 			void bootstrap(ctx);
 			return;
 		}
@@ -132,10 +145,13 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		rmSync(join(settings.mailboxPath, "ready.json"), { force: true });
+		pi.setActiveTools(pi.getActiveTools().filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
 		setImmediate(() => { bootstrapAfterInitialCompaction(ctx); });
 	});
 	pi.on("session_shutdown", async () => {
 		if (viewTimer) clearInterval(viewTimer);
+		rmSync(join(settings.mailboxPath, "ready.json"), { force: true });
 	});
 	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -160,11 +176,14 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		description: "Write one concrete instruction for the implementation worker.",
 		parameters: Type.Object({ instruction: Type.String({ description: "Concrete next instruction for the worker." }) }),
+		renderCall(args, theme) {
+			return new Text(`${theme.fg("toolTitle", "Supervisor → worker")}\n${args.instruction ?? ""}`, 0, 0);
+		},
 		async execute(_id, params) {
 			const instruction = params.instruction.trim();
 			if (!instruction) return result("A worker instruction cannot be empty.", true);
 			const steer = writeWorkerSteer(settings.mailboxPath, instruction);
-			return result(`Worker instruction ${steer.sequence} recorded.`);
+			return result(`Worker instruction ${steer.sequence} recorded. Worker receipt and execution are not confirmed.`);
 		},
 	});
 
@@ -179,6 +198,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const view = latestWorkerView(ctx);
+			const newest = workerViewsAfter(settings.mailboxPath, 0).at(-1);
+			if (!newest || view !== newest.text) return result("Cannot approve without inspecting the latest worker view.", true);
 			if (!view?.startsWith("The worker stopped.")) return result("Cannot approve without a current stopped-worker view.", true);
 			const pendingTool = view.match(/^tool calls with no result: (?!none$)(.+)$/m);
 			const pendingChild = view.match(/^child pi processes still running: (?!none$)(.+)$/m);

@@ -13,7 +13,9 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 7. The supervisor compacts again when its context reaches 100k tokens.
 8. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean commit, evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
 
-The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly.
+The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly. Supervisor instructions are shown in full, including in collapsed tool rows; ordinary messages and emitted thinking use Pi's display settings. The supervisor is prompted to give brief progress assessments and use judgment about when to intervene.
+
+On resume, monitoring and read-only tools are restored. Periodic views report whether Pi is idle; they do not measure background jobs. Readiness is a startup receipt, not a continuous health check. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
 
 ## Install
 
