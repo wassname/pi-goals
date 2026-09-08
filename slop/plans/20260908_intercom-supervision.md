@@ -33,6 +33,17 @@ User priority: pi-intercom is the session-to-session transport. Keep one pi-goal
 
 Run project tests, typecheck, and lint before commits. Preserve full command output. Keep each feature in a separate commit where practical and push finished changes. Inspect the transferred code rather than equating tests or source size with quality. Keep the requested independent evidence judge when combining implementations; do not silently remove it.
 
-The asynchronous subagent runner is unavailable (missing pi-client/unix). The user authorized direct implementation. Do not claim an independent review was run. Behavioral acceptance requires observed useful judgment, not merely matching prompt strings. Cost savings require a measured comparison and remain unproven.
+The earlier asynchronous subagent failure (missing pi-client/unix) prevented the original review. A later parent retry completed independent review run `5c8c2017-a92f-4a5f-baf6-f441f9b50495`; its [findings are preserved with attribution](../reviews/20260908-independent-supervision-bug-review.md). Behavioral acceptance requires observed useful judgment, not merely matching prompt strings. Cost savings require a measured comparison and remain unproven.
+
+## Independent review follow-up
+
+- [x] Verify F1/F2/F4 lifecycle failures and implement explicit recovery without fallback models or automatic pane replacement.
+- [x] Address F3 inactive bindings and preserve synchronous handoff-before-ack ordering. Pending transport frames retry; end-to-end durable delivery is not guaranteed.
+- [ ] F3 deeper delivery confirmation: Pi's void adapter can ack before an asynchronous enqueue failure. Future UAT must inject that failure, avoid reporting confirmed model delivery, and keep the instruction recoverable. See the [SDK source-backed limitation](../reviews/20260908-review-fixes.md). Parent approved keeping this protocol expansion out of the current fix commit.
+- [x] Remove F5 general Intercom actuator, reject F6 nested placeholders, and correct F7 goal/log hashing boundary.
+- [x] Add focused regressions and inspect final full test/typecheck/lint/build output. [57-test evidence](../reviews/20260908-review-fixes-validation.txt); [initial child-environment failure and correction](../reviews/20260908-review-fixes-initial-validation.md).
+- [ ] Parent independent post-change review before push. F8/F9 limitations and remaining native/UI/behavioral gaps are explicit in the [finding-by-finding disposition](../reviews/20260908-review-fixes.md).
+
+Recovery operations were exercised only with isolated mocks/native test processes; existing user panes were not operated. Implementation worker commits locally only; parent owns review and push.
 
 -- Pi/OpenAI

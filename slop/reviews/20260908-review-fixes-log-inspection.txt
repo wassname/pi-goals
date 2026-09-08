@@ -1,0 +1,4 @@
+worker: 21 events parsed; 0 errors; stderr empty
+Worker user-message event contains exact instructed text.
+supervisor: 21 events parsed; 0 errors; stderr empty
+Supervisor outbound/ack ID matched: 780f7dac-e4e5-4351-b890-0684a42de681. This is adapter handling, not durable queue confirmation.
