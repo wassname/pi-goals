@@ -11,7 +11,7 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 5. The fork becomes a read-only supervisor. Worker views and supervisor instructions travel over pi-intercom's extension channel, scoped to this plan pairing.
 6. Ready waits for the supervisor's Intercom readiness message; the worker does not begin before the fork has compacted and started.
 7. The supervisor compacts again when its context reaches 100k tokens.
-8. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean commit, evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
+8. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean worktree (or an explicit inspected-state override), evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
 
 The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly. Supervisor instructions are shown in full, including in collapsed tool rows; ordinary messages and emitted thinking use Pi's display settings. The supervisor is prompted to give brief progress assessments and use judgment about when to intervene.
 
@@ -55,6 +55,14 @@ Both sessions must load the updated transport for the request/reply reconnect fi
 A new supervisor may still need up to five minutes for initial compaction. Recovery does not terminate background jobs. Planning/diagnostic command checks are guardrails, not an OS sandbox; loaded extensions and repository Git configuration must be trusted.
 
 Model choices are remembered per project and role in `.pi/pi-goals/models/`. Use `/model` in planning, worker, or supervisor sessions to change that role's choice. Ready restores the worker choice after the planning fork is ready. An unavailable saved model stops the transition instead of substituting another. `/goals model <model>` explicitly overrides the supervisor choice for launch. -- Pi/OpenAI
+
+## Inspected dirty-worktree approval
+
+The supervisor can call `ApproveGoal` with `force: true` and a nonempty `reason` when preserved unrelated changes would otherwise prevent sign-off. It must inspect the changes first, not commit, reset or delete someone else's work. Force bypasses **only** cleanliness, never evidence, the current stopped view, active/unknown work, or exact goal/HEAD/tree checks.
+
+The approval JSON stores the reason, NUL-delimited Git status, an index SHA-256 digest and per-dirty/untracked-file content SHA-256 digests (including modes, symlink targets and deletions). `CompleteGoal` requires the same state; even editing an already-dirty file without changing its status invalidates approval. Normal clean approvals behave as before. Git-ignored files and pi-goals' private plan/approval/model paths remain excluded. Dirty submodule/nested-repository directories or other unhashable paths fail closed; there is no recursive submodule override. Fingerprinting reads all included dirty/untracked bytes and can be expensive for large outputs; it does not lock concurrent writers.
+
+A gate rejection is not automatically an experiment failure or a dependency of other authorized work. The read-only supervisor should inspect the exact error and implementation, distinguish causes with a cheap check, and steer repairs plus safe independent progress instead of repeating an unproductive status check. -- Pi/OpenAI
 
 ## Plan format
 

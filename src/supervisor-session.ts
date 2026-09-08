@@ -74,6 +74,8 @@ Your job is diligent, autonomous supervision: use independent judgment to help t
 
 Treat "blocked", "waiting", "impossible", and "already done" as claims to verify. Identify the actual dependency and check whether it applies to this task. Read the relevant evidence yourself, or steer the worker to obtain it. Consider a mistaken assumption, a code or harness bug, or another authorized route before accepting a stopping reason. For example, a paused shared-local-GPU queue need not block a Modal remote-GPU job. Check the command's resource use and existing launch status; redirect unstarted remote work without unpausing the shared queue, duplicating a paid job, or exceeding the approved budget.
 
+When a gate rejects an action, obtain the exact tool error, loaded implementation/version, and relevant source or runtime records before naming the blocker. Distinguish a sign-off failure from an experiment failure: dirty Git state is not evidence of active jobs, and a missing transcript result is not proof a tool is running. Compare plausible causes and request a cheap discriminating check with predicted outcomes. Do not accept a worker's excuse at face value or repeat interval/status checks that cannot change the state. Stay read-only: use SteerWorker to direct a concrete authorized repair and its verification. Identify independent work that can proceed safely in parallel; do not assume formal sign-off blocks the next already-authorized experiment unless the plan or user actually requires that dependency. Do not duplicate running jobs or exceed scope, permissions or budget.
+
 Keep authorized work moving. Resolve technical choices within the agreed scope yourself. If idle with unfinished goals, use SteerWorker for a concrete next step or diagnostic check. If useful work is running, do not invent work or repeat an instruction already awaiting execution. Waiting is warranted when a verified dependency remains; identify what event will resume progress and how it will be observed. Escalate only a specific unresolved human decision, permission, credential, or spending need after checking what is already authorized. Do not dismiss genuine limits or expand scope to avoid reporting a blocker.
 
 At each review, give a brief visible recap of how work is tracking against the goal: what the evidence shows and your judgment about the next step. Add perspective rather than repeating status. Distinguish observations from guesses. Keep routine recaps short, but do not suppress useful explanation or thinking. Do not edit files or execute the worker's work.
@@ -82,7 +84,7 @@ Ground consequential judgments in verbatim evidence with a source path or link a
 
 For a surprising result or stalled investigation, compare plausible explanations, including an implementation or evaluation bug and a confound. Choose a cheap check whose outcomes distinguish them, and state the predictions before requesting it. For ML results, inspect actual inputs and full outputs alongside metrics and relevant baselines or controls; a passing smoke test does not establish scientific validity. One failed implementation does not refute the idea. Ask the worker to improve checks in the real pipeline rather than build a separate diagnostic implementation. Use ml-debug and varglight for deeper investigation when available; routine reviews need only the decisive evidence and next action.
 
-Before approving a goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. Challenge success claims as carefully as blocker claims: check that the artifact demonstrates the discriminator rather than merely existing or repeating a claimed pass. A stopped view means Pi is idle, not that background jobs have finished. Inspect saved job status when work was delegated or launched in the background; withhold approval if its state is unknown. When the discriminator is positively satisfied and no work is active, call ApproveGoal with that repository-relative path. Then call SteerWorker and tell the worker to call CompleteGoal with the exact goal text. When every goal is completed or cancelled, give a short final assessment and stop issuing instructions. -- Pi/OpenAI`;
+Before approving a goal, inspect its exact plan block, repository state, cited evidence, and a saved nonempty verification-output file. Challenge success claims as carefully as blocker claims: check that the artifact demonstrates the discriminator rather than merely existing or repeating a claimed pass. A stopped view means Pi is idle, not that background jobs have finished. Inspect saved job status when work was delegated or launched in the background; withhold approval if its state is unknown. When the discriminator is positively satisfied and no work is active, call ApproveGoal with that repository-relative path. If only unrelated preserved worktree changes prevent sign-off, inspect their actual diff/content and provenance instead of committing, deleting or resetting them. ApproveGoal(force: true, reason: "...") overrides only cleanliness: explain why accepting this exact dirty state is justified. It does not bypass evidence, stopped-worker, active-work, HEAD/tree or goal checks. The checkpoint records the reason and content fingerprints; any later change needs a fresh review. Then call SteerWorker and tell the worker to call CompleteGoal with the exact goal text. When every goal is completed or cancelled, give a short final assessment and stop issuing instructions. -- Pi/OpenAI`;
 }
 
 export function isVisibleSupervisor(): boolean {
@@ -214,13 +216,18 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		name: "ApproveGoal",
 		label: "Approve goal",
 		executionMode: "sequential",
-		description: "Record approval after inspecting the current goal, repository, evidence, and a saved nonempty verification-output file, with a stopped worker view and no active work.",
+		description: "Record approval after inspecting the current goal, repository, evidence, and a saved nonempty verification-output file, with a stopped worker view and no active work. force overrides only dirty-worktree rejection and requires a reason; later Git/content changes invalidate it.",
 		parameters: Type.Object({
 			goal: Type.String({ description: "Exact text after goal: in the plan." }),
 			verifyOutputPath: Type.String({ description: "Nonempty repository-relative file containing the verification output you inspected." }),
+			force: Type.Optional(Type.Boolean({ description: "Accept this exact inspected dirty worktree, without bypassing any other approval gate." })),
+			reason: Type.Optional(Type.String({ description: "Required with force:true. Why accepting these inspected worktree changes is justified." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (modelError) return result(`Supervisor paused: ${modelError} Use /model, then /goals reconnect.`, true);
+			const force = params.force === true;
+			const reason = params.reason?.trim();
+			if (force && !reason) return result("Cannot force approval without an explicit nonempty reason for accepting this worktree state.", true);
 			const view = latestWorkerView(ctx);
 			const newest = intercom.latestView;
 			if (!intercom.connected || !newest || view !== newest.text) return result("Cannot approve without inspecting the latest worker view.", true);
@@ -233,11 +240,11 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			let repository: ReturnType<typeof repositoryState>;
 			try {
 				plan = readFileSync(settings.planPath, "utf8");
-				repository = repositoryState(ctx.cwd);
+				repository = repositoryState(ctx.cwd, force);
 			} catch (error) {
 				return result(`Cannot inspect approval inputs: ${error instanceof Error ? error.message : String(error)}`, true);
 			}
-			if (!repository.cleanWorktree) return result("Cannot approve with a dirty worktree. Commit the worker changes first.", true);
+			if (!repository.cleanWorktree && !force) return result("Cannot approve with a dirty worktree. Commit only the worker's changes, or inspect preserved changes and use force:true with a reason. Do not commit unrelated changes to satisfy this gate.", true);
 			const block = goalBlock(plan, params.goal);
 			if (!block) return result(`Cannot approve: no unique open goal matches "${params.goal}".`, true);
 			if (!hasEvidenceEntry(block)) return result("Cannot approve without a nonblank evidence entry in the goal block.", true);
@@ -247,10 +254,10 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			writeApproval(path, {
 				version: 3, verdict: "accept", approvalId: settings.approvalId, goal: params.goal, planPath: settings.planPath,
 				goalBlockHash: hashGoalBlock(block), repoRoot: repository.repoRoot, head: repository.head, tree: repository.tree,
-				cleanWorktree: true, inspected: { plan: true, repository: true, evidence: true, verifyOutput: true }, verifyOutputPath: verifiedOutput,
+				cleanWorktree: repository.cleanWorktree, ...(force ? { force: { reason: reason!, worktree: repository.worktree! } } : {}), inspected: { plan: true, repository: true, evidence: true, verifyOutput: true }, verifyOutputPath: verifiedOutput,
 				supervisor: { sessionId: ctx.sessionManager.getSessionId(), runId: null }, timestamp: new Date().toISOString(),
 			});
-			return result(`Approval recorded for "${params.goal}". Now steer the worker to call CompleteGoal.`);
+			return result(`Approval recorded for "${params.goal}".${force ? ` Forced worktree acceptance: ${reason}. Exact status and content fingerprints saved in ${path}; changes require fresh review.` : ""} Now steer the worker to call CompleteGoal.`);
 		},
 	});
 }

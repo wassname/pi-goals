@@ -407,7 +407,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (paused) return { systemPrompt: `${ctx.getSystemPrompt()}\n\nGoal work is paused: ${paused} Do not implement or sign off goals. Human input and read-only diagnosis remain available; wait for recovery before resuming autonomous work.` };
 		if (state.phase === "working") {
 			return {
-				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the implementation worker for ${planRel(ctx)}. Keep the full conversation and do the work directly. A stronger read-only supervisor watches this session through pi-intercom and can steer you. Commit clean evidence before asking for sign-off. Stop when a goal appears complete so the supervisor can inspect a settled worker view. Call CompleteGoal only after the supervisor says it recorded approval. -- PI[Kimi K3]`,
+				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the implementation worker for ${planRel(ctx)}. Keep the full conversation and do the work directly. A stronger read-only supervisor watches this session through pi-intercom and can steer you. Commit your evidence before asking for sign-off; never commit or discard unrelated changes to satisfy the clean-worktree gate. The supervisor can explicitly accept an inspected unchanged dirty state with ApproveGoal force and a reason. Stop when a goal appears complete so the supervisor can inspect a settled worker view. Call CompleteGoal only after the supervisor says it recorded approval. -- PI[Kimi K3]`,
 			};
 		}
 		if (!planningContextPending) return;
@@ -611,14 +611,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
 			const block = goalBlock(plan, params.goal);
 			if (!block) return result(`No unique open goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
+			const approval = readApproval(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), params.goal));
 			let repository: ReturnType<typeof repositoryState>;
 			try {
-				repository = repositoryState(ctx.cwd);
+				repository = repositoryState(ctx.cwd, Boolean(approval?.force));
 			} catch (error) {
 				return result(`Goal sign-off could not inspect the repository: ${error instanceof Error ? error.message : String(error)}`, true);
 			}
-			if (!repository.cleanWorktree) return result("Goal sign-off blocked: worktree is dirty.", true);
-			const approval = readApproval(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), params.goal));
+			if (!repository.cleanWorktree && !approval?.force) return result("Goal sign-off blocked: worktree is dirty. Request supervisor inspection, not an unrelated cleanup commit.", true);
 			if (!approvalMatches(approval, {
 				approvalId: state.approvalId,
 				goal: params.goal,
@@ -628,6 +628,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				head: repository.head,
 				tree: repository.tree,
 				cleanWorktree: repository.cleanWorktree,
+				worktree: repository.worktree,
 			})) return result("Goal sign-off blocked: no matching supervisor approval checkpoint. Request a fresh supervisor review.", true);
 			const ticked = tickGoal(plan, params.goal);
 			if (!ticked) return result(`No unique exact goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);

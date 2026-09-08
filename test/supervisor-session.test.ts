@@ -147,6 +147,14 @@ describe("visible supervisor session", () => {
 			expect(systemPrompt).toContain("not independent evidence");
 			expect(systemPrompt).toContain("outcomes distinguish them");
 			expect(systemPrompt).toContain("One failed implementation does not refute the idea");
+			expect(systemPrompt).toContain("exact tool error, loaded implementation/version");
+			expect(systemPrompt).toContain("cheap discriminating check with predicted outcomes");
+			expect(systemPrompt).toContain("Do not accept a worker's excuse at face value");
+			expect(systemPrompt).toContain("Stay read-only: use SteerWorker");
+			expect(systemPrompt).toContain("Distinguish a sign-off failure from an experiment failure");
+			expect(systemPrompt).toContain("do not assume formal sign-off blocks the next already-authorized experiment");
+			expect(systemPrompt).toContain("instead of committing, deleting or resetting them");
+			expect(systemPrompt).toContain("overrides only cleanliness");
 			expect(systemPrompt).toContain("do not invent work");
 			expect(systemPrompt).toContain("stop issuing instructions");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
