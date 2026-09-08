@@ -42,16 +42,21 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import supervise from "./internal/supervisor/index.js";
 import {
+	alignmentPolicy,
 	completeGoalDescription,
 	completeGoalParamDescription,
+	discussPlan,
 	judgeSystem,
 	judgeUser,
 	planDrafting,
 	planningState,
 	reminder,
 	resync,
+	waivesAlignment,
 } from "./prompts.js";
+import { RoleModels } from "./role-models.js";
 import { focusSupervisor, initializeSupervisor, planHash, type SupervisorBinding, type SupervisorDecision, startSupervisor, supervisorBootstrap, supervisorRequest } from "./supervisor.js";
 
 const STATE = "pi-goals-state";
@@ -132,21 +137,29 @@ interface PlanState {
 	/** Distinguishes explicit preferences from the old opt-in defaults. */
 	defaultsVersion: 1;
 	phase: Phase;
+	reviewRequested: boolean;
+	questionsWaived: boolean;
+	/** Ready captured its fork, but worker model recovery is still pending (also across reload). */
+	modelRecovery: "worker" | null;
 	/** Optional model ref for the sign-off judge; unset => current session model, else pi's default. */
 	judgeModel: string | null;
 	planVersion: number | null;
 	/** Interval for continuing active goals when supervision is disabled. */
 	autoIntervalMs: number | null;
 	autoPaused: boolean;
-	/** Real supervisor session, enabled by default and paired through pi-intercom-supervisor. */
+	/** Real supervisor session, enabled by default and paired through bundled Intercom. */
 	stewardEnabled: boolean;
 	supervisor: SupervisorBinding | null;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
+	const models = new RoleModels(pi);
 	let state: PlanState = {
 		defaultsVersion: 1,
 		phase: null,
+		reviewRequested: false,
+		questionsWaived: false,
+		modelRecovery: null,
 		judgeModel: null,
 		planVersion: null,
 		autoIntervalMs: AUTO_DEFAULT_INTERVAL_MS,
@@ -202,7 +215,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function scheduleAutoContinue(ctx: ExtensionContext, delayMs = state.autoIntervalMs): void {
-		if (state.stewardEnabled || supervisorOnly) { clearAutoTimer(); return; }
+		if (state.stewardEnabled || supervisorOnly || !models.ready) { clearAutoTimer(); return; }
 		clearAutoTimer();
 		if (delayMs === null || state.phase !== "working" || state.autoIntervalMs === null || state.autoPaused || !activeGoals(ctx)) return;
 		autoTimer = setTimeout(() => {
@@ -248,8 +261,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
+		const tools = pi.getActiveTools().filter(tool => tool !== "RequestPlanReview");
+		pi.setActiveTools(state.phase === "planning" && !supervisorOnly ? [...tools, "RequestPlanReview"] : tools);
 		if (state.phase === "planning") {
-			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
+			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", state.modelRecovery ? models.ready ? "retry Ready" : "worker model paused" : "planning"));
 			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
 			return;
 		}
@@ -300,9 +315,16 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const version = state.planVersion;
 		const approvedDraft = planHash(readPlan(ctx));
 		const handoff = workMessage(ctx);
+		const recoveringWorker = state.modelRecovery === "worker";
 		state = { ...state, phase: "starting" };
 		persist(); updateWidget(ctx);
 		try {
+			if (recoveringWorker) {
+				const workerReady = await models.enter("worker", ctx);
+				if (signal.aborted || state.planVersion !== version || !state.stewardEnabled) return;
+				if (planHash(readPlan(ctx)) !== approvedDraft) throw new Error("The plan changed during model recovery; select Ready again");
+				if (!workerReady) { state = { ...state, phase: "planning" }; persist(); updateWidget(ctx); return; }
+			}
 			const binding = await startSupervisor(pi, ctx, planPath(ctx), state.supervisor, supervisor => {
 				if (signal.aborted) return;
 				state = { ...state, supervisor }; persist();
@@ -311,6 +333,16 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisorRequest(pi, "stop", { bindingId: binding.id }); state = { ...state, supervisor: null }; throw new Error("The plan changed during initialization; select Ready again"); }
 			state = { ...state, supervisor: binding };
 			persist(); updateWidget(ctx);
+			state = { ...state, modelRecovery: "worker" }; persist();
+			const workerReady = await models.enter("worker", ctx);
+			if (signal.aborted || state.planVersion !== version || !state.stewardEnabled) return;
+			if (!workerReady) {
+				state = { ...state, phase: "planning" }; persist(); updateWidget(ctx);
+				return; // Keep the attached pairing inactive and the preference target on worker.
+			}
+			if (signal.aborted || state.planVersion !== version || state.supervisor?.id !== binding.id || !state.stewardEnabled) return;
+			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisorRequest(pi, "stop", { bindingId: binding.id }); state = { ...state, supervisor: null }; throw new Error("The plan changed during model restoration; select Ready again"); }
+			state = { ...state, modelRecovery: null }; persist();
 			await supervisorRequest(pi, "activate", { bindingId: binding.id }, signal);
 			if (signal.aborted || state.planVersion !== version || state.supervisor?.id !== binding.id || !state.stewardEnabled) return;
 			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisorRequest(pi, "stop", { bindingId: binding.id }); state = { ...state, supervisor: null }; throw new Error("The plan changed during activation; select Ready again"); }
@@ -319,16 +351,26 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			pi.sendUserMessage(handoff, { deliverAs: "followUp" });
 		} catch (error) {
 			if (signal.aborted) return;
-			state = { ...state, phase: "planning" }; persist(); updateWidget(ctx);
+			state = { ...state, phase: "planning", modelRecovery: null }; persist(); updateWidget(ctx);
 			ctx.ui.notify(`Could not initialize the supervisor: ${String(error)}. Use /goals supervisor to inspect startup, or /goals steward off and retry Ready.`, "error");
-		} finally { if (operation === controller) operation = null; }
+		} finally {
+			if (!lifetime.signal.aborted && state.phase !== "working" && !state.modelRecovery) {
+				await models.enter("planning", ctx);
+				if (!state.phase) models.leave();
+			}
+			if (operation === controller) operation = null;
+		}
 	}
 
 	// --- /goals: enter plan mode (or clear / set judge / set steward) -------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals plan <objective> | /goals supervisor | /goals worker | /goals zoom | /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals judge <model> | /goals steward [on|off|status]`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals plan <objective> | /goals model current | /goals supervisor | /goals worker | /goals zoom | /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals judge <model> | /goals steward [on|off|status]`,
 		handler: async (args, ctx) => {
+			if (args.trim() === "model current") {
+				if (await models.useCurrent(ctx)) modelRecovered(ctx);
+				return;
+			}
 			if (supervisorOnly) {
 				const bootstrap = supervisorBootstrap(ctx)!;
 				if (["worker", "supervisor", "zoom"].includes(args.trim())) await focusSupervisor(pi, bootstrap.binding, args.trim() as "worker" | "supervisor" | "zoom");
@@ -355,12 +397,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				state = {
 					...state,
 					phase: null,
+					modelRecovery: null,
 					planVersion: null,
 					autoPaused: false,
 					supervisor: null,
 				};
 				persist();
 				updateWidget(ctx);
+				models.leave();
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
 				return;
 			}
@@ -434,9 +478,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			await stopSupervisor(ctx);
+			if (!await models.enter("planning", ctx)) return;
 			state = {
 				...state,
 				phase: "planning",
+				modelRecovery: null,
+				reviewRequested: false,
+				questionsWaived: waivesAlignment(arg),
 				planVersion: nextVersion(ctx),
 				supervisor: null,
 			};
@@ -449,8 +497,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			// why plan mode read as never-ending: every reply re-armed it. They come back only on a
 			// resync (session start / compaction), when the model has genuinely lost them.
 			const seed = arg
-				? `We're in plan mode. Objective: ${arg}\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`
-				: `We're in plan mode. Tell me what you want to plan.\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`;
+				? `We're in plan mode. Objective: ${arg}\n\n${planDrafting}\n\n${alignmentPolicy(state.questionsWaived)}\n\nWrite the plan to ${planPath(ctx)}.`
+				: `We're in plan mode. Tell me what you want to plan.\n\n${planDrafting}\n\n${alignmentPolicy(state.questionsWaived)}\n\nWrite the plan to ${planPath(ctx)}.`;
 			pi.sendUserMessage(seed, { deliverAs: "followUp" });
 		},
 	});
@@ -483,7 +531,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if ((state.phase !== "planning" && state.phase !== "starting") || !planningContextPending) return;
 		planningContextPending = false;
-		const content = planningState(planPath(ctx));
+		const content = planningState(planPath(ctx), state.questionsWaived);
 		return { message: { customType: PLANNING_CONTEXT, content, display: false } };
 	});
 
@@ -494,7 +542,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const messages = inPlanGate ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
 		if (inPlanGate && planningContextPending) {
 			planningContextPending = false;
-			const text = planningState(planPath(ctx));
+			const text = planningState(planPath(ctx), state.questionsWaived);
 			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
 		}
 		const text = dueInjection(ctx, readPlan(ctx));
@@ -505,6 +553,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
+		if (!models.ready) { ctx.ui.notify("Role model unavailable. Select a different model with /model, explicitly use the current one with /goals model current, or configure the saved model and reload.", "error"); return { action: "handled" as const }; }
 		if (event.source !== "extension") {
 			clearAutoTimer();
 			autoImmediateUsed = false;
@@ -538,6 +587,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (state.phase === "working" && (event.toolName === "subagent" || (event.toolName === "process" && (event.input as { action?: string }).action === "start"))) {
 			runStartedBackgroundWork = true;
 		}
+		if (!models.ready) return { block: true, reason: "Role model unavailable; select with /model before continuing." };
 		if (state.phase !== "planning" && state.phase !== "starting") return;
 		if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
 			const target = (event.input as { path?: string }).path;
@@ -556,12 +606,18 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	});
 
 	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
-	pi.on("agent_settled", async (_event, ctx) => {
+	let reviewOpen = false;
+	async function reviewPlan(ctx: ExtensionContext): Promise<void> {
+		if (reviewOpen || lifetime.signal.aborted) return;
+		reviewOpen = true;
+		try { await offerPlanReview(ctx); } finally { reviewOpen = false; }
+	}
+	async function offerPlanReview(ctx: ExtensionContext): Promise<void> {
 		if (state.phase === "working") {
 			settleAuto(ctx);
 			return;
 		}
-		if (state.phase !== "planning" || !ctx.hasUI) return;
+		if (state.phase !== "planning" || !state.reviewRequested || !ctx.hasUI) return;
 		let printed = "";
 		while (true) {
 			const plan = readPlan(ctx);
@@ -573,13 +629,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				printed = plan;
 				pi.sendMessage({ customType: "plan", content: plan, display: true });
 			}
-			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Refine", "Edit", "Cancel"]);
-			if (choice === "Refine") {
-				const notes = await ctx.ui.editor("What should change about the plan?", "");
-				if (!notes?.trim()) continue;
-				writePlan(ctx, appendInterview(plan, notes));
+			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Discuss", "Edit", "Cancel"]);
+			if (choice === "Discuss" || choice === undefined) {
+				if (state.modelRecovery && !await models.enter("planning", ctx)) return;
+				state = { ...state, modelRecovery: null };
+				state = { ...state, reviewRequested: false }; persist();
 				planningContextPending = true;
-				pi.sendUserMessage(`Revise the plan at ${planPath(ctx)} using these human notes:\n\n${notes}\n\nKeep the same goal structure.`, { deliverAs: "followUp" });
+				pi.sendUserMessage(discussPlan, { deliverAs: "followUp" });
 				return;
 			}
 			if (choice === "Edit") {
@@ -593,11 +649,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				state = {
 					...state,
 					phase: null,
+					modelRecovery: null,
 					planVersion: null,
 					supervisor: null,
 				};
 				persist();
 				updateWidget(ctx);
+				models.leave();
 				ctx.ui.notify("Plan discarded.", "info");
 				return;
 			}
@@ -606,20 +664,33 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				await startPlanSupervisor(ctx);
 				return;
 			}
-			state = { ...state, phase: "working" };
+			const version = state.planVersion;
+			const approvedDraft = planHash(readPlan(ctx));
+			state = { ...state, modelRecovery: "worker" }; persist();
+			const workerReady = await models.enter("worker", ctx);
+			if (lifetime.signal.aborted) return;
+			if (state.phase !== "planning" || state.planVersion !== version || planHash(readPlan(ctx)) !== approvedDraft) {
+				await models.enter("planning", ctx);
+				if (!state.phase) models.leave();
+				ctx.ui.notify("Plan changed while restoring the worker model; review it again before Ready.", "warning");
+				return;
+			}
+			if (!workerReady) return;
+			state = { ...state, phase: "working", modelRecovery: null };
 			persist();
 			updateWidget(ctx);
 			pi.sendUserMessage(workMessage(ctx), { deliverAs: "followUp" });
 			return;
 		}
-	});
+	}
+	pi.on("agent_settled", async (_event, ctx) => reviewPlan(ctx));
 
 	pi.on("session_start", async (_event, ctx) => {
 		const bootstrap = supervisorBootstrap(ctx);
 		if (bootstrap) {
 			supervisorOnly = true;
-			pi.setActiveTools(pi.getActiveTools().filter(tool => tool !== "CompleteGoal"));
-			initializeSupervisor(pi, ctx, bootstrap, lifetime.signal);
+			pi.setActiveTools(pi.getActiveTools().filter(tool => tool !== "CompleteGoal" && tool !== "RequestPlanReview"));
+			if (await models.enter("supervisor", ctx)) initializeSupervisor(pi, ctx, bootstrap, lifetime.signal);
 			return;
 		}
 		const last = ctx.sessionManager
@@ -632,6 +703,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		state = {
 			defaultsVersion: 1,
 			phase: last?.data?.phase === "working" ? "working" : last?.data?.phase ? "planning" : null,
+			reviewRequested: last?.data?.reviewRequested ?? true,
+			questionsWaived: last?.data?.questionsWaived ?? false,
+			modelRecovery: last?.data?.modelRecovery ?? null,
 			judgeModel: last?.data?.judgeModel ?? null,
 			planVersion: last?.data?.planVersion ?? null,
 			autoIntervalMs: useNewDefaults || saved?.autoIntervalMs === undefined ? AUTO_DEFAULT_INTERVAL_MS : saved.autoIntervalMs,
@@ -644,6 +718,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		planningContextPending = state.phase === "planning" || state.phase === "starting";
 		resyncReason = state.phase === "working" ? "New session." : null;
 		updateWidget(ctx);
+		if (state.phase && !await models.enter(state.phase === "working" || state.modelRecovery ? "worker" : "planning", ctx)) return;
 		scheduleAutoContinue(ctx);
 	});
 
@@ -651,6 +726,19 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		lifetime.abort();
 		operation?.abort();
 		clearAutoTimer();
+	});
+
+	pi.registerTool({
+		name: "RequestPlanReview",
+		label: "Review plan",
+		description: "Planning only: after task-specific alignment questions have been answered (or explicitly waived for this objective), and the final plan is ready, show the human Ready / Discuss / Edit / Cancel. Do not call while waiting for answers. Call again after discussion is finished, even for an unchanged draft. This does not approve or start work.",
+		parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _update, ctx) {
+			if (supervisorOnly || state.phase !== "planning") return result("Only a planning session can request plan review.", true);
+			if (!scanGoals(readPlan(ctx)).length) return result("Draft concrete goals before requesting review.", true);
+			state = { ...state, reviewRequested: true }; persist();
+			return { ...result("Plan review requested. End this response and wait for the human's choice."), terminate: true };
+		},
 	});
 
 	// --- the one blessed tool: CompleteGoal ---------------------------------------------------------
@@ -723,6 +811,20 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			}
 			return result(outcome.resultText, outcome.isError);
 		},
+	});
+	// Registered after role restoration, so rejoin cannot start a supervisor turn on the worker model.
+	supervise(pi, () => models.ready);
+	function modelRecovered(ctx: ExtensionContext): void {
+		if (supervisorOnly) {
+			const bootstrap = supervisorBootstrap(ctx);
+			if (bootstrap) initializeSupervisor(pi, ctx, bootstrap, lifetime.signal);
+		} else if (state.modelRecovery && models.ready) {
+			// Do not await a UI dialog inside Pi's model_select dispatch.
+			setImmediate(() => { void reviewPlan(ctx).catch(error => ctx.ui.notify(String(error), "error")); });
+		}
+	}
+	pi.on("model_select", (event, ctx) => {
+		if (models.ready && !models.restoring && event.source !== "restore") modelRecovered(ctx);
 	});
 }
 

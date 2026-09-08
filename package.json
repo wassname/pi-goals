@@ -26,20 +26,22 @@
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:supervisor",
     "test:rpc": "vitest run test/rpc-review.test.ts",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "lint": "biome check src/ test/",
-    "lint:fix": "biome check --fix src/ test/"
+    "lint:fix": "biome check --fix src/ test/",
+    "test:supervisor": "node --import tsx --test test/internal-supervisor/*.test.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.1",
@@ -47,12 +49,25 @@
     "typebox": "^1.3.7",
     "typescript": "^5.0.0",
     "@biomejs/biome": "^2.4.8",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "tsx": "^4.20.0"
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/index.ts",
+      "./node_modules/pi-intercom/index.ts"
     ],
-    "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
-  }
+    "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png",
+    "skills": [
+      "./node_modules/pi-intercom/skills"
+    ]
+  },
+  "dependencies": {
+    "@sting8k/pi-vcc": "0.5.0",
+    "pi-intercom": "0.10.0"
+  },
+  "bundledDependencies": [
+    "pi-intercom",
+    "@sting8k/pi-vcc"
+  ]
 }

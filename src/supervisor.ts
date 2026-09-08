@@ -29,7 +29,7 @@ export function supervisorRequest<T>(pi: ExtensionAPI, method: string, params: R
 	return new Promise((resolve, reject) => {
 		const request = { version: 1, method, ...params, signal, handled: false, resolve, reject };
 		pi.events.emit(PLAN_API, request);
-		if (!request.handled) reject(new Error("Load the plan-aware pi-intercom-supervisor and pi-intercom packages in both sessions, then reload Pi."));
+		if (!request.handled) reject(new Error("The internal supervisor is not registered. Load the pi-goals package directory (not only src/index.ts), then reload Pi."));
 	});
 }
 
@@ -76,9 +76,7 @@ export async function startSupervisor(
 	const parent = ctx.sessionManager.getSessionFile();
 	const leaf = ctx.sessionManager.getLeafId();
 	if (!parent || !leaf) throw new Error("The planning session must be persisted before creating its supervisor fork.");
-	const supervisorSource = pi.getCommands().find(command => command.name === "supervise")?.sourceInfo?.path;
-	const intercomSource = pi.getAllTools().find(tool => tool.name === "intercom")?.sourceInfo?.path;
-	if (!supervisorSource || !intercomSource) throw new Error("Cannot resolve the loaded supervisor and Intercom extensions; load both before Ready.");
+	const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 	let binding = existing ?? {
 		id: randomUUID(), planPath, workerSession: parent, workerPane: process.env.HERDR_PANE_ID,
 		everyTurns: 50, intervalMs: 60 * 60_000, compactTokens: 100_000,
@@ -115,7 +113,7 @@ export async function startSupervisor(
 	void waiting.catch(() => {});
 	try {
 		await herdr(pi, ["agent", "start", `supervisor-${binding.id.slice(0, 8)}`, "--kind", "pi", "--pane", pane, "--", "--session", binding.supervisorSession!,
-			"-e", supervisorSource, "-e", intercomSource, "-e", fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./index.ts" : "./index.js", import.meta.url))], signal);
+			"-e", packageRoot], signal);
 		return await waiting;
 	} catch (error) {
 		throw new Error(`Supervisor startup incomplete: ${String(error)}. Inspect the recorded pane, resolve startup, reload it, then retry Ready.`);

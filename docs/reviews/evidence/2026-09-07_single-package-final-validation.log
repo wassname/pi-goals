@@ -1,0 +1,157 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run && npm run test:supervisor
+
+
+ RUN  v4.1.9 /home/ubuntu/.pi/agent/worktrees/pi-goals-persistent-steward
+
+
+ Test Files  12 passed (12)
+      Tests  67 passed (67)
+   Start at  16:14:44
+   Duration  15.63s (transform 1.67s, setup 307ms, import 22.12s, tests 28.12s, environment 3ms)
+
+
+> @wassname2/pi-goals@0.2.2 test:supervisor
+> node --import tsx --test test/internal-supervisor/*.test.ts
+
+✔ retries intercom registration when pi-intercom loads after pi-supervise (3.540888ms)
+✔ a directive with no text is rejected, so the worker never sees undefined (0.288987ms)
+✔ a directive from the paired supervisor becomes a real user message (27.396147ms)
+✔ a directive to a busy worker interrupts, instead of waiting for the whole task (13.079025ms)
+✔ a directive from an unpaired session is dropped (11.977008ms)
+✔ a second pair takes over, and the first supervisor is told it lost the worker (21.508059ms)
+✔ only the paired worker can end a run (6.314542ms)
+✔ the programmatic pairing API waits for the worker acknowledgement (1.485485ms)
+✔ the worker acknowledges a pair, so the supervisor knows it was heard (5.359587ms)
+✔ a goal the supervisor inferred reaches the worker, which owns the view header (37.477099ms)
+✔ the second view carries only what happened after the first (328.068703ms)
+✔ a message addressed to a different session is ignored (11.834377ms)
+✔ on settle the worker publishes a view built from the live branch (17.888259ms)
+✔ the view is built from the live branch, not from every entry in the session (22.049192ms)
+✔ an unpaired session publishes nothing on settle (0.498005ms)
+✔ supervision never stops itself: no round limit at all (9.442441ms)
+✔ goal, pairing and the steer count all survive a reload together (0.791695ms)
+✔ a view that arrives while the supervisor is thinking is queued, not dropped (5.643173ms)
+✔ the nudge repeats neither the instructions already sent nor the verdict rules (5.269154ms)
+✔ a multi-line goal returns to supervisor context every fifth review and after compaction (31.103788ms)
+✔ a one-line goal is not redundantly reinserted (26.640178ms)
+✔ a check in and a worker that stopped ask for different things (12.287139ms)
+✔ a loop still gets named after the supervisor compacts, from restored state (1.450856ms)
+✔ a session that does not answer the roll call is not offered as a worker (501.077007ms)
+✔ a child run stays out of the roll call, so it can never be picked (5.337167ms)
+✔ a session already paired stays out of the roll call, and a free one answers (15.899876ms)
+✔ /supervise look asks the worker for a fresh view, rather than the supervisor guessing (306.105484ms)
+✔ let_it_run says the turn is over, so it is not called four times running (0.835308ms)
+✔ a sign-off verdict is answered, not aborted, and a runaway is still cut (0.609635ms)
+✔ every verdict result names the way to end the turn, steer included (0.449781ms)
+✔ an old view is dropped from context once its verdict is in, and the verdict is kept (1.046937ms)
+✔ a worker session never has its context rewritten (0.289351ms)
+✔ a view that arrives mid-answer starts a fresh look (5.824464ms)
+✔ a tool a worker cannot use never aborts its turn (0.339873ms)
+✔ a resume onto a session that is gone drops the pairing and says so (6.297894ms)
+✔ a resume onto a live worker keeps supervising, and takes the writers back off (5.29537ms)
+✔ state written before recentSteers existed still loads (0.171283ms)
+✔ done unpairs the worker, so it stops publishing views (320.167743ms)
+✔ with no goal the supervisor cannot steer, it must ask the human (0.573651ms)
+✔ set_goal binds an inferred goal, and steering then works (501.94885ms)
+✔ a goal given at pair time still allows steering (0.665903ms)
+✔ done is refused while the worker has an unanswered tool call (12.424782ms)
+✔ done is allowed once nothing is outstanding (6.182792ms)
+✔ steer refuses when the session is not supervising (0.325609ms)
+✔ a reworded repeat of an earlier instruction is sent, and named back to the supervisor (0.510602ms)
+✔ overlap scores rewording high and a different instruction low (0.136533ms)
+✔ the view of the old worker cannot be used to judge the new one (6.045704ms)
+✔ with one other session here, /supervise needs no target and the whole line is the goal (501.381162ms)
+✔ naming the worker still works, and the rest of the line is the goal (0.554981ms)
+✔ with two free sessions here, /supervise asks which one, and pairs with the choice (501.08053ms)
+✔ a goal that is a path is read from the file, so it is not pasted every run (2.297652ms)
+✔ a long goal is one short line above the picker, and reaches the worker whole (501.854523ms)
+✔ a session that stayed quiet is still on the list, because 0 free is a dead end (501.687356ms)
+✔ a cancelled picker pairs with nothing (500.579211ms)
+✔ supervising takes the writing tools away, and stopping gives them back (501.255208ms)
+✔ stopping gives back the writers without undoing another extension's tools (500.601415ms)
+✔ a first word that names no session is refused, rather than folded into the goal (0.611801ms)
+✔ a goal with spaces needs no target, and @name takes the rest of the line as the goal (501.893405ms)
+✔ the brief starts no turn, so there is no answer before the first view (5.995751ms)
+✔ /supervise goal changes the goal without breaking the pairing (0.70475ms)
+✔ the footer says which side of a pairing this session is, and clears when it ends (506.432358ms)
+✔ a session that is not supervising never sees the supervisor tools (5.830284ms)
+✔ worker_view refuses when there is no worker, rather than implying a pairing (0.513982ms)
+✔ the view names the worker's model and how full its context is (21.061667ms)
+✔ supervising a second session is refused while the first is still paired (0.548942ms)
+✔ the supervisor gets a look at a working worker every half hour, without being asked (926.124762ms)
+✔ a human message in the worker session is not a reason to stand back (6.127037ms)
+✔ letting a stopped worker run says plainly that the worker stays stopped (11.377477ms)
+✔ a stopped worker is looked at again, so let_it_run cannot silence the pairing (922.993821ms)
+✔ a worker that pairs at the prompt and never takes a turn is still watched (604.616558ms)
+✔ a worker that reloads at the prompt starts watching itself again (604.845926ms)
+✔ a timer look at a worker that has not moved is not sent, until it has been skipped three times (2425.474247ms)
+✔ the worker counts reviews in a row where nothing changed (356.432776ms)
+✔ an unacknowledged pair gives up, and a takeover cancels that timer (3.893969ms)
+✔ duplicate standalone Intercom registries are diagnosed and cannot bootstrap a plan (1.232918ms)
+✔ plan bootstrap compacts only the supervisor and pairing alone never starts a worker or a review (18.935035ms)
+✔ goal decisions are correlated, preserve the pair across two goals, and cannot call overall done (5.389797ms)
+✔ abort and stop cancel pending requests; late decisions cannot approve a replacement (3.265783ms)
+✔ 50 actual model turns trigger one view, independent of the number of messages (3.457965ms)
+✔ unknown background providers are not proof of quiescence (0.294658ms)
+✔ stale plan content invalidates a pending goal review (3.01992ms)
+✔ small forks skip compaction, but real compaction failure prevents pairing (2.471879ms)
+✔ the hour timer and a coincident turn checkpoint produce a single view (5.559542ms)
+✔ settled checks wait for tracked processes and subagents to finish (2.833087ms)
+✔ bootstrap stop cannot resurrect a supervisor after compaction completes (2.15529ms)
+✔ a restarted worker reconnects by exact saved session identity without a new supervisor (2.812666ms)
+✔ unknown initial context must compact instead of taking the known-small shortcut (1.119486ms)
+✔ null post-compaction usage cannot raise the next configured 100k checkpoint (2.180167ms)
+✔ stopping a routine view during compaction invalidates its suspended continuation (1.977452ms)
+✔ restart of a provisional bootstrap resumes compaction and pairing in the same saved session (2.18079ms)
+✔ command preserves a stopped supervisor across reload (2.007763ms)
+✔ done preserves a stopped supervisor across reload (2.456918ms)
+✔ same-binding replay retains activation when the supervisor lost its acknowledgement (2.599438ms)
+✔ model-unavailable stop validates binding, cancels pending reviews and ignores old directives (2.091306ms)
+✔ a child process named pi is found by ps, and stops being found when it exits (367.036839ms)
+✔ the check is a snapshot, so it cannot hold up the worker's settle (321.13146ms)
+✔ a one-line goal stays whole while a multi-line goal has a locator (6.226689ms)
+✔ a view carries only the turns the supervisor has not been sent (2.16041ms)
+✔ the last two reasoning blocks stay in the narrative, and older ones drop out (1.078426ms)
+✔ a compaction restarts the view, so no turn falls into the gap (0.455488ms)
+✔ pi-vcc reports the files the worker wrote, and separates them from the ones it read (1.361829ms)
+✔ progressKey is unchanged when a review produced no new file or commit (0.506944ms)
+✔ progressKey still sees a new file past pi-vcc's ten path display cap (0.575315ms)
+✔ a commit counts as progress, even when no file was written since (0.960805ms)
+✔ outstandingWork finds tool calls that never got a result (1.43676ms)
+✔ buildView reports a tool call with no result, so done can be refused (0.87924ms)
+✔ the view says how many reviews in a row changed nothing, and says nothing at zero (0.692566ms)
+✔ the view merges the worker's compaction summary with the turns after it (0.470565ms)
+✔ a turn the compaction summary already covers is not sent twice (0.336722ms)
+✔ pi-vcc's sections and its transcript land on the right sides of the split (2.943ms)
+✔ the view does not tell the supervisor to use vcc_recall, a tool it does not have (0.291333ms)
+✔ supervisor directives are not sent back as worker evidence (0.488463ms)
+✔ bookkeeping tool calls are kept out of the transcript (0.390618ms)
+✔ buildView reports the goal, status, and files without historical failures (0.42015ms)
+✔ how long the worker has been quiet, measured from its own last entry (0.593754ms)
+✔ buildView keeps the newest turns when it has to cut for the channel limit (26.316809ms)
+✔ pi's own branch logic drops the abandoned fork, on a session file (1793.809954ms)
+✔ a long goal cannot push the view past the broker limit (0.55492ms)
+ℹ tests 118
+ℹ suites 0
+ℹ pass 118
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 20178.623102
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc -p tsconfig.build.json --noEmit
+
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 32 files in 93ms. No fixes applied.
+
+> @wassname2/pi-goals@0.2.2 build
+> tsc -p tsconfig.build.json
+
+SINGLE_PACKAGE_FINAL_VALIDATION_PASSED

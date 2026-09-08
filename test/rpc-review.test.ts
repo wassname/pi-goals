@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -49,13 +49,23 @@ function streamResponse(response: import("node:http").ServerResponse, delta: obj
 }
 
 describe("RPC review flow", () => {
-	it("opens Refine's editor before it starts the revision turn", async () => {
+	it.each([false, true])("alignment and Discuss before one Ready handoff; real-Pi same-current recovery=%s", async (recoverCurrent) => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-rpc-"));
+		const modelDir = join(cwd, ".agent", "pi-goals"); mkdirSync(modelDir, { recursive: true });
+		if (recoverCurrent) writeFileSync(join(modelDir, "worker-model.json"), JSON.stringify({ provider: "missing", id: "unavailable-worker" }));
 		let requestCount = 0;
 		let planPath = "";
 		const server = createServer((_request, response) => {
 			requestCount++;
-			if (requestCount === 1) {
+			if (requestCount === 1 || requestCount === 4) {
+				streamResponse(response, { content: "1. Should the output be a text file? 2. Keep the existing CLI only? 3. Does a saved PASS receipt prove success?" }, "stop");
+				return;
+			}
+			if (requestCount === 3 || requestCount === 6) {
+				streamResponse(response, { tool_calls: [{ index: 0, id: `review-${requestCount}`, type: "function", function: { name: "RequestPlanReview", arguments: "{}" } }] }, "tool_calls");
+				return;
+			}
+			if (requestCount === 2) {
 				streamResponse(response, {
 					tool_calls: [{
 						index: 0,
@@ -97,16 +107,43 @@ describe("RPC review flow", () => {
 			const sessionId = (state.data as { sessionId: string }).sessionId;
 			planPath = join(cwd, ".pi", "plan", `${sessionId}-v1.md`);
 
-			client.send({ type: "prompt", id: "goals", message: "/goals work out the thing" });
-			const review = await client.waitFor((message) => message.type === "extension_ui_request" && message.method === "select");
-			client.send({ type: "extension_ui_response", id: review.id, value: "Refine" });
-			const editor = await client.waitFor((message) => message.type === "extension_ui_request" && message.method === "editor");
-			expect(requestCount).toBe(2);
-
-			const revisionStart = client.messages.length;
-			client.send({ type: "extension_ui_response", id: editor.id, value: "Name the produced file." });
-			await client.waitFor((message) => message.type === "agent_end", revisionStart);
-			expect(requestCount).toBe(3);
+			client.send({ type: "prompt", id: "off", message: "/goals steward off" });
+			await client.waitFor(message => message.type === "response" && message.id === "off");
+			client.send({ type: "prompt", id: "goals", message: "/goals name the output file" });
+			await client.waitFor(message => message.type === "agent_end");
+			expect(requestCount).toBe(1);
+			expect(client.messages.some(message => message.method === "select")).toBe(false);
+			client.send({ type: "prompt", id: "answers", message: "Text file, existing CLI only, and a saved PASS receipt." });
+			const review = await client.waitFor(message => message.type === "extension_ui_request" && message.method === "select");
+			expect(review.options).toEqual(["Ready", "Discuss", "Edit", "Cancel"]);
+			const discussionAt = client.messages.length;
+			client.send({ type: "extension_ui_response", id: review.id, value: "Discuss" });
+			await client.waitFor(message => message.type === "agent_end", discussionAt);
+			expect(requestCount).toBe(4);
+			expect(client.messages.slice(discussionAt).some(message => message.method === "editor" || message.method === "select")).toBe(false);
+			const answerAt = client.messages.length;
+			client.send({ type: "prompt", id: "discuss-answer", message: "Use output.txt, no UI changes." });
+			await client.waitFor(message => message.type === "agent_end", answerAt);
+			expect(client.messages.slice(answerAt).some(message => message.method === "select")).toBe(false);
+			client.send({ type: "prompt", id: "finish-discussion", message: "Yes, that is enough; the draft is still right." });
+			const reviewedAgain = await client.waitFor(message => message.type === "extension_ui_request" && message.method === "select", discussionAt);
+			const readyAt = client.messages.length;
+			client.send({ type: "extension_ui_response", id: reviewedAgain.id, value: "Ready" });
+			if (recoverCurrent) {
+				await client.waitFor(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes("worker model paused"), readyAt);
+				client.send({ type: "set_model", id: "same-current", provider: "offline", modelId: "test" });
+				expect((await client.waitFor(message => message.type === "response" && message.id === "same-current")).success).toBe(true);
+				expect(JSON.parse(readFileSync(join(modelDir, "worker-model.json"), "utf8"))).toEqual({ provider: "missing", id: "unavailable-worker" });
+				expect(client.messages.slice(readyAt).some(message => message.method === "select")).toBe(false);
+				client.send({ type: "prompt", id: "use-current", message: "/goals model current" });
+				const recoveryMenu = await client.waitFor(message => message.type === "extension_ui_request" && message.method === "select", readyAt);
+				expect(JSON.parse(readFileSync(join(modelDir, "worker-model.json"), "utf8"))).toEqual({ provider: "offline", id: "test" });
+				expect(JSON.parse(readFileSync(join(modelDir, "planning-model.json"), "utf8"))).toEqual({ provider: "offline", id: "test" });
+				client.send({ type: "extension_ui_response", id: recoveryMenu.id, value: "Ready" });
+			}
+			await client.waitFor(message => message.type === "agent_end", readyAt);
+			expect(client.messages.filter(message => message.type === "message_start" && JSON.stringify(message).includes("Work the goals"))).toHaveLength(1);
+			expect(requestCount).toBe(7);
 		} finally {
 			pi.kill();
 			server.close();

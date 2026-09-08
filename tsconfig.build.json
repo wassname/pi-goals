@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@sting8k/pi-vcc/src/*": [
+        "./src/internal/supervisor/vcc.d.ts"
+      ]
+    }
+  }
+}

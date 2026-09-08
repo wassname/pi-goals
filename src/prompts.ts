@@ -37,9 +37,12 @@ human would need to approve later. If any is uncertain, reduce uncertainty now: 
 search the web when they can answer, then ask the human to confirm your interpretation, pin down the
 outcome or task, or approve an editorial or other preference choice. Do not present the review menu
 with a placeholder goal such as "work out the thing", "improve it", or "investigate".
-3. For independent high-impact questions, build a decision tree and ask the whole frontier in one
-round. Ask only questions worth the human's time, where the answer materially reduces uncertainty
-while discovering the right plan. Each question must be short and self-contained: state the relevant
+3. By default, before proposing a final plan, ask at least THREE distinct task-specific alignment
+questions in ONE chat round: test agreement about the expected result, scope and constraints, and
+success/failure criteria. Even if you think you understand, check how far apart your interpretations
+are. Wait for the human's answers and use them before declaring the plan final. Do not ask technical
+facts that read-only inspection can resolve, or use a generic ritual questionnaire. Additional
+questions should materially reduce uncertainty while discovering the right plan. Each question must be short and self-contained: state the relevant
 context, use the human's language and ASD-STE100
 Simple Technical English, and give a recommended answer. Record each answer in ## Interview. Do not
 make the plan final while material user decisions remain open.
@@ -50,9 +53,12 @@ not replace, defer, or contradict it; ask the human if an inference would change
 5. When every goal has an object, observable result, settled scope, and required approval, draft the
 plan file and present it. It should be safe to work overnight and present the requested outcome.
 
-How this mode ends: after each settled draft the human gets a menu (Ready / Refine / Edit / Cancel).
-Plan mode ends only when they pick Ready. Refine collects short revision notes. Edit opens the full
-plan. When a new requirement arrives, fold it in, say what changed, and present the plan again.
+How this mode ends: when alignment is complete and the plan is ready, call RequestPlanReview to
+show Ready / Discuss / Edit / Cancel. Only Ready ends planning. Discuss returns to normal chat:
+ask useful alignment questions, wait for answers, and continue discussing for as many turns as
+needed. Do not request review while awaiting answers. When discussion is finished, call
+RequestPlanReview again, even if the draft did not change. Edit opens the full plan directly.
+When a new requirement arrives, fold it in, say what changed, and request review when ready.
 Detail that doesn't change a goal or a discriminator belongs in the appendix, not in the goals.
 
 Right-size it:
@@ -140,7 +146,7 @@ Conventions:
 - Appendix: unlimited and unverified. Alternatives, links, dead ends, and the settled detail that
   is not part of the approved goals. Nothing here is approved and nothing here is checked.
 
-When the goals are drafted, present them and say the plan is final. Do not begin execution.`;
+After the alignment answers are incorporated, present the final plan and call RequestPlanReview. Do not begin execution.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * 3. reminder — EXEC. Transient, never persisted, and only when the plan went stale for a couple of
@@ -148,16 +154,32 @@ When the goals are drafted, present them and say the plan is final. Do not begin
  *    model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149). Carries the folded plan
  *    (above ## Log), because a nudge with no plan in it makes the model go read the file anyway.
  * ──────────────────────────────────────────────────────────────────────── */
-export function planningState(planPath: string): string {
+/** A waiver belongs only to the current objective, never to an earlier plan's transcript. */
+export function waivesAlignment(objective: string): boolean {
+	// Only standalone affirmative clauses, not negations or quoted feature names.
+	const unquoted = objective.replace(/"[^"]*"|“[^”]*”|‘[^’]*’|`[^`]*`/g, " ").replace(/(^|\W)'[^'\n]*'(?=$|\W)/g, "$1 ");
+	return unquoted.split(/[;,.!?\n]+/).some(clause => /^(?:please\s+)?(?:no[- ](?:questions|q['’]s)|skip(?:[- ](?:the|all))?[- ](?:questions|q['’]s)|(?:don['’]t|do not) ask(?: me)?(?: any)? questions)(?:\s+please)?(?:\s+(?:and|then)\b.+)?$/i.test(clause.trim()));
+}
+
+export function alignmentPolicy(waived: boolean): string {
+	return waived
+		? "Current-plan alignment: the human explicitly waived questions in this objective. Skip the default three-question round for THIS plan only."
+		: "Current-plan alignment: ask at least THREE task-specific questions in ONE chat round before the final plan; wait for answers and use them. Check the expected result, scope/constraints, and success/failure criteria. A waiver in any previous plan does NOT apply. Do not repeat questions already answered for this plan.";
+}
+
+export const discussPlan = "Continue discussing this draft in normal chat. Ask useful, task-specific alignment questions to check where your understanding differs from the human's: expected result, scope/constraints, and success/failure criteria. Wait for answers; do not open an editor or request review yet. Keep the draft and incorporate answers. When discussion is finished and the plan is ready, call RequestPlanReview, even if the draft is unchanged.";
+
+export function planningState(planPath: string, questionsWaived = false): string {
 	return `\
 [PLANNING MODE]
+${alignmentPolicy(questionsWaived)}
 The plan at ${planPath} is the only file you may change. Use read-only repository tools or web search
 when either can resolve a fact. Ask the human to confirm unresolved interpretation, outcome, task,
 scope, or a choice that needs their approval. Batch independent high-impact questions in one short,
 self-contained round with relevant context and a recommendation. Do not draft a placeholder goal
 without a concrete object, observable result, settled scope, and required approval. Do not execute
 work, mark a goal [/] or [x], or sign off a goal. The plan is not approved until the human selects
-Ready.`;
+Ready. Call RequestPlanReview only when alignment is complete and the plan is ready, not while waiting for chat answers.`;
 }
 
 export function reminder(foldedPlan: string, planRel: string): string {

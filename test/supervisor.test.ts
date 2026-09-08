@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllEnvs());
 describe("supervisor adapter", () => {
 	it("fails visibly when the supervisor API is absent", async () => {
 		const pi = { events: { emit() {} } } as unknown as ExtensionAPI;
-		await expect(supervisorRequest(pi, "status")).rejects.toThrow("Load the plan-aware");
+		await expect(supervisorRequest(pi, "status")).rejects.toThrow("Load the pi-goals package directory");
 	});
 	it("does not operate on a live Herdr session from outside Herdr", async () => {
 		vi.stubEnv("HERDR_ENV", "");
