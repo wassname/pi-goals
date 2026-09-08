@@ -21,10 +21,11 @@ User priority: pi-intercom is the session-to-session transport. Keep one pi-goal
   - failure modes: approving while a tracked job runs, treating a local queue as a dependency of remote work.
   - deliverable: idle/running/unknown status cases and a blocker-diagnosis scenario.
   - evidence: the same validation log checks active and unavailable tracker reports and rejection of approval with unknown background state. Actual independent diagnosis of the queue mistake remains a behavioral acceptance task.
-- [ ] goal: role model choices persist
+- [x] goal: role model choices persist
   - Borrow planning/worker/supervisor model preference behavior without changing active user settings.
   - failure modes: automatic model changes overwrite user choices; a missing model silently substitutes another.
   - deliverable: isolated preference restoration and explicit unavailable-model errors.
+  - evidence: [45-test validation](../reviews/20260908-role-model-validation.txt) restores three distinct role choices, ignores automatic restore events, and leaves an unavailable saved choice unchanged. Preferences are project-local; active user settings were not edited.
 
 ## Verification
 

@@ -31,6 +31,8 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		hasUI: true,
 		isIdle: vi.fn(() => true),
 		getSystemPrompt: () => "base prompt",
+		model: { provider: "test", id: "tiny" },
+		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 		sessionManager: {
 			getSessionId: () => "session-a",
 			getSessionFile: () => join(cwd, "session.jsonl"),
@@ -57,6 +59,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		appendEntry: (customType: string, data: unknown) => { if (customType === "pi-goals-state") entries.push({ type: "custom", customType, data }); },
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		getAllTools: () => [],
+		setModel: vi.fn(async () => true),
 		sendMessage: (message: { content: string; display?: boolean }) => messages.push(message),
 		sendUserMessage: (content: string) => messages.push({ content }),
 	};

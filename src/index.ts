@@ -25,6 +25,7 @@ import { backgroundState } from "./background.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
 import { GoalIntercom } from "./intercom.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
+import { RoleModels } from "./role-models.js";
 import { isVisibleSupervisor, registerVisibleSupervisor } from "./supervisor-session.js";
 import { workerView } from "./worker-view.js";
 
@@ -108,6 +109,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 	if (!isMainSession()) return;
 	const intercom = new GoalIntercom(pi);
+	const models = new RoleModels(pi);
 	intercom.onSteer = (instruction) => {
 		if (state.phase !== "working") throw new Error("Worker plan is not active; instruction rejected.");
 		pi.sendUserMessage(`[supervisor] ${instruction}`, { deliverAs: "steer" });
@@ -208,6 +210,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (goals.length > 0 && goals.every((goal) => goal.status === "done" || goal.status === "cancelled")) {
 			stopWorkerTimers();
 			state = { ...state, phase: null };
+			models.leave();
 			persist();
 		}
 	}
@@ -282,6 +285,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, planVersion: null };
+				models.leave();
 				persist();
 				updateWidget(ctx);
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
@@ -299,13 +303,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				const ref = arg.slice("model".length).trim();
 				state = { ...state, supervisorModel: ref || null, supervisorPaneId: null, approvalId: null };
 				persist();
-				ctx.ui.notify(`Goal-supervisor model ${ref ? `set to ${ref}` : "reset to the current Pi default"}.`, "info");
+				ctx.ui.notify(`Goal-supervisor model ${ref ? `set to ${ref}` : "reset to the remembered supervisor model"}.`, "info");
 				return;
 			}
 			if (!(await stopSupervisor())) {
 				ctx.ui.notify("Could not close the visible supervisor; no new plan was started.", "warning");
 				return;
 			}
+			await models.enter("planning", ctx);
 			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx), latestDirection: arg };
 			planningContextPending = true;
 			resyncReason = null;
@@ -408,6 +413,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (state.phase !== "planning" || !ctx.hasUI) return;
 		let printed = "";
 		while (true) {
+			if (intercom.ended) return;
 			const plan = readPlan(ctx);
 			if (scanGoals(plan).length === 0) {
 				if (plan.trim()) ctx.ui.notify(`The plan has no goal line. Revise ${planRel(ctx)} to add one.`, "warning");
@@ -435,6 +441,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			}
 			if (choice === "Cancel") {
 				rmSync(planPath(ctx), { force: true });
+				models.leave();
 				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, planVersion: null };
 				persist();
 				updateWidget(ctx);
@@ -444,6 +451,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (choice !== "Ready") return;
 			try {
 				await startSupervisor(ctx);
+				if (intercom.ended) return;
+				await models.enter("worker", ctx);
 				state = { ...state, phase: "working" };
 				resyncReason = "The plan was approved.";
 				persist();
@@ -453,6 +462,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Visible supervisor opened in Herdr pane ${state.supervisorPaneId}.`, "info");
 				pi.sendUserMessage("The plan is approved. Begin implementation as the worker.");
 			} catch (error) {
+				if (intercom.ended) return;
 				ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)}`, "warning");
 				state = { ...state, phase: "planning" };
 				persist();
@@ -475,6 +485,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			planVersion: last?.data?.planVersion ?? null,
 			latestDirection: last?.data?.latestDirection ?? "",
 		};
+		if (state.phase) await models.enter(state.phase === "planning" ? "planning" : "worker", ctx);
 		planningContextPending = state.phase === "planning";
 		resyncReason = state.phase === "working" ? "New session." : null;
 		if (state.phase === "working") {

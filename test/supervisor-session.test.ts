@@ -26,6 +26,8 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 	const ctx = {
 		cwd,
 		getSystemPrompt: () => "base",
+		model: { provider: "test", id: "supervisor" },
+		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 		getContextUsage: () => tokens === null ? undefined : ({ tokens }),
 		compact: vi.fn(onCompact),
 		sessionManager: { getEntries: () => entries, getBranch: () => branch, getSessionId: () => "supervisor-session" },
@@ -41,6 +43,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
 		sendUserMessage: (message: string) => messages.push(message),
 		getActiveTools: () => activeTools,
+		setModel: vi.fn(async () => true),
 		setActiveTools: (next: string[]) => { activeTools = next; },
 	};
 	registerVisibleSupervisor(pi as unknown as ExtensionAPI);

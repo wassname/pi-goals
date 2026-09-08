@@ -5,6 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
 import { GoalIntercom } from "./intercom.js";
+import { RoleModels } from "./role-models.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
 const INITIAL_COMPACT_AT_TOKENS = 20_000;
@@ -93,6 +94,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	let compacting = false;
 	let bootstrapping = false;
 	const intercom = new GoalIntercom(pi);
+	const models = new RoleModels(pi);
 	intercom.onView = (view) => pi.sendUserMessage(view.text, { deliverAs: "followUp" });
 
 	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
@@ -140,6 +142,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		intercom.configure(settings.approvalId, "supervisor", ctx);
 		pi.setActiveTools(pi.getActiveTools().filter((tool) => !WRITER_TOOLS.has(tool.toLowerCase())));
+		await models.enter("supervisor", ctx, process.env.PI_GOALS_MODEL_EXPLICIT === "1");
 		setImmediate(() => { bootstrapAfterInitialCompaction(ctx); });
 	});
 	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));

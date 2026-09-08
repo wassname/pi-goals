@@ -46,6 +46,7 @@ function stalePaneError(error: unknown): boolean {
 export function supervisorCommand(input: LaunchSupervisorInput): string {
 	const env = [
 		"PI_GOALS_ROLE=supervisor",
+		`PI_GOALS_MODEL_EXPLICIT=${input.model ? "1" : "0"}`,
 		`PI_GOALS_WORKER_ID=${input.workerSessionId}`,
 		`PI_GOALS_PLAN_PATH=${input.planPath}`,
 		`PI_GOALS_APPROVAL_ID=${input.approvalId}`,

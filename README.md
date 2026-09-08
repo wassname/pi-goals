@@ -38,11 +38,13 @@ Run Pi from the Git repository that the plan will change. **Ready** fails if the
 ```text
 /goals <objective>          create a new plan
 /goals model <model>        select the visible supervisor model
-/goals model                use Pi's current default model
+/goals model                use the remembered supervisor model
 /goals clear                close the supervisor pane and disconnect the plan
 ```
 
 `/goals clear` keeps the plan file. Starting another plan also keeps older versions.
+
+Model choices are remembered per project and role in `.pi/pi-goals/models/`. Use `/model` in planning, worker, or supervisor sessions to change that role's choice. Ready restores the worker choice after the planning fork is ready. An unavailable saved model stops the transition instead of substituting another. `/goals model <model>` explicitly overrides the supervisor choice for launch. -- Pi/OpenAI
 
 ## Plan format
 

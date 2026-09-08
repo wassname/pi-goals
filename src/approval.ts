@@ -36,6 +36,7 @@ export function repositoryState(cwd: string): { repoRoot: string; head: string; 
 		"status", "--porcelain=v1", "--untracked-files=all", "--", ".",
 		`:(exclude,glob)${owned}/plan/*.md`,
 		`:(exclude,glob)${owned}/pi-goals/approvals/*`,
+		`:(exclude,glob)${owned}/pi-goals/models/*`,
 	]) === "";
 	return { repoRoot, head, tree, cleanWorktree };
 }
