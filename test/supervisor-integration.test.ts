@@ -22,7 +22,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 afterEach(() => { vi.unstubAllEnvs(); judge.calls = []; });
 
 describe("actual goals and supervisor package hooks (Herdr and judge mocked)", () => {
-	it.each(["completion", "replacement during activation", "steward off during activation", "missing worker model", "unauthenticated worker model", "clear while model unavailable", "off while model unavailable", "clear during recovery restore", "replacement during recovery restore"])("Ready forks once and preserves lifecycle ownership: %s", async (scenario) => {
+	it.each(["completion", "compaction failure", "replacement during activation", "steward off during activation", "missing worker model", "unauthenticated worker model", "clear while model unavailable", "off while model unavailable", "clear during recovery restore", "replacement during recovery restore"])("Ready forks once and preserves lifecycle ownership: %s", async (scenario) => {
 		const cwd = mkdtempSync(join(tmpdir(), "goals-supervisor-integration-"));
 		const peers: any[] = [];
 		const wires: any[] = [];
@@ -82,8 +82,8 @@ describe("actual goals and supervisor package hooks (Herdr and judge mocked)", (
 			};
 			const ctx: any = { cwd, hasUI: true, isIdle: () => true, model: { provider: "offline", id: (manager.getBranch().findLast((entry: any) => entry.type === "model_change") as any)?.modelId ?? "test", contextWindow: 200_000 }, sessionManager: manager,
 				modelRegistry: { find: (provider: string, id: string) => peer.missing && id === "worker" ? undefined : ({ provider, id, contextWindow: 200_000 }) },
-				getContextUsage: () => ({ tokens: 50_000 }), compact({ onComplete }: any) { peer.compactions++; peer.compactionModels.push(ctx.model.id); onComplete({}); }, abort() { peer.aborts++; },
-				ui: { theme: { fg: (_: string, text: string) => text }, setWidget() {}, setStatus() {}, notify: vi.fn(), select: async () => "Ready" },
+				getContextUsage: () => ({ tokens: 50_000 }), compact({ onComplete, onError }: any) { peer.compactions++; peer.compactionModels.push(ctx.model.id); if (scenario === "compaction failure" && id === "supervisor") onError(new Error("Native compaction timeout")); else onComplete({}); }, abort() { peer.aborts++; },
+				ui: { theme: { fg: (_: string, text: string) => text }, setWidget: vi.fn(), setStatus: vi.fn(), notify: vi.fn(), select: async () => "Ready" },
 			};
 			peer.pi = pi; peer.ctx = ctx; peer.hook = async (name: string, event = {}) => { for (const fn of hooks.get(name) ?? []) await fn(event, ctx); };
 			peers.push(peer); goals(pi); return peer;
@@ -129,6 +129,19 @@ describe("actual goals and supervisor package hooks (Herdr and judge mocked)", (
 			}
 			await starting; await tick();
 			const supervisor = peers[1];
+			if (scenario === "compaction failure") {
+				const saved = manager.getBranch().findLast((entry: any) => entry.customType === "pi-goals-state") as any;
+				expect(saved.data).toMatchObject({ phase: "planning", reviewRequested: false, startupError: expect.stringContaining("Native compaction timeout") });
+				expect(worker.ctx.ui.setStatus).toHaveBeenCalledWith("pi-goals", "supervisor startup failed");
+				expect(worker.messages.some((m: string) => m.startsWith("Work the goals"))).toBe(false);
+				expect(wires.some(w => w.t === "plan_failed")).toBe(true);
+				expect(wires.some(w => w.t === "plan_activate")).toBe(false);
+				await worker.hook("agent_settled");
+				expect(herdrCalls.filter(args => args[1] === "start")).toHaveLength(1);
+				await worker.hook("session_start", { reason: "reload" });
+				expect(worker.ctx.ui.setStatus).toHaveBeenCalledWith("pi-goals", "supervisor startup failed");
+				return;
+			}
 			if (worker.missing || worker.noAuth) {
 				const saved = manager.getBranch().findLast((entry: any) => entry.customType === "pi-goals-state") as any;
 				expect(saved.data).toMatchObject({ phase: "planning", modelRecovery: "worker" });

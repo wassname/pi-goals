@@ -56,6 +56,7 @@ export interface GoalDecision extends GoalReview {
 }
 export type PlanWire =
   | { t: "plan_hello" | "plan_hello_ack"; to: string; bindingId: string; role: "worker" | "supervisor"; sessionFile: string; paused?: boolean; pauseId?: string }
+  | { t: "plan_failed"; to: string; bindingId: string; sessionFile: string; reason: string }
   | { t: "plan_pause"; to: string; bindingId: string; exit: boolean; pauseId: string }
   | { t: "plan_resume"; to: string; bindingId: string; requestId: string; planHash: string; pauseId?: string }
   | { t: "plan_resumed"; to: string; bindingId: string; requestId: string; accepted: boolean }
@@ -66,6 +67,7 @@ export type PlanWire =
 export function validPlanWire(value: any): value is PlanWire {
   if (!value || typeof value.to !== "string" || typeof value.bindingId !== "string") return false;
   if (value.t === "plan_hello" || value.t === "plan_hello_ack") return ["worker", "supervisor"].includes(value.role) && typeof value.sessionFile === "string" && (value.paused === undefined || typeof value.paused === "boolean") && (value.pauseId === undefined || typeof value.pauseId === "string");
+  if (value.t === "plan_failed") return typeof value.sessionFile === "string" && typeof value.reason === "string" && value.reason.length > 0 && value.reason.length <= 2000;
   if (value.t === "plan_pause") return typeof value.exit === "boolean" && typeof value.pauseId === "string";
   if (value.t === "plan_resume") return typeof value.requestId === "string" && typeof value.planHash === "string" && (value.pauseId === undefined || typeof value.pauseId === "string");
   if (value.t === "plan_resumed") return typeof value.requestId === "string" && typeof value.accepted === "boolean";

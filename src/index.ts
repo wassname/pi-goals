@@ -152,6 +152,7 @@ interface PlanState {
 	legacyCompletionClaims: string[];
 	/** Ready captured its fork, but worker model recovery is still pending (also across reload). */
 	modelRecovery: "worker" | null;
+	startupError?: string;
 	/** Optional model ref for the sign-off judge; unset => current session model, else pi's default. */
 	judgeModel: string | null;
 	planVersion: number | null;
@@ -309,8 +310,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (state.phase === "planning") {
-			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", state.modelRecovery ? models.ready ? "retry Ready" : "worker model paused" : "planning"));
-			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
+			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", state.startupError ? "supervisor startup failed" : state.modelRecovery ? models.ready ? "retry Ready" : "worker model paused" : "planning"));
+			ctx.ui.setWidget(WIDGET_KEY, state.startupError ? [`pi-goals: ${state.startupError}`, "No work started. /goals stop or /goals exit leaves startup; inspect the supervisor before retrying Ready."] : ["pi-goals: drafting goals"]);
 			return;
 		}
 		if (state.phase === "starting") {
@@ -367,14 +368,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const approvedDraft = planHash(readPlan(ctx));
 		const handoff = workMessage(ctx);
 		const recoveringWorker = state.modelRecovery === "worker";
-		state = { ...state, phase: "starting" };
+		state = { ...state, phase: "starting", startupError: undefined };
 		persist(); updateWidget(ctx);
 		try {
 			// A stopped, never-attached bootstrap cannot be rejoined. A new explicit Ready
 			// may replace it; reconnect/resume never create another fork.
 			if (state.supervisor) {
 				const previous = await supervisor.status(signal);
-				if (previous.binding?.paused && previous.role === "none") {
+				if ((previous.binding?.paused || previous.binding?.startupFailure) && previous.role === "none") {
 					await supervisor.stop(state.supervisor.id);
 					state = { ...state, supervisor: null }; persist();
 				}
@@ -413,7 +414,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			pi.sendUserMessage(handoff, { deliverAs: "followUp" });
 		} catch (error) {
 			if (signal.aborted) return;
-			state = { ...state, phase: "planning", modelRecovery: null }; persist(); updateWidget(ctx);
+			state = { ...state, phase: "planning", modelRecovery: null, reviewRequested: false, startupError: String(error) }; persist(); updateWidget(ctx);
 			ctx.ui.notify(`Could not initialize the supervisor: ${String(error)}. Use /goals supervisor to inspect startup, or /goals steward off and retry Ready.`, "error");
 		} finally {
 			if (!lifetime.signal.aborted && state.phase !== "working" && !state.modelRecovery && !state.pausedFrom && !state.exited) {
@@ -636,6 +637,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			state = {
 				...state,
 				phase: "planning",
+				startupError: undefined,
 				pausedFrom: undefined, resumeHash: undefined, exited: false,
 				modelRecovery: null,
 				reviewRequested: false,
@@ -878,6 +880,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			signedOffGoals: last?.data?.signedOffGoals ?? [],
 			legacyCompletionClaims: last?.data?.legacyCompletionClaims ?? [],
 			modelRecovery: last?.data?.modelRecovery ?? null,
+			startupError: saved?.startupError ?? (saved?.phase === "starting" ? "Supervisor startup interrupted by reload. Inspect its pane before retrying Ready." : undefined),
 			judgeModel: last?.data?.judgeModel ?? null,
 			planVersion: last?.data?.planVersion ?? null,
 			autoIntervalMs: useNewDefaults || saved?.autoIntervalMs === undefined ? AUTO_DEFAULT_INTERVAL_MS : saved.autoIntervalMs,

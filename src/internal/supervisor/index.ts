@@ -308,7 +308,7 @@ export default function (pi: any, modelReady: () => boolean = () => true, planPr
       return { workerId: available ? await resolveOwnId() : ownId, role: state.role, binding: state.plan,
         connected: available && !!state.pairedId && !peerDisconnected && live.some(s => s.id === state.pairedId),
         activity: state.plan?.stopped ? "ended" : state.plan?.paused ? "stopped by user" : compacting ? "compacting" : bootstrapPending ? "starting" : activeAssessment ? "reviewing" : refreshInFlight ? "requesting overview" : state.plan?.active ? "monitoring" : "inactive",
-        lastFailure };
+        lastFailure: lastFailure ?? state.plan?.startupFailure };
     },
     pause(exit = false) {
       pauseLocally(exit);
@@ -378,7 +378,15 @@ export default function (pi: any, modelReady: () => boolean = () => true, planPr
         await startPair(worker, state.goal, ctx, binding);
         return binding;
       } catch (error) {
-        if (!stopping && generation === pairingGeneration) reset("Supervisor initialization failed; retry from the worker");
+        if (!stopping && generation === pairingGeneration) {
+          const reason = `Supervisor initialization failed: ${String(error)}`.slice(0, 2000);
+          lastFailure = reason;
+          // Readiness of the terminal is not readiness of the pairing. Notify the
+          // worker's attachment wait of this terminal failure before resetting locally.
+          try { send({ t: "plan_failed", to: bootstrap.workerId, bindingId: binding.id, sessionFile: binding.supervisorSession, reason }); }
+          catch { ctx.ui.notify("Startup failed; the worker could not be notified. Stop startup in the worker pane.", "warning"); }
+          reset(reason);
+        }
         throw error;
       } finally { bootstrapPending = false; }
     },
@@ -392,10 +400,20 @@ export default function (pi: any, modelReady: () => boolean = () => true, planPr
       reset("Plan supervision stopped", true);
       if (!connected) throw new Error("Stopped locally; Intercom disconnected so the supervisor may not have received stop. Inspect its recorded pane.");
     },
-    async attached(bindingId, signal) {
+    async attached(bindingId, signal, expected) {
       await ready(signal);
       if (!state.plan || bindingId !== state.plan.id) throw new Error("Plan pairing changed or is unavailable");
-      if (state.role === "worker" && (await channel!.listSessions()).some(s => s.id === state.pairedId)) return state.plan;
+      if (state.plan.startupFailure) throw new Error(state.plan.startupFailure);
+      if (expected) {
+        if (expected.id !== bindingId || expected.workerSession !== state.plan.workerSession) throw new Error("Startup identity changed");
+        state = { ...state, plan: { ...state.plan, supervisorSession: expected.supervisorSession, supervisorPane: expected.supervisorPane } }; save();
+      }
+      if (state.role === "worker") {
+        const live = await channel!.listSessions();
+        if (!state.plan || state.plan.id !== bindingId) throw new Error("Plan pairing changed while checking attachment");
+        if (state.plan.startupFailure) throw new Error(state.plan.startupFailure);
+        if (live.some(s => s.id === state.pairedId)) return state.plan;
+      }
       if (attached) throw new Error("Already waiting for the supervisor");
       const pending = pendingReply<SupervisorBinding>(signal, () => { attached = undefined; });
       attached = pending;
@@ -769,6 +787,12 @@ ${latestView}` },
     // Answered before the addressed-to-us check below, because a roll call goes to everyone.
     if (wire.t === "who") {
       if (from !== me && state.role === "none" && !process.env[SUBAGENT_ENV]) send({ t: "here", to: from });
+      return;
+    }
+    if (wire.t === "plan_failed" && wire.to === me && state.plan?.id === wire.bindingId && state.plan.supervisorSession === wire.sessionFile && !state.plan.active && attached) {
+      lastFailure = wire.reason;
+      state = { ...state, plan: { ...state.plan, startupFailure: wire.reason, active: false } }; save();
+      attached.finish(undefined, new Error(wire.reason)); attached = undefined;
       return;
     }
     if (wire.t === "plan_stop" && state.role === "supervisor" && state.plan?.id === wire.bindingId && from === state.pairedId) {

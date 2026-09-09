@@ -9,6 +9,24 @@ import { type SupervisorBinding as PlanBinding, planHash } from "../../src/super
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test("bootstrap failure reaches only its matching attachment wait", async () => {
+  const h = pairHarness();
+  try {
+    await h.worker.hook("session_start"); await h.supervisor.hook("session_start");
+    await h.worker.controller.prepare(h.binding);
+    const wait = h.worker.controller.attached(h.binding.id);
+    let settled = false; void wait.then(() => { settled = true; }, () => { settled = true; });
+    const rejection = assert.rejects(wait, /Native compaction timeout/);
+    h.worker.receive({ type: "message", fromSessionId: "other", payload: { t: "plan_failed", to: "worker", bindingId: h.binding.id, sessionFile: "/wrong/session", reason: "wrong attempt" } });
+    await tick(); assert.equal(settled, false);
+    h.supervisor.ctx.compact = ({ onError }: any) => onError(new Error("Native compaction timeout"));
+    await assert.rejects(h.supervisor.controller.bootstrap({ binding: h.binding, workerId: "worker" }), /Native compaction timeout/);
+    await rejection;
+    assert.match((await h.worker.controller.status()).lastFailure, /Native compaction timeout/);
+    await assert.rejects(h.worker.controller.attached(h.binding.id), /Native compaction timeout/, "retry cannot hang on a known failed attachment");
+  } finally { await h.close(); }
+});
+
 test("human pause survives reload/reconnect; only explicit resume reactivates the same pair", async () => {
   const h = pairHarness();
   try {

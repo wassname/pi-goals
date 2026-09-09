@@ -12,6 +12,7 @@ export interface SupervisorBinding {
 	supervisorSession?: string;
 	active?: boolean;
 	stopped?: boolean;
+	startupFailure?: string;
 	/** User pause: retain the pair, but no autonomous work until explicit resume. */
 	paused?: boolean;
 	pauseId?: string;
@@ -31,7 +32,7 @@ export interface SupervisorController {
  status(signal?: AbortSignal): Promise<SupervisorStatus>;
  prepare(binding: SupervisorBinding, signal?: AbortSignal): Promise<void>;
  bootstrap(bootstrap: Bootstrap, signal?: AbortSignal): Promise<SupervisorBinding>;
- attached(bindingId: string, signal?: AbortSignal): Promise<SupervisorBinding>;
+ attached(bindingId: string, signal?: AbortSignal, expected?: SupervisorBinding): Promise<SupervisorBinding>;
  activate(bindingId: string, signal?: AbortSignal): Promise<void>;
  review(bindingId: string, goal: string, hash: string, signal?: AbortSignal): Promise<SupervisorDecision>;
  stop(bindingId: string): Promise<void>;
@@ -73,12 +74,21 @@ export function pendingReply<T>(signal: AbortSignal | undefined, cancel: () => v
   return { requestId: randomUUID(), promise, finish };
 }
 
+class HerdrFailure extends Error {
+  constructor(message: string, readonly code?: string) { super(message); }
+}
+
 async function herdr(pi: ExtensionAPI, args: string[], signal?: AbortSignal): Promise<Record<string, any>> {
 	if (process.env.HERDR_ENV !== "1") throw new Error("Start Pi inside Herdr to launch or focus the supervisor. No pane was created.");
 	const result = await pi.exec("herdr", args, { timeout: 45_000, signal });
-	if (result.code !== 0) throw new Error(`Herdr: ${result.stderr || result.stdout}`);
+	if (result.code !== 0) {
+		const text = result.stderr || result.stdout;
+		let code: string | undefined;
+		try { code = JSON.parse(text).error?.code; } catch { /* Non-JSON transport failures remain non-recoverable. */ }
+		throw new HerdrFailure(`Herdr: ${text}`, code);
+	}
 	const parsed = JSON.parse(result.stdout);
-	if (parsed.error) throw new Error(`Herdr: ${parsed.error.message}`);
+	if (parsed.error) throw new HerdrFailure(`Herdr: ${parsed.error.message}`, parsed.error.code);
 	return parsed.result ?? parsed;
 }
 
@@ -86,7 +96,7 @@ export async function focusSupervisor(pi: ExtensionAPI, binding: SupervisorBindi
 	const pane = target === "worker" ? binding.workerPane : binding.supervisorPane;
 	if (!pane) throw new Error("No supervisor pane is recorded. Select Ready to start it.");
 	try { await herdr(pi, target === "zoom" ? ["pane", "zoom", "--pane", pane, "--toggle"] : ["agent", "focus", pane]); }
-	catch (error) { throw new Error(`${String(error)}. Session location/liveness is unknown. Locate the existing supervisor first; only after confirming it is no longer running, reopen pi --session ${JSON.stringify(binding.supervisorSession)}.`); }
+	catch (error) { throw new Error(`${String(error)}. Session location/liveness is unknown. Locate the existing supervisor first; only after confirming it is no longer running, reopen pi --session ${JSON.stringify(binding.supervisorSession)}.`, { cause: error }); }
 }
 
 export function supervisorBootstrap(ctx: ExtensionContext): Bootstrap | undefined {
@@ -152,9 +162,34 @@ export async function startSupervisor(
 	}
 	if (binding.supervisorPane) {
 		// An existing occupant is not permission to start another process on the same session file.
-		await focusSupervisor(pi, binding, "supervisor");
+		try { await focusSupervisor(pi, binding, "supervisor"); }
+		catch (error) {
+			const cause = (error as Error).cause;
+			if (!(cause instanceof HerdrFailure) || !["agent_not_found", "pane_not_found"].includes(cause.code ?? "")) throw error;
+			// Only an explicit Ready reaches this path. A missing pane is not a reason
+			// to reopen its session blindly: first locate any moved/resumed occupant.
+			let roster: Record<string, any>;
+			try { roster = await herdr(pi, ["agent", "list"], signal); } catch { throw error; }
+			signal.throwIfAborted();
+			if (!Array.isArray(roster.agents)) throw error;
+			const matches = roster.agents.filter((agent: any) => agent.agent_session?.value === binding.supervisorSession);
+			if (matches.length > 1) throw new Error("Multiple panes report this supervisor session; resolve the duplicate before Ready.");
+			if (matches.length === 1) {
+				if (typeof matches[0].pane_id !== "string") throw error;
+				binding = { ...binding, supervisorPane: matches[0].pane_id }; save(binding);
+				await focusSupervisor(pi, binding, "supervisor");
+			} else {
+				if (roster.agents.some((agent: any) => agent.agent === "pi" && !agent.agent_session?.value)) throw new Error("A Pi pane has unknown session identity; inspect it before replacing the supervisor.");
+				// End the old binding before creating a DISTINCT fork. Late traffic from
+				// the old process cannot authorize or steer the replacement worker pair.
+				await supervisor.stop(binding.id);
+				signal.throwIfAborted();
+				ctx.ui.notify("Recorded supervisor is no longer in Herdr. Ready is creating a replacement; the old session is retained.", "info");
+				return startSupervisor(pi, supervisor, ctx, planPath, null, save, signal);
+			}
+		}
 		signal.throwIfAborted();
-		return await supervisor.attached(binding.id, signal);
+		return await supervisor.attached(binding.id, signal, binding);
 	}
 	const split = await herdr(pi, ["pane", "split", "--current", "--direction", "right", "--cwd", ctx.cwd, "--env", `PI_CODING_AGENT_DIR=${getAgentDir()}`, "--no-focus"], signal);
 	const pane = split.pane?.pane_id;
@@ -164,7 +199,7 @@ export async function startSupervisor(
 	signal.throwIfAborted();
 	// Keep bootstrap and worker binding identical, including the returned pane identity.
 	SessionManager.open(binding.supervisorSession!).appendCustomEntry(SUPERVISOR_ROLE, { binding, workerId: status.workerId });
-	const waiting = supervisor.attached(binding.id, signal);
+	const waiting = supervisor.attached(binding.id, signal, binding);
 	void waiting.catch(() => {});
 	try {
 		await herdr(pi, ["agent", "start", `supervisor-${binding.id.slice(0, 8)}`, "--kind", "pi", "--pane", pane, "--", "--session", binding.supervisorSession!, ...supervisorResourceArgs(process.argv.slice(2))], signal);
