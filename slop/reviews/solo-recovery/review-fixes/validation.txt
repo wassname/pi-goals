@@ -1,0 +1,27 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+fatal: not a git repository (or any of the parent directories): .git
+
+ Test Files  22 passed (22)
+      Tests  149 passed (149)
+   Start at  19:55:05
+   Duration  5.30s (transform 3.81s, setup 0ms, import 8.86s, tests 12.31s, environment 3ms)
+
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 42 files in 49ms. No fixes applied.
+
+> @wassname2/pi-goals@0.2.2 build
+> tsc
+

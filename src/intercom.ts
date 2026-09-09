@@ -106,12 +106,14 @@ export class GoalIntercom {
 	}
 
 	// End this plan's binding without disposing the session's transport.
-	detach(): void {
+	detach(reason?: string): void {
 		if (this.deliveryTimer) clearTimeout(this.deliveryTimer);
 		this.deliveryTimer = undefined;
 		this.inbox.clear();
 		this.delivering = undefined;
 		this.ready = false;
+		// Announce on the old binding; a peer failure is never echoed as our own failure.
+		this.failure = reason;
 		this.hello();
 		this.binding = "";
 		this.peer = undefined;
@@ -131,7 +133,7 @@ export class GoalIntercom {
 		this.hello();
 		if (this.ctx) this.onConnectionChange(this.ctx);
 	}
-	get readinessFailure(): string | undefined { return this.failure; }
+	get readinessFailure(): string | undefined { return this.failure ?? this.peerFailure; }
 	get ended(): boolean { return this.stopped; }
 	get bound(): boolean { return !this.stopped && Boolean(this.binding); }
 	get peerPresent(): boolean { return Boolean(this.bound && this.peer && this.channel?.snapshot().connected); }
@@ -167,7 +169,7 @@ export class GoalIntercom {
 	}
 
 	steer(text: string): string {
-		if (!this.connected) throw new Error("Worker is disconnected; no instruction was sent.");
+		if (!this.connected) throw new Error(this.peerFailure ? `Worker is disconnected: ${this.peerFailure} No instruction was sent.` : "Worker is disconnected; no instruction was sent.");
 		const message: Message = { binding: this.binding, role: this.role, kind: "steer", id: randomUUID(), text };
 		this.record("out", message);
 		this.pending.set(message.id, message);

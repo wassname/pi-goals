@@ -204,7 +204,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 		state = { ...state, mode: "solo", soloReason: reason, approvalId: null };
 		persist();
 		stopWorkerTimers();
-		intercom.detach();
+		intercom.detach(`Worker entered solo mode; this pairing is detached. ${reason} Restore supervision with /goals restart in the worker session.`);
 		const message = `UNSUPERVISED WORKER: ${reason} Continuing in solo mode with the same approved plan (${planRel(ctx)}) and evidence preserved. Supervisor sign-off is unavailable; do not call CompleteGoal or claim supervised completion. Continue useful implementation and save verification evidence. Use /goals restart to restore supervision.`;
 		ctx.ui.notify(message, "warning");
 		pi.sendMessage({ customType: "pi-goals-mode", content: message, display: true });
@@ -428,7 +428,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
 		// No path line: the session id makes it too long to be useful in the widget.
 		const plan = readPlan(ctx);
-		const lines: string[] = claimed.map(g => `? claimed complete; awaiting supervisor review: ${g.subject}`);
+		const lines: string[] = claimed.map(g => `? claimed complete; ${state.mode === "solo" ? "unreviewed (solo)" : "awaiting supervisor review"}: ${g.subject}`);
 		if (state.phase === "working" && state.mode === "solo") lines.unshift(`UNSUPERVISED: ${state.soloReason} Supervisor sign-off unavailable. /goals restart`);
 		else if (liveGoals.length === 0 && claimed.length === 0) lines.push("✔ complete");
 		for (const g of liveGoals) {
@@ -445,12 +445,12 @@ export function registerWorker(pi: ExtensionAPI): void {
 		getArgumentCompletions: prefix => goalCommandCompletions(prefix, "worker"),
 		handler: async (args, ctx) => {
 			const command = {};
-			commandAttempt = command;
 			let arg = args.trim();
 			if (arg === "solo") {
 				if (state.phase !== "working") { ctx.ui.notify("Solo requires an already-approved plan. A draft still needs Ready.", "warning"); return; }
 				if (modelError) { ctx.ui.notify(`Cannot enter solo: ${pauseReason()}`, "warning"); return; }
 				if (state.mode === "solo") { ctx.ui.notify("Already UNSUPERVISED; plan preserved, supervisor sign-off unavailable. /goals restart restores supervision.", "warning"); return; }
+				commandAttempt = command;
 				readyAttempt = undefined;
 				enterSolo(ctx, "You explicitly selected /goals solo.");
 				return;
@@ -463,6 +463,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 			}
 			if (arg === "noplan") {
 				if (state.phase !== "planning") { ctx.ui.notify("Not in planning mode; the current plan is unchanged.", "info"); return; }
+				commandAttempt = command;
 				readyAttempt = undefined;
 				planningContextPending = false;
 				resyncReason = null;
@@ -478,6 +479,8 @@ export function registerWorker(pi: ExtensionAPI): void {
 			if (arg === "reconnect" || arg === "restart") {
 				if (!state.phase) { ctx.ui.notify("No active plan to recover.", "info"); return; }
 				if (!ctx.isIdle()) { ctx.ui.notify("Stop the current turn before recovering goal supervision.", "warning"); return; }
+				commandAttempt = command;
+				const connectedBeforeRecovery = intercom.connected;
 				readyAttempt = undefined;
 				recoveryAttempt = undefined;
 				const version = state.planVersion;
@@ -493,8 +496,13 @@ export function registerWorker(pi: ExtensionAPI): void {
 						return;
 					}
 					if (arg === "restart") {
-						if (!(await stopSupervisor())) throw new SupervisorFailure("Could not close the tracked supervisor pane; no replacement was opened.");
+						const stopped = await stopSupervisor();
 						if (!current()) return;
+						if (!stopped) {
+							// Model restoration paused our readiness, but a failed close did not end the pairing.
+							if (connectedBeforeRecovery) intercom.markReady();
+							throw new Error("Could not close the tracked supervisor pane; no replacement was opened.");
+						}
 						state = { ...state, supervisorPaneId: null, approvalId: null };
 						persist();
 					}
@@ -526,6 +534,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 					ctx.ui.notify("No active plan to disconnect.", "info");
 					return;
 				}
+				commandAttempt = command;
 				const currentPlan = planRel(ctx);
 				if (!(await stopSupervisor())) {
 					ctx.ui.notify("Could not close the visible supervisor; the plan remains connected.", "warning");
@@ -544,6 +553,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 					ctx.ui.notify("Run /goals clear before changing the active supervisor model.", "warning");
 					return;
 				}
+				commandAttempt = command;
 				if (!(await stopSupervisor())) {
 					ctx.ui.notify("Could not close the visible supervisor; its model was not changed.", "warning");
 					return;
@@ -554,6 +564,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Goal-supervisor model ${ref ? `set to ${ref}` : "reset to the remembered supervisor model"}.`, "info");
 				return;
 			}
+			commandAttempt = command;
 			if (!(await stopSupervisor())) {
 				ctx.ui.notify("Could not close the visible supervisor; no new plan was started.", "warning");
 				return;

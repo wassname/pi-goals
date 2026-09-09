@@ -1,0 +1,226 @@
+
+ RUN  v4.1.9 /tmp/pi-goals-solo-review-baseline-BoWZ0j
+
+ ❯ test/goals-flow.test.ts (50 tests | 10 failed | 40 skipped) 235ms
+   × keeps a healthy pairing ready when restart cannot close its pane 48ms
+   × labels solo completion claims unreviewed without implying a supervisor will review them 20ms
+   × does not let no-op supervise cancel an in-flight restart 23ms
+   × does not let no-op noplan cancel an in-flight restart 24ms
+   × does not let no-op model cancel an in-flight restart 22ms
+   × does not let no-op busy reconnect cancel an in-flight restart 21ms
+   × does not let no-op solo cancel an in-flight restart 21ms
+   × does not let no-op work cancel an in-flight restart 19ms
+   × announces explicit solo to the old supervisor without a reciprocal failure loop 19ms
+   × announces terminal failure to the old supervisor without a reciprocal failure loop 16ms
+ ❯ test/supervisor-session.test.ts (14 tests | 1 failed | 13 skipped) 13ms
+   × shows paused with the worker's solo detachment reason and refuses steering or approval 12ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/goals-flow.test.ts > keeps a healthy pairing ready when restart cannot close its pane
+AssertionError: expected { Object (phase, mode, ...) } to match object { phase: 'working', …(3) }
+(6 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "approvalId": "restored-binding",
+-   "mode": "supervised",
++   "approvalId": null,
++   "mode": "solo",
+    "phase": "working",
+    "supervisorPaneId": "owned-pane",
+  }
+
+ ❯ test/goals-flow.test.ts:820:37
+    818|   closeSupervisorPane.mockRejectedValueOnce(new Error("Herdr close una…
+    819|   await flow.commands.get("goals").handler("restart", flow.ctx);
+    820|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+       |                                     ^
+    821|   expect(readFileSync(path, "utf8")).toBe(before);
+    822|   expect(openSupervisorPane).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/11]⎯
+
+ FAIL  test/goals-flow.test.ts > labels solo completion claims unreviewed without implying a supervisor will review them
+AssertionError: expected last "vi.fn()" call to have been called with [ 'pi-goals-widget', …(1) ]
+
+- Expected
++ Received
+
+  [
+    "pi-goals-widget",
+    [
+      "UNSUPERVISED: You explicitly selected /goals solo. Supervisor sign-off unavailable. /goals restart",
+-     "? claimed complete; unreviewed (solo): make the file",
++     "? claimed complete; awaiting supervisor review: make the file",
+    ],
+  ]
+
+ ❯ test/goals-flow.test.ts:839:33
+    837|   writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", …
+    838|   await flow.commands.get("goals").handler("solo", flow.ctx);
+    839|   expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-wid…
+       |                                 ^
+    840|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+    841|   expect(flow.entries.at(-1)?.data).toMatchObject({ signedOffGoals: []…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/11]⎯
+
+ FAIL  test/goals-flow.test.ts > does not let no-op supervise cancel an in-flight restart
+AssertionError: expected 'This is the worker session. Run /goal…' to be 'Goal supervision reconnected; the cur…' // Object.is equality
+
+Expected: "Goal supervision reconnected; the current plan is unchanged."
+Received: "This is the worker session. Run /goals supervise in the saved supervisor session; no new pairing was created."
+
+ ❯ test/goals-flow.test.ts:863:37
+    861|   await restarting;
+    862|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+    863|   expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected…
+       |                                     ^
+    864|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+    865|   expect(await flow.hooks.get("tool_call")({ toolName: "write", input:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/11]⎯
+
+ FAIL  test/goals-flow.test.ts > does not let no-op noplan cancel an in-flight restart
+AssertionError: expected 'Not in planning mode; the current pla…' to be 'Goal supervision reconnected; the cur…' // Object.is equality
+
+Expected: "Goal supervision reconnected; the current plan is unchanged."
+Received: "Not in planning mode; the current plan is unchanged."
+
+ ❯ test/goals-flow.test.ts:863:37
+    861|   await restarting;
+    862|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+    863|   expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected…
+       |                                     ^
+    864|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+    865|   expect(await flow.hooks.get("tool_call")({ toolName: "write", input:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/11]⎯
+
+ FAIL  test/goals-flow.test.ts > does not let no-op model cancel an in-flight restart
+AssertionError: expected 'Run /goals clear before changing the …' to be 'Goal supervision reconnected; the cur…' // Object.is equality
+
+Expected: "Goal supervision reconnected; the current plan is unchanged."
+Received: "Run /goals clear before changing the active supervisor model."
+
+ ❯ test/goals-flow.test.ts:863:37
+    861|   await restarting;
+    862|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+    863|   expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected…
+       |                                     ^
+    864|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+    865|   expect(await flow.hooks.get("tool_call")({ toolName: "write", input:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/11]⎯
+
+ FAIL  test/goals-flow.test.ts > does not let no-op busy reconnect cancel an in-flight restart
+AssertionError: expected 'Stop the current turn before recoveri…' to be 'Goal supervision reconnected; the cur…' // Object.is equality
+
+Expected: "Goal supervision reconnected; the current plan is unchanged."
+Received: "Stop the current turn before recovering goal supervision."
+
+ ❯ test/goals-flow.test.ts:863:37
+    861|   await restarting;
+    862|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+    863|   expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected…
+       |                                     ^
+    864|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+    865|   expect(await flow.hooks.get("tool_call")({ toolName: "write", input:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/11]⎯
+
+ FAIL  test/goals-flow.test.ts > does not let no-op solo cancel an in-flight restart
+AssertionError: expected { Object (phase, mode, ...) } to match object { phase: 'working', …(2) }
+(7 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "approvalId": "e03bc7aa-7265-49de-8b0c-edc9a99faf15",
+-   "mode": "supervised",
++   "mode": "solo",
+    "phase": "working",
+  }
+
+ ❯ test/goals-flow.test.ts:862:37
+    860|   flow.transport.receive({ binding, role: "supervisor", kind: "hello",…
+    861|   await restarting;
+    862|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+       |                                     ^
+    863|   expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected…
+    864|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/11]⎯
+
+ FAIL  test/goals-flow.test.ts > does not let no-op work cancel an in-flight restart
+AssertionError: expected { Object (phase, mode, ...) } to match object { phase: 'working', …(2) }
+(7 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "approvalId": "f9dd5633-c0a1-4242-868f-128375f0753a",
+-   "mode": "supervised",
++   "mode": "solo",
+    "phase": "working",
+  }
+
+ ❯ test/goals-flow.test.ts:862:37
+    860|   flow.transport.receive({ binding, role: "supervisor", kind: "hello",…
+    861|   await restarting;
+    862|   expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", …
+       |                                     ^
+    863|   expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected…
+    864|   expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", e…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/11]⎯
+
+ FAIL  test/goals-flow.test.ts > announces explicit solo to the old supervisor without a reciprocal failure loop
+ FAIL  test/goals-flow.test.ts > announces terminal failure to the old supervisor without a reciprocal failure loop
+AssertionError: expected "vi.fn()" to be called with arguments: [ StringContaining{…}, 'error' ]
+
+Number of calls: 0
+
+ ❯ test/goals-flow.test.ts:884:35
+    882|   await new Promise(resolve => setImmediate(resolve));
+    883|   expect(supervisor.connected).toBe(false);
+    884|   expect(supervisorCtx.ui.notify).toHaveBeenCalledWith(expect.stringCo…
+       |                                   ^
+    885|   expect(() => supervisor.steer("Obsolete advice.")).toThrow("pairing …
+    886|   expect(flow.entries.at(-1)?.data).toMatchObject({ mode: "solo", appr…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/11]⎯
+
+ FAIL  test/supervisor-session.test.ts > shows paused with the worker's solo detachment reason and refuses steering or approval
+AssertionError: expected last "vi.fn()" call to have been called with [ 'pi-goals', 'supervisor · paused' ]
+
+- Expected
++ Received
+
+  [
+    "pi-goals",
+-   "supervisor · paused",
++   "supervisor · starting/reconnecting",
+  ]
+
+ ❯ test/supervisor-session.test.ts:377:36
+    375|   runtime.transport.receive({ binding: "approval-1", role: "worker", k…
+    376|   expect(runtime.ctx.ui.notify).toHaveBeenCalledWith(reason, "error");
+    377|   expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals"…
+       |                                    ^
+    378|   await expect(runtime.tools.get("SteerWorker").execute("id", { instru…
+    379|   expect(runtime.transport.sent.filter(message => message.kind === "st…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/11]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  11 failed | 53 skipped (64)
+   Start at  19:54:44
+   Duration  1.09s (transform 369ms, setup 0ms, import 1.40s, tests 248ms, environment 0ms)
+

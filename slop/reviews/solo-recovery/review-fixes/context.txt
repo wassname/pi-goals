@@ -1,0 +1,11 @@
+Base: 79ec5f350ad5c369aa51a48212a196cdddf2c174
+Task: agreed F1-F4 only; no push, panes or broader reconnect investigation.
+Pi: 0.85.1
+Unrelated dirty logs before validation:
+a8f1facd16fd6ff2938195a7adbdc3b4b1e1dea61533e90a39e5eb18d201e190  slop/reviews/review-fixes-native/supervisor-events.jsonl
+de5bb7171e71508c40e19f3929303a63f1fa0f2ea7789a2bcc8728ea038310d2  slop/reviews/review-fixes-native/worker-events.jsonl
+Initial status:
+ M slop/reviews/review-fixes-native/supervisor-events.jsonl
+ M slop/reviews/review-fixes-native/worker-events.jsonl
+?? docs/human_journal.md (not read or edited)
+Baseline isolated copy: /tmp/pi-goals-solo-review-baseline-BoWZ0j

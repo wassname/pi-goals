@@ -808,3 +808,87 @@ it("keeps worker runtime errors paused after Pi retries, rather than treating th
 		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).block).toBe(true);
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
+
+it("keeps a healthy pairing ready when restart cannot close its pane", async () => {
+	const flow = setup([]);
+	try {
+		const path = restoredPlan(flow);
+		const before = readFileSync(path, "utf8");
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		closeSupervisorPane.mockRejectedValueOnce(new Error("Herdr close unavailable"));
+		await flow.commands.get("goals").handler("restart", flow.ctx);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "supervised", approvalId: "restored-binding", supervisorPaneId: "owned-pane" });
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+		expect(flow.notifications.at(-1)).toContain("Could not close the tracked supervisor pane");
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised worker"));
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).toBeUndefined();
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "steer", id: "still-paired", text: "Inspect the output." });
+		expect(flow.messages.at(-1)?.content).toBe("[supervisor] Inspect the output.");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("labels solo completion claims unreviewed without implying a supervisor will review them", async () => {
+	const flow = setup([]);
+	try {
+		const path = restoredPlan(flow);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", "[x] goal:"));
+		await flow.commands.get("goals").handler("solo", flow.ctx);
+		expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", [expect.stringContaining("UNSUPERVISED"), "? claimed complete; unreviewed (solo): make the file"]);
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/1 goals · UNSUPERVISED"));
+		expect(flow.entries.at(-1)?.data).toMatchObject({ signedOffGoals: [] });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it.each(["supervise", "noplan", "model", "busy reconnect", "solo", "work"])("does not let no-op %s cancel an in-flight restart", async noop => {
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		if (["solo", "work"].includes(noop)) await flow.commands.get("goals").handler("solo", flow.ctx);
+		flow.transport.replyToHello(false);
+		const restarting = flow.commands.get("goals").handler("restart", flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		const binding = (flow.entries.at(-1)?.data as any).approvalId;
+		expect(binding).toBeTruthy();
+		expect(binding).not.toBe("restored-binding");
+		if (noop === "busy reconnect") flow.ctx.isIdle.mockReturnValue(false);
+		await flow.commands.get("goals").handler(noop === "busy reconnect" ? "reconnect" : noop, flow.ctx);
+		flow.ctx.isIdle.mockReturnValue(true);
+		flow.transport.receive({ binding, role: "supervisor", kind: "hello", id: "hello", ready: true, reply: true });
+		await restarting;
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "supervised", approvalId: binding });
+		expect(flow.notifications.at(-1)).toBe("Goal supervision reconnected; the current plan is unchanged.");
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised worker"));
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).toBeUndefined();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it.each(["explicit solo", "terminal failure"])("announces %s to the old supervisor without a reciprocal failure loop", async cause => {
+	const wire = pairedIntercomFixture();
+	const flow = setup([], [], wire.worker.events as ExtensionAPI["events"]);
+	const supervisor = new GoalIntercom({ events: wire.supervisor.events, on: () => {}, appendEntry: () => {} } as unknown as ExtensionAPI);
+	const supervisorCtx = { sessionManager: { getEntries: () => [] }, ui: { notify: vi.fn() } };
+	try {
+		restoredPlan(flow);
+		supervisor.configure("restored-binding", "supervisor", supervisorCtx as any, true);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(supervisor.connected).toBe(true);
+		if (cause === "explicit solo") await flow.commands.get("goals").handler("solo", flow.ctx);
+		else supervisor.failReady("Supervisor quota exceeded");
+		await new Promise(resolve => setImmediate(resolve));
+		expect(supervisor.connected).toBe(false);
+		expect(supervisorCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Worker entered solo mode; this pairing is detached"), "error");
+		expect(() => supervisor.steer("Obsolete advice.")).toThrow("pairing is detached");
+		expect(flow.entries.at(-1)?.data).toMatchObject({ mode: "solo", approvalId: null });
+		expect(flow.messages.filter(message => message.display && message.content.startsWith("UNSUPERVISED WORKER"))).toHaveLength(1);
+		expect(wire.worker.sent.filter(message => message.failure?.startsWith("Worker entered solo"))).toHaveLength(1);
+		expect(wire.supervisor.sent.some(message => message.failure?.startsWith("Worker entered solo"))).toBe(false);
+		const count = wire.worker.sent.length + wire.supervisor.sent.length;
+		await new Promise(resolve => setImmediate(resolve));
+		expect(wire.worker.sent.length + wire.supervisor.sent.length).toBe(count);
+	} finally { supervisor.detach(); rmSync(flow.cwd, { recursive: true, force: true }); }
+});

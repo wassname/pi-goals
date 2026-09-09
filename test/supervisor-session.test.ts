@@ -363,3 +363,23 @@ it("shows the supervisor role, waits through Pi retries, then reports a settled 
 		expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", undefined);
 	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });
+
+it("shows paused with the worker's solo detachment reason and refuses steering or approval", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-detached-"));
+	try {
+		const runtime = setup(cwd, join(cwd, "plan.md"));
+		await runtime.start();
+		expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "supervising");
+		runtime.transport.replyToHello(false);
+		const reason = "Worker entered solo mode; this pairing is detached. Restore supervision with /goals restart in the worker session.";
+		runtime.transport.receive({ binding: "approval-1", role: "worker", kind: "hello", id: "hello", ready: false, failure: reason });
+		expect(runtime.ctx.ui.notify).toHaveBeenCalledWith(reason, "error");
+		expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "supervisor · paused");
+		await expect(runtime.tools.get("SteerWorker").execute("id", { instruction: "Must not send." })).rejects.toThrow(reason);
+		expect(runtime.transport.sent.filter(message => message.kind === "steer")).toHaveLength(0);
+		const approval = await runtime.tools.get("ApproveGoal").execute("approve", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
+		expect(approval.isError).toBe(true);
+		expect(approval.content[0].text).toContain("disconnected or not ready");
+		expect(runtime.transport.sent.at(-1)).toMatchObject({ kind: "hello", reply: true, failure: undefined });
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});

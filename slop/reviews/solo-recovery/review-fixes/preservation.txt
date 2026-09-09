@@ -1,0 +1,7 @@
+Unrelated dirty logs after validation:
+a8f1facd16fd6ff2938195a7adbdc3b4b1e1dea61533e90a39e5eb18d201e190  slop/reviews/review-fixes-native/supervisor-events.jsonl
+de5bb7171e71508c40e19f3929303a63f1fa0f2ea7789a2bcc8728ea038310d2  slop/reviews/review-fixes-native/worker-events.jsonl
+Expected hashes:
+a8f1facd16fd6ff2938195a7adbdc3b4b1e1dea61533e90a39e5eb18d201e190  slop/reviews/review-fixes-native/supervisor-events.jsonl
+de5bb7171e71508c40e19f3929303a63f1fa0f2ea7789a2bcc8728ea038310d2  slop/reviews/review-fixes-native/worker-events.jsonl
+Staged files before scoped commit:

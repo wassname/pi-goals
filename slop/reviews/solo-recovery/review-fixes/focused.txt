@@ -1,0 +1,10 @@
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+fatal: not a git repository (or any of the parent directories): .git
+
+ Test Files  3 passed (3)
+      Tests  71 passed (71)
+   Start at  19:54:08
+   Duration  2.34s (transform 544ms, setup 0ms, import 1.77s, tests 1.90s, environment 0ms)
+
