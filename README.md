@@ -83,8 +83,15 @@ pi -e .
 3. Work. Ready is the only review action that starts work. The agent ticks subtasks, appends to
    `## Log` and `## Learnings`, fills `evidence:`, and calls `CompleteGoal` when a discriminator is
    satisfied. Every human reply in plan mode is saved verbatim under `## Interview`.
-   After eight turns without a change above `## Log`, the working set is sent back with a short upkeep
-   reminder.
+   After eight turns without a change above `## Log`, the next natural prompt includes a saved
+   extension message with the working set and a short upkeep reminder.
+
+Plan reminders are saved in session history before they reach the model, not appended only to an
+outgoing request. In working mode, after startup or compaction, the next natural prompt refreshes
+the whole plan, including its appendix, from disk. In planning mode, it refreshes the planning-policy
+snapshot and plan path instead. Automatic compaction and tool-loop continuations do not start
+an extra turn for a reminder: the refresh waits until the next `before_agent_start` (normally the
+next user prompt). There is no fresh plan reminder during that ongoing automatic continuation.
 
 ## Plan supervisor and auto-continue
 
