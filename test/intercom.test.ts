@@ -106,6 +106,22 @@ it("retries an unanswered active-binding hello twice after delayed channel regis
 	vi.useRealTimers();
 });
 
+it("rejects an oversize steer before retaining it whether connected or disconnected", async () => {
+	const runtime = setup("supervisor");
+	runtime.link.markReady();
+	await runtime.link.waitReady();
+	const oversized = "x".repeat(16_000);
+	for (const connected of [true, false]) {
+		if (!connected) runtime.fixture.connect(false);
+		const entriesBefore = runtime.entries.length;
+		const sentBefore = runtime.fixture.sent.length;
+		expect(() => runtime.link.steer(oversized)).toThrow("16 KB payload limit; no instruction was retained");
+		expect(runtime.entries).toHaveLength(entriesBefore);
+		expect(runtime.fixture.sent).toHaveLength(sentBefore);
+	}
+	await runtime.hooks.get("session_shutdown")();
+});
+
 it("retains only the newest disconnected steer across a supervisor reload", async () => {
 	const first = setup("supervisor");
 	first.link.markReady();

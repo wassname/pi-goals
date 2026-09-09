@@ -780,6 +780,28 @@ it.each(["startup", "resume", "disconnect"])("allows the existing five-minute re
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
+it.each(["reconnect", "restart"])("keeps a fully signed-off completed plan supervised when manual %s recovery times out", async action => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	const flow = setup([]);
+	try {
+		const path = restoredPlan(flow);
+		writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", "[x] goal:"));
+		Object.assign(flow.entries.at(-1)!.data as any, { mode: "supervised", soloReason: null, signedOffGoals: ["make the file"] });
+		flow.transport.replyToHello(false);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		const recovering = flow.commands.get("goals").handler(action, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		await vi.advanceTimersByTimeAsync(300_000);
+		await recovering;
+		const state = flow.entries.at(-1)?.data as any;
+		expect(state).toMatchObject({ phase: "working", mode: "supervised", signedOffGoals: ["make the file"] });
+		expect(state.approvalId).toBeTruthy();
+		expect(state.soloReason).toBeNull();
+		expect(flow.messages.some(message => message.content.includes("Continue useful implementation"))).toBe(false);
+		expect(flow.notifications.at(-1)).toContain("completed plan remains supervised");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
 it("falls back with the exact reported terminal peer failure without confusing it with worker model failure", async () => {
 	const flow = setup([]);
 	try {

@@ -6,6 +6,7 @@ export type Role = "worker" | "supervisor";
 export interface View { id: string; text: string; reason: string; through?: string; backgroundQuiet: boolean }
 interface Message { binding: string; role: Role; kind: "hello" | "view" | "steer" | "received"; id: string; text?: string; reason?: string; failure?: string; ready?: boolean; reply?: boolean; through?: string; backgroundQuiet?: boolean }
 const STATE = "pi-goals-intercom";
+const PAYLOAD_LIMIT_BYTES = 16_000;
 
 export class GoalIntercom {
 	private channel?: IntercomExtensionChannel;
@@ -183,13 +184,14 @@ export class GoalIntercom {
 	steer(text: string): { id: string; queued: boolean } {
 		if (!this.bound) throw new Error("Worker pairing is not active; no instruction was retained.");
 		if (this.failure || this.peerFailure) throw new Error(this.failure ?? this.peerFailure);
+		const message: Message = { binding: this.binding, role: this.role, kind: "steer", id: randomUUID(), text };
+		this.validatePayload(message, "; no instruction was retained.");
 		if (!this.connected) {
-			const retained = [...this.pending.values()].find(message => message.text === text);
+			const retained = [...this.pending.values()].find(pending => pending.text === text);
 			if (retained) return { id: retained.id, queued: true };
 			for (const pending of this.pending.values()) this.record("superseded", pending);
 			this.pending.clear();
 		}
-		const message: Message = { binding: this.binding, role: this.role, kind: "steer", id: randomUUID(), text };
 		this.record("out", message);
 		this.pending.set(message.id, message);
 		if (this.connected) this.publish(message);
@@ -229,9 +231,12 @@ export class GoalIntercom {
 	}
 
 	private record(direction: string, message: Message): void { this.pi.appendEntry(STATE, { direction, message }); }
+	private validatePayload(message: Message, suffix = ""): void {
+		if (Buffer.byteLength(JSON.stringify(message)) > PAYLOAD_LIMIT_BYTES) throw new Error(`Intercom message exceeds the 16 KB payload limit${suffix}`);
+	}
 	private publish(message: Message): void {
 		if (this.stopped) throw new Error("Intercom session ended.");
-		if (Buffer.byteLength(JSON.stringify(message)) > 16_000) throw new Error("Supervisor message exceeds the Intercom payload limit.");
+		this.validatePayload(message);
 		if (!this.channel?.snapshot().supported) throw new Error("pi-intercom broker does not support extension channels.");
 		this.channel.publish(message, { audience: "capable" });
 	}

@@ -575,7 +575,15 @@ export function registerWorker(pi: ExtensionAPI): void {
 					ctx.ui.notify(state.phase === "planning" ? "Planning model restored. Choose Ready when the plan is agreed." : "Goal supervision reconnected; the current plan is unchanged.", "info");
 				} catch (error) {
 					if (!current()) return;
-					if (error instanceof SupervisorFailure && state.phase === "working" && !modelError) { enterSolo(ctx, `Supervisor recovery failed: ${error.message}`); return; }
+					if (error instanceof SupervisorFailure && state.phase === "working" && !modelError) {
+						if (planIsComplete(ctx)) {
+							ctx.ui.notify(`Supervisor recovery failed: ${error.message} The completed plan remains supervised and its recorded sign-offs are unchanged.`, "warning");
+							updateWidget(ctx);
+							return;
+						}
+						enterSolo(ctx, `Supervisor recovery failed: ${error.message}`);
+						return;
+					}
 					ctx.ui.notify(`Goal recovery failed: ${String(error)} Use /goals reconnect to retry, or /goals restart to explicitly replace the tracked pane.`, "warning");
 				} finally { if (recoveryCommand === command) recoveryCommand = undefined; }
 				updateWidget(ctx);

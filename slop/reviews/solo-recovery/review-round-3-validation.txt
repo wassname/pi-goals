@@ -1,0 +1,23 @@
+Round-3 review fixes validation
+
+Reviewed base: 9350d9f
+
+Environment isolation: every command unsets `PI_SUBAGENT_CHILD` and `PI_GOALS_ROLE`; native RPC evidence is redirected to the fresh, committed `slop/reviews/solo-recovery/round-3-native/` directory. No inherited review-fixes-native evidence directory was used.
+
+$ npx vitest run test/intercom.test.ts test/goals-flow.test.ts
+2 files passed; 71 tests passed. The F1 matrix covers both manual reconnect and restart timeouts; F2 covers connected and disconnected oversize steers.
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR="$PWD/slop/reviews/solo-recovery/round-3-native" npm test
+22 files passed; 164 tests passed in 9.66s. The `fatal: not a git repository` stderr is the expected negative preflight regression.
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR="$PWD/slop/reviews/solo-recovery/round-3-native" npm run typecheck
+Passed (`tsc --noEmit`).
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR="$PWD/slop/reviews/solo-recovery/round-3-native" npm run lint
+Passed (Biome checked 42 files; no fixes applied).
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR="$PWD/slop/reviews/solo-recovery/round-3-native" npm run build
+Passed (`tsc`).
+
+$ git diff --check
+Passed.
