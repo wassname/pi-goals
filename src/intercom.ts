@@ -87,6 +87,9 @@ export class GoalIntercom {
 		this.received.clear();
 		this.inbox.clear();
 		this.delivering = undefined;
+		// A new binding may follow a Ready compaction. It must not inherit that completed
+		// compaction's delivery deferral into the worker's first implementation turn.
+		this.compacting = false;
 		this.idleChecks = 0;
 		if (this.deliveryTimer) clearTimeout(this.deliveryTimer);
 		this.deliveryTimer = undefined;

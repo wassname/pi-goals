@@ -420,6 +420,19 @@ it("restores planning context after a Ready compaction failure", async () => {
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
+it("restores planning context after a successful Ready compaction later loses its worker model", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		flow.pi.setModel.mockResolvedValueOnce(false);
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
+		await flow.commands.get("goals").handler("reconnect", flow.ctx);
+		expect(await flow.hooks.get("before_agent_start")({}, flow.ctx)).toMatchObject({ message: expect.objectContaining({ customType: "pi-goals-planning-context" }) });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
 it("does not enter solo when a completed pairing resumes without its supervisor", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
 	const flow = setup([]);
@@ -447,6 +460,8 @@ it("exits planning without deleting the draft or approving implementation", asyn
 		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: 1 });
 		expect(openSupervisorPane).not.toHaveBeenCalled();
 		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
+		await flow.hooks.get("session_compact")({}, flow.ctx);
+		expect(await flow.hooks.get("context")({ messages: [] }, flow.ctx)).toBeUndefined();
 		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "arbitrary.txt" } }, flow.ctx)).toBeUndefined();
 		await flow.commands.get("goals").handler("work", flow.ctx);
 		expect(flow.notifications.at(-1)).toContain("No approved worker pairing");

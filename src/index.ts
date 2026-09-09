@@ -646,7 +646,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	/** Restore the complete plan once after session start or compaction. */
 	function dueInjection(ctx: ExtensionContext, plan: string): string | null {
-		if (state.phase === "planning" || !plan.trim() || !resyncReason) return null;
+		if (state.phase !== "working" || !plan.trim() || !resyncReason) return null;
 		const why = resyncReason;
 		resyncReason = null;
 		return resync(plan, planRel(ctx), why, state.mode === "solo");
@@ -726,7 +726,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 	pi.on("session_compact", async () => {
 		if (state.phase === "planning") {
 			if (!readyAttempt) planningContextPending = true;
-		} else resyncReason = "The session was just compacted.";
+		} else if (state.phase === "working") resyncReason = "The session was just compacted.";
 	});
 
 	pi.on("agent_end", async event => {
@@ -832,6 +832,9 @@ export function registerWorker(pi: ExtensionAPI): void {
 			} catch (error) {
 				if (!current()) return;
 				readyAttempt = undefined;
+				// A successful pre-fork compaction replaced the planning conversation. Restore the
+				// one-shot plan context before returning to planning after any later failure.
+				planningContextPending = true;
 				intercom.markNotReady();
 				stopWorkerTimers();
 				ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)} Use /goals reconnect to retry, or /goals restart to replace the tracked pane.`, "warning");

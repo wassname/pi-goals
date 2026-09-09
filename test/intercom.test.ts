@@ -80,6 +80,20 @@ describe("pi-intercom transport", () => {
 	});
 });
 
+it("does not carry a completed compaction deferral into a new worker binding", async () => {
+	const runtime = setup("worker");
+	await runtime.link.waitReady();
+	await runtime.hooks.get("session_before_compact")();
+	runtime.link.configure("replacement", "worker", runtime.ctx as any);
+	await runtime.link.waitReady();
+	runtime.ctx.isIdle.mockReturnValue(false);
+	const delivered = vi.fn();
+	runtime.link.onSteer = delivered;
+	runtime.fixture.receive({ binding: "replacement", role: "supervisor", kind: "steer", id: "first-steer", text: "Start with the highest-risk task." });
+	expect(delivered).toHaveBeenCalledExactlyOnceWith("Start with the highest-risk task.");
+	await runtime.hooks.get("session_shutdown")();
+});
+
 it("retries an unanswered active-binding hello twice after delayed channel registration", async () => {
 	vi.useFakeTimers();
 	const runtime = setup("worker", [], false, true);

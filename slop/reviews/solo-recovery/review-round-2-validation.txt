@@ -1,0 +1,22 @@
+Round-2 review fixes validation
+
+Base reviewed: c67c15e
+
+$ npx vitest run test/goals-flow.test.ts test/intercom.test.ts
+2 files passed; 68 tests passed.
+Note: the test harness deliberately executes one negative git preflight outside a repository, which prints `fatal: not a git repository` to stderr.
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR=/tmp/pi-goals-round-2-XUrKAl npm test
+22 files passed; 161 tests passed.
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE npm run typecheck
+Passed (tsc --noEmit).
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE npm run lint
+Passed (Biome checked 42 files; no fixes applied).
+
+$ env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE npm run build
+Passed (tsc).
+
+$ git diff --check
+Passed.
