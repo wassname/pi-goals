@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
 import { GoalIntercom } from "./intercom.js";
 import { planViews } from "./plan-view.js";
+import { approveGoalDescription, approveGoalParameters, goalApprovalRecorded, steerWorkerDescription, steerWorkerInstructionDescription, supervisorCompaction, supervisorOrientation, supervisorReviewContext, workerInstructionSent } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
@@ -67,37 +68,6 @@ function latestWorkerView(ctx: ExtensionContext): string | null {
 	return null;
 }
 
-function supervisorOpening(settings: SupervisorConfig): string {
-	return `Your job is to be a diligent supervisor, autonomously extending the user's agency by correctly understanding their goals and preferences. Supervise the worker according to ${settings.planPath}, which the user helped write.`;
-}
-
-// Pi/OpenAI: User intent/autonomy adapted from https://www.anthropic.com/constitution; outcome focus from @monotykamary/pi-supervisor.
-function supervisorPrompt(settings: SupervisorConfig): string {
-	return `${supervisorOpening(settings)}
-
-At startup and after compaction, read the applicable AGENTS.md instructions and relevant skills to understand the user's goals, preferences, and working standards. Do not assume a particular project or workflow. Read the plan's appendices when needed.
-
-Understand the user's immediate request without interpreting it too literally or too liberally. Consider their final goals and the background standards and preferences the work should meet. Use good planning, taste, context, and high-level perspective. Infer ordinary implementation details, but do not silently replace the agreed outcome or invent restrictions.
-
-Protect the user's epistemic autonomy and rational agency. Make consequential uncertainty and disagreement visible. Respect their authorized decisions without requiring them to justify reasonable preferences; voice concerns without substituting your preferences for theirs.
-
-You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
-
-Your job is to supervise the worker autonomously until the agreed goal is achieved. Use judgment: identify the missing user-visible result, decide the next useful action, and supervise it through to delivery. Approval records support this work; they are not the outcome. Seek justified confidence, not certainty at any cost. Investigate uncertainty with the cheapest useful check, then decide. Never repeat a steer that had no effect: inspect what happened and change the approach. When the worker is idle and the goal is unfinished, steer a concrete next action unless a verified dependency or required human decision prevents progress. Do not prolong completed work for optional polish.
-
-Supervise autonomously until the agreed goal is achieved and you have inspected the actual result. The worker stopping is not a reason for you to stop. Treat "blocked", "waiting", "impossible", and "already done" as claims to investigate, not conclusions to repeat. Check the evidence and whether the claimed dependency is real. Consider mistaken assumptions, bugs, and other authorized ways forward. If progress stalls, diagnose why and steer a useful next action instead of repeating status checks. Keep independent work moving when it does not depend on the blocker. A verified external dependency may require waiting or a human decision, but it does not make an unfinished goal complete.
-
-Keep authorized work moving. Resolve technical choices within the agreed scope yourself. If idle with unfinished goals, use SteerWorker for a concrete next step or diagnostic check. If useful work is running, do not invent work or repeat an instruction already awaiting execution. Waiting is warranted when a verified dependency remains; identify what event will resume progress and how it will be observed. Escalate only a specific unresolved human decision, permission, credential, or spending need after checking what is already authorized. Do not dismiss genuine limits or expand scope to avoid reporting a blocker.
-
-At each review, give a brief visible recap of how work is tracking against the goal: what the evidence shows and your judgment about the next step. Add perspective rather than repeating status. Distinguish observations from guesses. Keep routine recaps short, but do not suppress useful explanation or thinking. Do not edit files or execute the worker's work.
-
-Ground consequential judgments in verbatim evidence with a source path or link and enough surrounding context to check the interpretation. Keep the observation separate from your inference. A worker summary is a claim, not an independent observation; repeated summaries of one result are not independent evidence. Say what evidence would change your mind. Missing evidence stays unknown until you inspect where it should be.
-
-Check the actual deliverable against the user's goal. Passing tests, a confident summary, or a checked box alone do not establish success. Investigate contradictions and surprising results; choose checks that distinguish plausible explanations. Review plan changes for drift from the user's intent and steer corrections when needed.
-
-When the evidence establishes completion, use ApproveGoal and direct the worker to CompleteGoal. Follow the tools' requirements without letting bookkeeping replace delivery. Once the agreed work is complete, give a short assessment and stop. -- Pi/OpenAI`;
-}
-
 export function isVisibleSupervisor(): boolean {
 	return process.env.PI_GOALS_ROLE === "supervisor";
 }
@@ -141,7 +111,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		}
 		compacting = true;
 		ctx.compact({
-			customInstructions: `Preserve the user's high-level intent, decisions, unresolved risks, and the supervisor's remit. The canonical plan is ${settings.planPath}; it remains available directly and must not be replaced by this summary.`,
+			customInstructions: supervisorCompaction(settings.planPath, true),
 			onComplete: () => {
 				compacting = false;
 				if (intercom.ended) return;
@@ -183,10 +153,10 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
 		const plan = planViews(readFileSync(settings.planPath, "utf8"));
-		const message = repeatFullPrompt ? { customType: "pi-goals-supervisor-role", content: `${supervisorPrompt(settings)}\n\nFull active plan:\n${plan.long}`, display: true } : undefined;
+		const message = repeatFullPrompt ? { customType: "pi-goals-supervisor-role", content: supervisorOrientation(settings.planPath, plan.long), display: true } : undefined;
 		repeatFullPrompt = false;
 		return {
-			systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorOpening(settings)}\n\nCurrent agreed plan (reread for every review):\n${plan.short}\n\nJudge progress against this outcome and its discriminators. A completed artifact or task is not completion unless it satisfies the agreed goal.`,
+			systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorReviewContext(settings.planPath, plan.short)}`,
 			...(message ? { message } : {}),
 		};
 	});
@@ -201,7 +171,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		if (typeof usage?.tokens !== "number" || usage.tokens < COMPACT_AT_TOKENS) return;
 		compacting = true;
 		ctx.compact({
-			customInstructions: `Keep the user's high-level intent, current plan state, unresolved risks, approval decisions, and the supervisor's own concise findings. Remove old worker views and implementation detail. The canonical plan remains ${settings.planPath}.`,
+			customInstructions: supervisorCompaction(settings.planPath, false),
 			onComplete: () => {
 				compacting = false;
 				if (intercom.ended) return;
@@ -219,8 +189,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		name: "SteerWorker",
 		label: "Steer worker",
 		executionMode: "sequential",
-		description: "Write one concrete instruction for the implementation worker.",
-		parameters: Type.Object({ instruction: Type.String({ description: "Concrete next instruction for the worker." }) }),
+		description: steerWorkerDescription,
+		parameters: Type.Object({ instruction: Type.String({ description: steerWorkerInstructionDescription }) }),
 		renderCall(args, theme) {
 			return new Text(`${theme.fg("toolTitle", "Supervisor → worker")}\n${args.instruction ?? ""}`, 0, 0);
 		},
@@ -229,7 +199,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			const instruction = params.instruction.trim();
 			if (!instruction) return result("A worker instruction cannot be empty.", true);
 			const id = intercom.steer(instruction);
-			return result(`Worker instruction ${id} sent through pi-intercom. Receipt and execution are not confirmed by this result.`);
+			return result(workerInstructionSent(id));
 		},
 	});
 
@@ -237,12 +207,12 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		name: "ApproveGoal",
 		label: "Approve goal",
 		executionMode: "sequential",
-		description: "Record approval after inspecting the current goal, repository, evidence, and a saved nonempty verification-output file, with a stopped worker view and no active work. force overrides only dirty-worktree rejection and requires a reason; later Git/content changes invalidate it.",
+		description: approveGoalDescription,
 		parameters: Type.Object({
-			goal: Type.String({ description: "Exact text after goal: in the plan." }),
-			verifyOutputPath: Type.String({ description: "Nonempty repository-relative file containing the verification output you inspected." }),
-			force: Type.Optional(Type.Boolean({ description: "Accept this exact inspected dirty worktree, without bypassing any other approval gate." })),
-			reason: Type.Optional(Type.String({ description: "Required with force:true. Why accepting these inspected worktree changes is justified." })),
+			goal: Type.String({ description: approveGoalParameters.goal }),
+			verifyOutputPath: Type.String({ description: approveGoalParameters.verifyOutputPath }),
+			force: Type.Optional(Type.Boolean({ description: approveGoalParameters.force })),
+			reason: Type.Optional(Type.String({ description: approveGoalParameters.reason })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (modelError) return result(`Supervisor paused: ${modelError} Use /model, then /goals reconnect.`, true);
@@ -280,7 +250,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 				cleanWorktree: repository.cleanWorktree, ...(force ? { force: { reason: reason!, worktree: repository.worktree! } } : {}), inspected: { plan: true, repository: true, evidence: true, verifyOutput: true }, verifyOutputPath: verifiedOutput,
 				supervisor: { sessionId: ctx.sessionManager.getSessionId(), runId: null }, timestamp: new Date().toISOString(),
 			});
-			return result(`Approval recorded for "${params.goal}".${force ? ` Forced worktree acceptance: ${reason}. Exact status and content fingerprints saved in ${path}; changes require fresh review.` : ""} Now steer the worker to call CompleteGoal.`);
+			return result(goalApprovalRecorded(params.goal, force ? { reason: reason!, path } : undefined));
 		},
 	});
 }

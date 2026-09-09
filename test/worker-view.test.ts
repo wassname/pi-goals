@@ -1,8 +1,28 @@
 import { expect, it } from "vitest";
+import { type SupervisorReviewReason, supervisorPeriodicReview, supervisorPlanChangeReview, supervisorReadyReview, supervisorStartedReview, supervisorStoppedReview } from "../src/prompts.js";
 import { workerView } from "../src/worker-view.js";
 
 const context = { sourceSession: "/sessions/worker.jsonl", latestDirection: "Modal uses a remote GPU.", model: "provider/worker", background: "processes: 0; subagents: 0" };
 const entry = (id: string, text: string) => ({ id, type: "message", message: { role: "assistant", content: text } });
+
+it.each<[SupervisorReviewReason, boolean, string, string]>([
+	["ready", true, "The worker is ready to begin.", supervisorReadyReview],
+	["started", false, "The worker is still working.", supervisorStartedReview],
+	["turns", false, "The worker is still working.", supervisorPeriodicReview],
+	["interval", false, "The worker is still working.", supervisorPeriodicReview],
+	["settled", true, "The worker stopped.", supervisorStoppedReview],
+	["interval", true, "The worker stopped.", supervisorStoppedReview],
+	["settled", false, "The worker is still working.", supervisorPeriodicReview],
+	["plan", true, "The worker stopped.", supervisorStoppedReview],
+	["plan", false, "The worker is still working.", supervisorPeriodicReview],
+])("wires %s (idle=%s) to its review task without changing status prefixes", (reason, idle, prefix, task) => {
+	const view = workerView([entry("claim", "The plot is complete but the result does not beat random.")], reason, idle, context);
+	expect(view.startsWith(`${prefix}\n\n`)).toBe(true);
+	expect(view).toContain(task);
+	expect(view).toContain(`review trigger: ${reason}`);
+	if (reason === "plan") expect(view).toContain(supervisorPlanChangeReview);
+	if (!idle) expect(view).not.toContain(supervisorStoppedReview);
+});
 
 it("keeps human direction and source location while sending only new messages", () => {
 	const view = workerView([entry("old", "old detail"), entry("new", "new result")], "interval", true, { ...context, since: "old" });

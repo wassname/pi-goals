@@ -114,6 +114,8 @@ describe("/goals flow", () => {
 			const count = views().length;
 			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", signedOffGoals: [] });
 			expect(views().at(-1)?.text).toContain("make the file: [/] -> [x]; manual completion claim, no CompleteGoal sign-off recorded");
+			expect(views().at(-1)?.text).toContain("use SteerWorker to send the next useful instruction and resume work");
+			expect(views().at(-1)?.text).toContain("Manual checkbox edits are claims, not proof of completion");
 			expect(readFileSync(path, "utf8")).toContain("[x] goal:");
 			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/1 goals · 1 claimed, awaiting review"));
 			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", [expect.stringContaining("claimed complete; awaiting supervisor review")]);
@@ -142,6 +144,7 @@ describe("/goals flow", () => {
 			await vi.waitFor(() => {
 				const view = flow.transport.sent.filter(message => message.kind === "view").at(-1);
 				expect(view?.reason).toBe("plan");
+				expect(view?.text).toContain("Assess plan changes against the user's intent and preferences");
 				expect(view?.text).toContain("-   - discriminator: output exists");
 				expect(view?.text).toContain("+   - discriminator: output contains exact required bytes");
 			});

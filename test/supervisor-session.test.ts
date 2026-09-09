@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { AssistantMessageComponent, type ExtensionAPI, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approvalPath } from "../src/approval.js";
+import { approveGoalDescription, approveGoalParameters, goalApprovalRecorded, steerWorkerDescription, steerWorkerInstructionDescription, supervisorCompaction, supervisorOrientation, supervisorReviewContext } from "../src/prompts.js";
 import { registerVisibleSupervisor } from "../src/supervisor-session.js";
 import { intercomFixture } from "./intercom-fixture.js";
 
@@ -139,6 +140,9 @@ describe("visible supervisor session", () => {
 			expect(systemPrompt).toContain("discriminator: beats random");
 			expect(systemPrompt).not.toContain("old history");
 			expect(first.message.customType).toBe("pi-goals-supervisor-role");
+			const activePlan = "# Outcome\nBeat random\n1. [ ] goal: repair\n  - discriminator: beats random";
+			expect(first.systemPrompt).toBe(`base\n\n${supervisorReviewContext(join(cwd, "plan.md"), activePlan)}`);
+			expect(first.message.content).toBe(supervisorOrientation(join(cwd, "plan.md"), activePlan));
 			const review = async () => runtime.hooks.get("before_agent_start")({}, runtime.ctx);
 			const next = await review();
 			expect(next.message).toBeUndefined();
@@ -186,6 +190,7 @@ describe("visible supervisor session", () => {
 			await runtime.hooks.get("session_start")({}, runtime.ctx);
 			await new Promise((resolve) => setImmediate(resolve));
 			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
+			expect(runtime.ctx.compact.mock.calls[0][0].customInstructions).toBe(supervisorCompaction(join(cwd, ".pi/plan/worker-v1.md"), true));
 			expect(runtime.ready()).toBe(false);
 			complete!();
 			expect(runtime.ready()).toBe(true);
@@ -208,6 +213,10 @@ describe("visible supervisor session", () => {
 		try {
 			const runtime = setup(cwd, join(cwd, "plan.md"));
 			await runtime.start();
+			expect(runtime.tools.get("SteerWorker").description).toBe(steerWorkerDescription);
+			expect(runtime.tools.get("SteerWorker").parameters.properties.instruction.description).toBe(steerWorkerInstructionDescription);
+			expect(runtime.tools.get("ApproveGoal").description).toBe(approveGoalDescription);
+			expect(runtime.tools.get("ApproveGoal").parameters.properties.goal.description).toBe(approveGoalParameters.goal);
 			const steered = await runtime.tools.get("SteerWorker").execute("id", { instruction: "Run the saved verification." });
 			expect(steered.isError).toBe(false);
 			expect(runtime.transport.sent.filter(message => message.kind === "steer")).toMatchObject([{ text: "Run the saved verification." }]);
@@ -240,6 +249,7 @@ describe("visible supervisor session", () => {
 			writeFileSync(planPath, originalPlan);
 			const approved = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
 			expect(approved.isError).toBe(false);
+			expect(approved.content[0].text).toBe(goalApprovalRecorded("make the file"));
 			expect(existsSync(approvalPath(cwd, "worker-session", "make the file"))).toBe(true);
 			runtime.view("second", "The worker is still working.", "started");
 			const stale = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);

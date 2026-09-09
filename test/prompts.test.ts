@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { completeGoalDescription, planDrafting, planningState, resync } from "../src/prompts.js";
+import { approveGoalDescription, completeGoalDescription, goalApprovalRecorded, planDrafting, planningState, resync, steerWorkerDescription, supervisorPeriodicReview, supervisorPlanChangeReview, supervisorReadyReview, supervisorStartedReview, supervisorStoppedReview } from "../src/prompts.js";
+
+describe("supervisor event tasks", () => {
+	it("asks a ready or stopped worker to resume through SteerWorker rather than only review", () => {
+		expect(supervisorReadyReview).toContain("Use SteerWorker");
+		expect(supervisorStoppedReview).toContain("judge whether the agreed goal is actually achieved");
+		expect(supervisorStoppedReview).toContain("use SteerWorker to send the next useful instruction and resume work");
+		expect(supervisorStoppedReview).toContain("verified dependency");
+		expect(supervisorStoppedReview).toContain("only after the results satisfy the goal");
+		expect(steerWorkerDescription).toContain("A recap alone does not send an instruction");
+	});
+
+	it("asks if active work is on track and keeps productive work uninterrupted", () => {
+		expect(supervisorPeriodicReview).toContain("Is the worker on track");
+		expect(supervisorPeriodicReview).toContain("let productive work continue without interruption");
+		expect(supervisorStartedReview).toContain("only if a correction is needed");
+		expect(supervisorPlanChangeReview).toContain("claims, not proof of completion");
+		expect(supervisorPlanChangeReview).toContain("Preserve authorized changes");
+	});
+
+	it("defines approval as acceptance after outcome judgment, with mechanics separate", () => {
+		expect(approveGoalDescription).toMatch(/^Use only after judging that the actual result satisfies/);
+		expect(approveGoalDescription).toContain("mechanical checks cannot establish success");
+		expect(approveGoalDescription).toContain("If the goal is unmet or evidence is insufficient, do not approve");
+		expect(approveGoalDescription).toContain("\n\nRequirements:");
+		expect(goalApprovalRecorded("repair")).toContain("Use SteerWorker to tell the worker to call CompleteGoal with this exact goal text");
+		expect(completeGoalDescription).toContain("Worker-only sign-off");
+		expect(completeGoalDescription).not.toContain("direct the worker to run it");
+	});
+});
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {

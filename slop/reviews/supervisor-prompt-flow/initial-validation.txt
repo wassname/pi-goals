@@ -1,0 +1,66 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+
+ Test Files  19 passed (19)
+      Tests  108 passed (108)
+   Start at  10:47:37
+   Duration  3.83s (transform 2.36s, setup 0ms, import 6.55s, tests 9.35s, environment 2ms)
+
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+src/worker-view.ts:2:1 assist/source/organizeImports  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  × Sort the imported names.
+  
+    1 │ import { compile } from "@sting8k/pi-vcc/src/core/summarize";
+  > 2 │ import { supervisorCheckIn, type SupervisorReviewReason } from "./prompts.js";
+      │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    3 │ 
+    4 │ export interface SessionBlock {
+  
+  i Safe fix: Organize imports and exports (Biome)
+  
+      1   1 │   import { compile } from "@sting8k/pi-vcc/src/core/summarize";
+      2     │ - import·{·supervisorCheckIn,·type·SupervisorReviewReason·}·from·"./prompts.js";
+          2 │ + import·{·type·SupervisorReviewReason,·supervisorCheckIn·}·from·"./prompts.js";
+      3   3 │   
+      4   4 │   export interface SessionBlock {
+  
+
+test/worker-view.test.ts:2:1 assist/source/organizeImports  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  × Sort the imported names.
+  
+    1 │ import { expect, it } from "vitest";
+  > 2 │ import { supervisorPeriodicReview, supervisorPlanChangeReview, supervisorReadyReview, type SupervisorReviewReason, supervisorStartedReview, supervisorStoppedReview } from "../src/prompts.js";
+      │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    3 │ import { workerView } from "../src/worker-view.js";
+    4 │ 
+  
+  i Safe fix: Organize imports and exports (Biome)
+  
+      1   1 │   import { expect, it } from "vitest";
+      2     │ - import·{·supervisorPeriodicReview,·supervisorPlanChangeReview,·supervisorReadyReview,·type·SupervisorReviewReason,·supervisorStartedReview,·supervisorStoppedReview·}·from·"../src/prompts.js";
+          2 │ + import·{·type·SupervisorReviewReason,·supervisorPeriodicReview,·supervisorPlanChangeReview,·supervisorReadyReview,·supervisorStartedReview,·supervisorStoppedReview·}·from·"../src/prompts.js";
+      3   3 │   import { workerView } from "../src/worker-view.js";
+      4   4 │   
+  
+
+Checked 36 files in 63ms. No fixes applied.
+Found 2 errors.
+check ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  × Some errors were emitted while running checks.
+  
+

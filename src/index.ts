@@ -25,7 +25,7 @@ import { backgroundState } from "./background.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
 import { GoalIntercom } from "./intercom.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE } from "./plan.js";
-import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync } from "./prompts.js";
+import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync, supervisorPlanReview } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
 import { isVisibleSupervisor, registerVisibleSupervisor } from "./supervisor-session.js";
 import { workerView } from "./worker-view.js";
@@ -165,7 +165,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return old?.status === goal.status ? [] : [`${goal.subject}: ${old ? `[${STATUS_TO_CHAR[old.status]}]` : "not previously observed"} -> [${STATUS_TO_CHAR[goal.status]}]${goal.status === "done" ? state.signedOffGoals.includes(goalKey(goal.subject)) ? "; CompleteGoal sign-off recorded" : "; manual completion claim, no CompleteGoal sign-off recorded" : ""}`];
 		});
 		const claims = goals.filter(goal => goal.status === "done" && !state.signedOffGoals.includes(goalKey(goal.subject)));
-		return `Claims awaiting supervisor judgment: ${claims.map(goal => goal.subject).join(", ") || "none"}\nGoal-state changes:\n${changes.join("\n") || "none"}\nPlan diff since the previous published view:\n${planDiff(state.previousPlan ?? "", plan)}\nManual edits are allowed. Inspect changes and steer a correction when warranted; a checkbox is not sign-off.`;
+		return supervisorPlanReview(claims.map(goal => goal.subject), changes, planDiff(state.previousPlan ?? "", plan));
 	}
 
 	function pauseReason(): string | null {

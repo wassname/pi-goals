@@ -1,4 +1,5 @@
 import { compile } from "@sting8k/pi-vcc/src/core/summarize";
+import { type SupervisorReviewReason, supervisorCheckIn } from "./prompts.js";
 
 export interface SessionBlock {
 	type?: string;
@@ -87,7 +88,7 @@ export interface ViewContext {
 	planReview?: string;
 }
 
-export function workerView(entries: SessionEntry[], reason: "ready" | "settled" | "turns" | "interval" | "started" | "plan", idle: boolean, context: ViewContext): string {
+export function workerView(entries: SessionEntry[], reason: SupervisorReviewReason, idle: boolean, context: ViewContext): string {
 	const compactAt = entries.map(entry => entry.type).lastIndexOf("compaction");
 	const since = context.since ? entries.findIndex(entry => entry.id === context.since) : -1;
 	const from = since >= compactAt ? since + 1 : compactAt + 1;
@@ -95,6 +96,5 @@ export function workerView(entries: SessionEntry[], reason: "ready" | "settled" 
 	const recent = compiledView(fresh.flatMap(entry => entry.type === "message" && entry.message ? [entry.message] : []));
 	const summary = since < compactAt ? entries[compactAt]?.summary : undefined;
 	const outstanding = outstandingTools(entries.slice(compactAt + 1));
-	const state = reason === "ready" ? "is ready to begin" : idle ? "stopped" : "is still working";
-	return `The worker ${state}.\n\nreview trigger: ${reason}\nsource session: ${bounded(context.sourceSession, 800)}\nworker model: ${bounded(context.model, 300)}${context.contextPercent == null ? "" : `; context used: ${context.contextPercent}%`}\nlatest human direction:\n${bounded(context.latestDirection || "not recorded", 1800)}\ntool calls with no result: ${bounded(outstanding.join(", ") || "none", 500)}\ntracked background work: ${bounded(context.background, 800)}\n\n${context.planReview ? `Plan review:\n${bounded(context.planReview, 1800)}\n\n` : ""}${summary ? `compaction summary (worker account, not independent evidence):\n${bounded(summary, 2500)}\n\n` : ""}new worker overview${since === -1 ? " (initial or reset view)" : " since the last acknowledged view"} (VCC algorithmic compression; local # refs index new messages; tool-result bodies omitted; inspect source for evidence):\n${recent}`;
+	return `${supervisorCheckIn(reason, idle)}\n\nreview trigger: ${reason}\nsource session: ${bounded(context.sourceSession, 800)}\nworker model: ${bounded(context.model, 300)}${context.contextPercent == null ? "" : `; context used: ${context.contextPercent}%`}\nlatest human direction:\n${bounded(context.latestDirection || "not recorded", 1800)}\ntool calls with no result: ${bounded(outstanding.join(", ") || "none", 500)}\ntracked background work: ${bounded(context.background, 800)}\n\n${context.planReview ? `Plan review:\n${bounded(context.planReview, 1800)}\n\n` : ""}${summary ? `compaction summary (worker account, not independent evidence):\n${bounded(summary, 2500)}\n\n` : ""}new worker overview${since === -1 ? " (initial or reset view)" : " since the last acknowledged view"} (VCC algorithmic compression; local # refs index new messages; tool-result bodies omitted; inspect source for evidence):\n${recent}`;
 }

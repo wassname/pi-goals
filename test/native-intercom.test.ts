@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
+import { approveGoalDescription, steerWorkerDescription, supervisorStoppedReview } from "../src/prompts.js";
 
 // Pi/OpenAI: RPC drives test inputs only; the two sessions communicate exclusively through Intercom.
 class Driver {
@@ -48,13 +49,17 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 	let workerFile: string | undefined;
 	let supervisorFile: string | undefined;
 	let supervisorTools: string[] = [];
+	let supervisorRequest: any;
 	const server = createServer(async (request, response) => {
 		let body = "";
 		for await (const chunk of request) body += chunk;
 		const input = JSON.parse(body);
 		const latest = input.messages.filter((message: any) => !JSON.stringify(message.content).includes("Full active plan:")).at(-1);
 		const steer = latest.role === "user" && JSON.stringify(latest.content).includes("The worker stopped.");
-		if (steer) supervisorTools = input.tools.map((tool: any) => tool.function.name);
+		if (steer) {
+			supervisorRequest = input;
+			supervisorTools = input.tools.map((tool: any) => tool.function.name);
+		}
 		response.writeHead(200, { "content-type": "text/event-stream" });
 		const delta = steer ? { tool_calls: [{ index: 0, id: "test-steer", type: "function", function: { name: "SteerWorker", arguments: JSON.stringify({ instruction: advice }) } }] } : { content: "Test context retained. Actual outputs still need inspection." };
 		response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
@@ -97,6 +102,10 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 		expect(supervisorTools).toContain("SteerWorker");
 		expect(supervisorTools).not.toContain("intercom");
 		expect(supervisorTools).not.toContain("bash");
+		expect(JSON.stringify(supervisorRequest.messages)).toContain(supervisorStoppedReview);
+		const description = (name: string) => supervisorRequest.tools.find((tool: any) => tool.function.name === name).function.description;
+		expect(description("SteerWorker")).toBe(steerWorkerDescription);
+		expect(description("ApproveGoal")).toBe(approveGoalDescription);
 		supervisor.send({ type: "get_state", id: "supervisor-state" });
 		const supervisorState = await supervisor.wait(message => message.type === "response" && message.id === "supervisor-state");
 		supervisorFile = supervisorState.data.sessionFile;
