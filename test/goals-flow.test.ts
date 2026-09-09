@@ -28,7 +28,7 @@ function setup(
 	const commands = new Map<string, any>();
 	const hooks = new Map<string, any>();
 	const tools = new Map<string, any>();
-	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
+	const entries: Array<{ type: string; customType: string; data?: unknown; details?: unknown; content?: string }> = [];
 	const events: string[] = [];
 	const messages: Array<{ content: string; display?: boolean; customType?: string }> = [];
 	const busHandlers = new Map<string, Set<(value: unknown) => unknown>>();
@@ -86,6 +86,13 @@ function setup(
 	return { pi, bus, commands, ctx, cwd, entries, events, hooks, messages, tools };
 }
 
+async function promptReminder(flow: ReturnType<typeof setup>) {
+	const result = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+	if (result?.message) flow.entries.push({ type: "custom_message", ...result.message });
+	await flow.hooks.get("context")({ messages: [] }, flow.ctx);
+	return result?.message;
+}
+
 async function settleDraft(flow: ReturnType<typeof setup>) {
 	await flow.tools.get("RequestPlanReview").execute("", {}, undefined, undefined, flow.ctx);
 	await flow.hooks.get("agent_settled")({}, flow.ctx);
@@ -112,6 +119,8 @@ describe("/goals recovery", () => {
 			await f.hooks.get("session_start")({}, f.ctx);
 			await f.hooks.get("input")({ text: "ordinary chat", source: "interactive" }, f.ctx);
 			await f.hooks.get("agent_settled")({}, f.ctx);
+			await f.hooks.get("session_compact")({}, f.ctx);
+			expect(await f.hooks.get("before_agent_start")({}, f.ctx)).toBeUndefined();
 			expect(f.messages).toHaveLength(count);
 			expect(await f.hooks.get("input")({ text: "Process finished", source: "extension" }, f.ctx)).toBeUndefined();
 			expect(await f.hooks.get("input")({ text: "Work the goals in stale.md", source: "extension" }, f.ctx)).toEqual({ action: "handled" });
@@ -463,7 +472,8 @@ describe("/goals draft flow", () => {
 			expect(flow.messages.filter((message) => !message.display)).toHaveLength(2);
 			expect(flow.messages.at(-1)?.content).toContain("Work the goals");
 			await flow.hooks.get("session_start")({}, flow.ctx);
-			expect(await flow.hooks.get("before_agent_start")({}, flow.ctx)).toBeUndefined();
+			expect((await promptReminder(flow)).content).toContain("New session.");
+			expect(await promptReminder(flow)).toBeUndefined();
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -518,18 +528,43 @@ describe("/goals draft flow", () => {
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n\n## Log\n- checked input\n");
 			for (let turn = 0; turn < 5; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
 
-			const reminder = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
-			expect(reminder.messages.at(-1).content[0].text).toContain(".pi/plan/session-a-v1.md");
+			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages).toHaveLength(0);
+			const reminder = await promptReminder(flow);
+			expect(reminder.content).toContain(".pi/plan/session-a-v1.md");
+			expect(reminder.content).not.toContain("checked input");
+			expect(await promptReminder(flow)).toBeUndefined();
 
 			writeFileSync(planPath, "# Plan\n\n## Goals\n\n1. [/] goal: make the output\n  - [x] inspect input\n\n## Log\n- checked input\n");
 			await flow.hooks.get("turn_end")({}, flow.ctx);
 			for (let turn = 0; turn < 7; turn++) await flow.hooks.get("turn_end")({}, flow.ctx);
-			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages).toHaveLength(0);
+			expect(await promptReminder(flow)).toBeUndefined();
 			await flow.hooks.get("turn_end")({}, flow.ctx);
-			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages.at(-1).content[0].text).toContain("make the output");
+			expect((await promptReminder(flow)).content).toContain("make the output");
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
+	});
+
+	it("does not acknowledge an unpersisted reminder; retries fresh on the next natural prompt", async () => {
+		const flow = setup([]);
+		try {
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: false, autoIntervalMs: null } });
+			const planPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			writeFileSync(planPath, "1. [ ] goal: old plan\n");
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			await flow.hooks.get("session_compact")({}, flow.ctx);
+			const unsaved = await flow.hooks.get("before_agent_start")({}, flow.ctx);
+			expect(unsaved.message.content).toContain("old plan");
+			expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages).toEqual([]);
+			writeFileSync(planPath, "1. [ ] goal: fresh plan\n");
+			const saved = await promptReminder(flow);
+			expect(saved.content).toContain("The session was just compacted.");
+			expect(saved.content).toContain("fresh plan");
+			expect(saved.details.reminderId).not.toBe(unsaved.message.details.reminderId);
+			expect(await promptReminder(flow)).toBeUndefined();
+			expect(flow.messages).toEqual([]); // no queued sendMessage/sendUserMessage delivery
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
 	});
 
 	it("auto-continues once on stop, then pauses after two no-progress wakes", async () => {
@@ -603,7 +638,8 @@ describe("/goals draft flow", () => {
 			const pythonWrite = await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "python -c \"open('README.md', 'w')\"" } }, flow.ctx);
 			const signoff = await flow.tools.get("CompleteGoal").execute("", { goal: "work" }, undefined, undefined, flow.ctx);
 			await flow.hooks.get("session_compact")({}, flow.ctx);
-			const compacted = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
+			expect(await flow.hooks.get("context")({ messages: [] }, flow.ctx)).toBeUndefined();
+			const compacted = await promptReminder(flow);
 
 			expect(writePlan).toBeUndefined();
 			expect(writeCode?.block).toBe(true);
@@ -612,7 +648,8 @@ describe("/goals draft flow", () => {
 			expect(pipeShell?.block).toBe(true);
 			expect(pythonWrite?.block).toBe(true);
 			expect(signoff.isError).toBe(true);
-			expect(compacted.messages.at(-1).content[0].text).toContain("[PLANNING MODE]");
+			expect(compacted.content).toContain("[PLANNING MODE]");
+			expect(await promptReminder(flow)).toBeUndefined();
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}

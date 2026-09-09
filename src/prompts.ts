@@ -4,7 +4,7 @@
  * Design: the plan file is for LLMs and the human, not for TypeScript. No parser and no schema;
  * the skeleton below is a convention the drafting prompt teaches, the working agent maintains with
  * its normal Edit tool, and the judge reads natively. The harness does three things for a
- * cooperative-but-confused model: memory (a transient re-send of the plan when it goes stale),
+ * cooperative-but-confused model: memory (a saved reminder of the plan when it goes stale),
  * format guidance (the skeleton), and fresh eyes (the read-only judge in CompleteGoal).
  *
  * THE FOLD: everything above "## Log" is the working set (title, user voice, goals,
@@ -150,7 +150,7 @@ Conventions:
 After the alignment answers are incorporated, present the final plan and call RequestPlanReview. Do not begin execution.`;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * 3. reminder — EXEC. Transient, never persisted, and only when the plan went stale for a couple of
+ * 3. reminder — EXEC. Saved at the next natural prompt after the plan goes stale for several
  *    turns. pi-tasks tried a per-turn injection and deleted it: "wallpaper noise that trains the
  *    model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149). Carries the folded plan
  *    (above ## Log), because a nudge with no plan in it makes the model go read the file anyway.

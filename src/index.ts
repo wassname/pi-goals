@@ -11,9 +11,9 @@
  * The v1 lesson: the parser existed so TypeScript could read the plan, but almost every reader is a
  * model. So v2 has NO parser and no schema. The harness does exactly three things for a
  * cooperative-but-confused model:
- *   1. memory  — a transient re-send of the plan, never persisted, on two triggers: the plan went
- *                stale for STALE_TURNS turns (send the working set above ## Log), or the session
- *                started / compacted (send the whole file, appendix included). v2 sent the whole
+ *   1. memory  — a saved extension message on two triggers: the plan went stale for STALE_TURNS
+ *                turns (send the working set above ## Log), or the session started / compacted
+ *                (send the whole file, appendix included). v2 sent the whole
  *                file every turn; pi-tasks tried that and deleted it as "wallpaper noise that
  *                trains the model to ignore the task block" (tintinweb/pi-tasks CHANGELOG.md:149),
  *                and the always-present CompleteGoal description carries the contract instead.
@@ -39,6 +39,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -64,6 +65,7 @@ const STATE = "pi-goals-state";
 const STATUS_KEY = "pi-goals";
 const WIDGET_KEY = "pi-goals-widget";
 const PLANNING_CONTEXT = "pi-goals-planning-context";
+const PLAN_REMINDER = "pi-goals-plan-reminder";
 const PLAN_DIR = ".pi/plan";
 // For static text (the /goals description) where there is no ctx to resolve the session id.
 const PLAN_SHAPE = `${PLAN_DIR}/<session_id>-vN.md`;
@@ -196,9 +198,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	let autoLastWorkingSet = "";
 	let autoImmediateUsed = false;
 	let runStartedBackgroundWork = false;
-	// Set on session start and after a compaction; drained by the next LLM call, which then carries
-	// the WHOLE file (appendix included) instead of just the working set.
+	// Acknowledge only saved reminders. Automatic compaction skips before_agent_start;
+	// defer the refresh until the next natural prompt rather than adding unsaved context.
 	let resyncReason: string | null = "New session.";
+	let pendingReminder: { id: string; planning: boolean; reason: string | null } | null = null;
 
 	const planRel = (ctx: ExtensionContext) => (state.planVersion === null ? PLAN_SHAPE : `${PLAN_DIR}/${ctx.sessionManager.getSessionId()}-v${state.planVersion}.md`);
 	const planPath = (ctx: ExtensionContext) => {
@@ -427,7 +430,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		operation?.abort(); operation = null;
 		reviewAbort.abort(); reviewAbort = new AbortController();
 		clearAutoTimer();
-		planningContextPending = false; resyncReason = null;
+		planningContextPending = false; resyncReason = null; pendingReminder = null;
 		if (!supervisorOnly) {
 			state = { ...state, pausedFrom: state.pausedFrom ?? (state.phase === "working" ? "working" : state.planVersion !== null ? "planning" : undefined),
 				resumeHash: state.resumeHash ?? (state.phase === "working" ? planHash(readPlan(ctx)) : undefined),
@@ -644,6 +647,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			};
 			planningContextPending = true;
 			resyncReason = null;
+			pendingReminder = null;
 			writePlan(ctx, "");
 			persist();
 			updateWidget(ctx);
@@ -659,17 +663,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// --- hooks --------------------------------------------------------------------------------------
 
-	/** What this LLM call should carry, if anything: a one-shot resync, or a staleness reminder. */
-	function dueInjection(ctx: ExtensionContext, plan: string): string | null {
-		const drainResync = (): string | null => {
-			const why = resyncReason;
-			resyncReason = null;
-			return why;
-		};
+	/** Refresh at a natural prompt, retaining due state until the message is saved. */
+	function dueReminder(ctx: ExtensionContext, plan: string): string | null {
 		if (state.phase !== "working" || state.pausedFrom || state.exited) return null;
 		if (!plan.trim()) return null;
-		const why = drainResync();
-		if (why) return resync(plan, planRel(ctx), why);
+		if (resyncReason) return resync(plan, planRel(ctx), resyncReason);
 		if (turnsStale < STALE_TURNS) return null;
 		const goals = scanGoals(plan);
 		if (goals.length === 0) {
@@ -681,28 +679,38 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		return reminder(foldPlan(plan), planRel(ctx));
 	}
 
-	// The phase snapshot enters context only when planning starts or context was lost.
+	function confirmReminder(ctx: ExtensionContext): void {
+		if (!pendingReminder) return;
+		const id = pendingReminder.id;
+		const saved = ctx.sessionManager.getBranch().some(entry => entry.type === "custom_message" && (entry.details as { reminderId?: string } | undefined)?.reminderId === id);
+		if (!saved) return;
+		if (pendingReminder.planning) planningContextPending = false;
+		else {
+			if (resyncReason === pendingReminder.reason) resyncReason = null;
+			turnsStale = 0;
+		}
+		pendingReminder = null;
+	}
+
+	// Pi persists this returned message before building model context. Failed delivery
+	// leaves the reminder due; the next natural prompt rereads the current plan.
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if ((state.phase !== "planning" && state.phase !== "starting") || !planningContextPending) return;
-		planningContextPending = false;
-		const content = planningState(planPath(ctx), state.questionsWaived);
-		return { message: { customType: PLANNING_CONTEXT, content, display: false } };
+		confirmReminder(ctx);
+		if (supervisorOnly || state.pausedFrom || state.exited) return;
+		const planning = state.phase === "planning" || state.phase === "starting";
+		const content = planning ? planningContextPending ? planningState(planPath(ctx), state.questionsWaived) : null : dueReminder(ctx, readPlan(ctx));
+		if (!content) return;
+		const id = randomUUID();
+		pendingReminder = { id, planning, reason: resyncReason };
+		return { message: { customType: planning ? PLANNING_CONTEXT : PLAN_REMINDER, content, display: false, details: { reminderId: id } } };
 	});
 
-	// PI: Working turns never see an obsolete planning snapshot. Auto-compaction retries skip
-	// before_agent_start, so context restores the planning snapshot exactly once in that path.
+	// Keep the existing planning filter, but never add ephemeral plan reminders.
+	// Planning-filter and supervisor replay compatibility are separate work.
 	pi.on("context", async (event, ctx) => {
-		const inPlanGate = state.phase === "planning" || state.phase === "starting";
-		const messages = inPlanGate ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
-		if (inPlanGate && planningContextPending) {
-			planningContextPending = false;
-			const text = planningState(planPath(ctx), state.questionsWaived);
-			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
-		}
-		const text = dueInjection(ctx, readPlan(ctx));
-		if (!text) return messages === event.messages ? undefined : { messages };
-		turnsStale = 0;
-		return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
+		confirmReminder(ctx);
+		if (state.phase === "planning" || state.phase === "starting") return;
+		return { messages: event.messages.filter(message => (message as { customType?: string }).customType !== PLANNING_CONTEXT) };
 	});
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
@@ -724,6 +732,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// The staleness clock sees only the working set. Log updates are durable evidence, not progress.
 	pi.on("turn_end", async (_event, ctx) => {
+		confirmReminder(ctx);
 		const workingSet = foldPlan(readPlan(ctx));
 		if (workingSet === lastSeenWorkingSet) {
 			turnsStale++;
@@ -755,7 +764,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	});
 
 	// A compaction loses context, so restore either the planning snapshot or the working plan once.
-	pi.on("session_compact", async () => {
+	pi.on("session_compact", async (_event, ctx) => {
+		confirmReminder(ctx);
 		if (state.phase === "planning" || state.phase === "starting") planningContextPending = true;
 		else resyncReason = "The session was just compacted.";
 	});
@@ -883,6 +893,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		autoLastWorkingSet = lastSeenWorkingSet;
 		planningContextPending = state.phase === "planning" || state.phase === "starting";
 		resyncReason = state.phase === "working" ? "New session." : null;
+		pendingReminder = null;
 		updateWidget(ctx);
 		if (state.phase && !await models.enter(state.phase === "working" || state.modelRecovery ? "worker" : "planning", ctx)) return;
 		scheduleAutoContinue(ctx);
