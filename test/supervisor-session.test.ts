@@ -136,27 +136,20 @@ describe("visible supervisor session", () => {
 			expect(systemPrompt).toContain("brief visible recap");
 			expect(systemPrompt).toContain("your judgment");
 			expect(systemPrompt).toContain("justified confidence, not certainty at any cost");
-			expect(systemPrompt).toContain('Treat "blocked", "waiting", "impossible", and "already done" as claims to verify');
-			expect(systemPrompt).toContain("check whether it applies to this task");
-			expect(systemPrompt).toContain("Modal remote-GPU job");
-			expect(systemPrompt).toContain("without unpausing the shared queue, duplicating a paid job, or exceeding the approved budget");
+			expect(systemPrompt).toContain('Treat "blocked", "waiting", "impossible", and "already done" as claims to investigate');
+			expect(systemPrompt).toContain("whether the claimed dependency is real");
+			expect(systemPrompt).not.toMatch(/Modal|pueue|worktree/);
 			expect(systemPrompt).toContain("what event will resume progress and how it will be observed");
 			expect(systemPrompt).toContain("after checking what is already authorized");
-			expect(systemPrompt).toContain("Challenge success claims as carefully as blocker claims");
+			expect(systemPrompt).toContain("Check the actual deliverable against the user's goal");
 			expect(systemPrompt).toContain("verbatim evidence with a source path or link");
 			expect(systemPrompt).toContain("not independent evidence");
-			expect(systemPrompt).toContain("outcomes distinguish them");
-			expect(systemPrompt).toContain("One failed implementation does not refute the idea");
-			expect(systemPrompt).toContain("exact tool error, loaded implementation/version");
-			expect(systemPrompt).toContain("cheap discriminating check with predicted outcomes");
-			expect(systemPrompt).toContain("Do not accept a worker's excuse at face value");
-			expect(systemPrompt).toContain("Stay read-only: use SteerWorker");
-			expect(systemPrompt).toContain("Distinguish a sign-off failure from an experiment failure");
-			expect(systemPrompt).toContain("do not assume formal sign-off blocks the next already-authorized experiment");
-			expect(systemPrompt).toContain("instead of committing, deleting or resetting them");
-			expect(systemPrompt).toContain("overrides only cleanliness");
+			expect(systemPrompt).toContain("checks that distinguish plausible explanations");
+			expect(systemPrompt).toContain("Never repeat a steer that had no effect");
+			expect(systemPrompt).toContain("Do not edit files or execute the worker's work");
+			expect(systemPrompt).toContain("Keep independent work moving");
 			expect(systemPrompt).toContain("do not invent work");
-			expect(systemPrompt).toContain("stop issuing instructions");
+			expect(systemPrompt).toContain("give a short assessment and stop");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
 	it("writes readiness only after removing writing tools", async () => {
@@ -176,7 +169,7 @@ describe("visible supervisor session", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
 			let complete: (() => void) | undefined;
-			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"), 20_001, (options) => { complete = options.onComplete; });
+			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"), 100_001, (options) => { complete = options.onComplete; });
 			await runtime.hooks.get("session_start")({}, runtime.ctx);
 			await new Promise((resolve) => setImmediate(resolve));
 			expect(runtime.ctx.compact).toHaveBeenCalledOnce();
@@ -238,7 +231,7 @@ describe("visible supervisor session", () => {
 			runtime.view("second", "The worker is still working.", "started");
 			const stale = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
 			expect(stale.isError).toBe(true);
-			expect(stale.content[0].text).toContain("latest worker view");
+			expect(stale.content[0].text).toContain("A newer view is queued for you");
 			const unknown = runtime.view("third", "The worker stopped.\ntracked background work: unknown", "settled", false);
 			runtime.branch([{ type: "message", message: { role: "user", content: [{ type: "text", text: unknown.text }] } }]);
 			const blocked = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);

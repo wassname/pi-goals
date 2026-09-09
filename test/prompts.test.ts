@@ -4,8 +4,8 @@ import { completeGoalDescription, planDrafting, planningState, resync } from "..
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
 		expect(planDrafting).toContain("Use read-only repository tools or web search when either can\nresolve a fact.");
-		expect(planDrafting).toContain("Ask at least three short, concrete questions");
-		expect(planDrafting).toContain("understand the requested outcome, boundary, and how success will be judged");
+		expect(planDrafting).toContain("Do not use a question quota");
+		expect(planDrafting).toContain("Briefly reframe the request in your own words to check comprehension");
 		expect(planDrafting).toContain("point as unknown; do not silently replace it with an inference or turn it into a new blocking decision");
 		expect(planDrafting).toContain("answer materially reduces uncertainty\nwhile discovering the right plan");
 		expect(planDrafting).toContain("self-contained: state the relevant\ncontext, use the human's language and ASD-STE100");

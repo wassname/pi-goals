@@ -15,6 +15,22 @@ Run `npm test` before a commit. It includes unit and flow tests plus the RPC rev
   Run `/goals <objective>` in that pane. Tmux checks the rendered menu, editor focus, widget, and keyboard handling. RPC does not render the terminal UI.
 - `pi -p` has no UI, so it cannot test `Ready`, `Refine`, `Edit`, or `Cancel`.
 
+## Functional acceptance: real Herdr workflow
+
+Pi/OpenAI procedure, requested by wassname. Automated tests do not replace this check.
+
+1. Read `herdr --skill` and confirm `HERDR_ENV=1`. Create a separate test pane with `--no-focus` and an isolated temporary Git repo. Never operate the user's existing worker or supervisor panes. Record the code revision and any uncommitted changes being tested.
+2. Start real interactive Pi with this extension and an available real model. Use `/goals` with a trivial, bounded deliverable, for example `hello.txt` containing an exact line plus a saved byte-verification log. No GPU, dependencies or unrelated work.
+3. Read the rendered planning conversation. Check that ordinary implementation details do not cause needless confirmation questions. Inspect the drafted plan and select Ready through the actual UI.
+4. Confirm Ready opens a visible supervisor pane and the worker starts. Read both panes. Verify the supervisor's exact advice is visible, reaches the worker, and helps it progress toward the requested artifact. A delivery receipt alone is not proof.
+5. Let the pair produce the artifact, save verification evidence, and complete the real ApproveGoal -> CompleteGoal sequence. Do not perform the task for the worker. Record any manual nudge as intervention, not autonomous success.
+6. Inspect the artifact itself and its saved verification output. Check the final plan state and both sessions. Success means the requested result exists and the workflow completes, not merely that tests pass or messages were exchanged.
+7. Exercise reload and supervision recovery in these test panes, preserving the current plan. Check planning exit too. Record commands available in the tested revision; do not claim unimplemented commands work.
+8. When a stage fails, read both panes and the exact error before diagnosing it. Fix the cause, reload only the test instance, and retry the failed stage. After a prompt change, use a fresh task to verify changed behavior. Repeated status checks are not a repair.
+9. Save pane captures, session paths, artifact paths, code revision, interventions and remaining failures under `slop/reviews/`. A wait-output timeout or match is only a signal to inspect the pane, not a pass/fail verdict. Report the observed result and gaps, not a test-count substitute.
+
+Keep this check small and goal-focused. Its purpose is to expose real startup, UI, steering and completion failures, not to create another review loop. Only close test panes that you created.
+
 ## User intent for this branch
 
 To be clear, the hope is we can have a smart supervisor like you, with judgment and context. But it doesn't use many tokens as it checks in and sees an overview.
@@ -36,6 +52,20 @@ So that should make it obvious that I need to see the messages, and the supervis
 And it would only be a few output tokens.
 
 -- wassname (spelling and punctuation corrected by Pi/OpenAI)
+
+## Supervisor behavior preferences
+
+Recorded by Pi/OpenAI from wassname's instructions.
+
+The supervisor's job is to supervise autonomously until the agreed goal is achieved and it has inspected the actual result. Elicit high-level judgment and perspective, not compliance with a detailed procedure. It should want to diagnose and fix problems through the worker, keep useful work moving, and avoid making the human drive progress.
+
+Treat claims of being blocked, waiting, unable to proceed, or already done skeptically. Inspect the evidence, question assumptions, and look for authorized ways forward. Do not accept an excuse at face value or repeat status checks that cannot resolve it. Respect real dependencies and permission limits; skepticism does not authorize bypassing them. Seek justified confidence, not certainty at any cost.
+
+Keep the prompt generic. Do not prescribe pueue, Modal, worktrees, or a particular research setup. Explain the job and what deserves attention; let the supervisor choose useful checks. Tool requirements belong in tool descriptions. Administrative approval must not replace the requested deliverable.
+
+Use `@monotykamary/pi-supervisor` as a behavioral reference, not an implementation to copy wholesale. Its outcome focus, autonomous continuation, and instruction not to repeat ineffective steering are useful. Judge our behavior in real sessions, not by test counts alone.
+
+Keep brief visible recaps that add judgment rather than repeat unchanged status. Preserve useful reasoning and evidence checks; reduce redundant context and reviews before reducing judgment. Manual checkbox changes are claims, not proof of completion. Plan edits should reach the supervisor so it can judge drift and direct corrections.
 
 ## Earlier supervision workflow discussion
 
