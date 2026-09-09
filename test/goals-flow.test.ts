@@ -311,6 +311,14 @@ describe("/goals flow", () => {
 				supervisor: { sessionId: "supervisor", runId: null }, timestamp: new Date().toISOString(),
 			});
 			writeFileSync(planPath, `${plan}- Appended manual log after approval.\n1. [ ] goal: make the file\n2. [ ] goal: historical only\n`);
+			const controller = new AbortController();
+			const beforeCancel = readFileSync(planPath, "utf8");
+			const cancelled = flow.tools.get("CompleteGoal").execute("cancelled", { goal }, controller.signal, undefined, flow.ctx);
+			controller.abort(); // Cancel while the background-state lookup yields.
+			expect((await cancelled).isError).toBe(true);
+			expect(readFileSync(planPath, "utf8")).toBe(beforeCancel);
+			expect((await flow.tools.get("CompleteGoal").execute("already-cancelled", { goal }, controller.signal, undefined, flow.ctx)).isError).toBe(true);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", signedOffGoals: [] });
 			const signed = await flow.tools.get("CompleteGoal").execute("id", { goal }, undefined, undefined, flow.ctx);
 			expect(signed.isError).toBe(false);
 			expect(readFileSync(planPath, "utf8")).toContain("1. [x] goal: make the file");
@@ -390,6 +398,24 @@ it("shows a missing resumed supervisor, pauses writes, and automatically unpause
 		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised"));
 		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).toBeUndefined();
 		expect(openSupervisorPane).not.toHaveBeenCalled();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it.each(["launch", "model"])("rejects plan content changes during Ready %s without replacing its pane", async (stage) => {
+	const flow = setup(["Ready", "Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		const path = approvedPlan(flow.cwd);
+		const mutate = () => writeFileSync(path, readFileSync(path, "utf8").replace("make the file", "make a different report"));
+		if (stage === "launch") openSupervisorPane.mockImplementationOnce(async () => { mutate(); return "pane-2"; });
+		else flow.pi.setModel.mockImplementationOnce(async () => { mutate(); return true; });
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: "pane-2" });
+		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
+		expect(flow.notifications.join("\n")).toContain("plan changed after Ready");
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working" });
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 

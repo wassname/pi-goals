@@ -32,7 +32,7 @@ git diff --check
 
 ## Limits and remaining acceptance
 
-This verifies normal discovery using a deterministic local model and an isolated custom extension. It does not prove a real user's complete profile respects the role instruction. Arbitrary extensions retain their own hooks/side effects/tool policies; tools can still write if the model disregards its task. Parent-owned real full-profile Herdr acceptance and independent reviewer gate remain required. No panes were opened, reloaded or operated.
+This verifies normal discovery using a deterministic local model and an isolated custom extension. It does not prove a real user's complete profile respects the role instruction. Arbitrary extensions retain their own hooks/side effects/tool policies; tools can still write if the model disregards its task. The parent still needs to run real full-profile Herdr acceptance and obtain an independent review. No panes were opened, reloaded or operated.
 
 Issue #6 cancellation, Ready content drift, compaction delivery, fresh-shell role restoration and other lifecycle bugs are intentionally not fixed in this scoped task. Existing running supervisors retain their already-loaded profile until appropriately restarted/reloaded by their owner.
 

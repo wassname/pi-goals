@@ -598,11 +598,17 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			const attempt = {};
 			readyAttempt = attempt;
 			const current = () => !intercom.ended && readyAttempt === attempt && state.planVersion === version;
+			const checkApprovedPlan = () => {
+				if (readPlan(ctx) !== plan) throw new Error("The plan changed after Ready was selected. Review the changed plan and select Ready again; the existing supervisor pane is retained.");
+			};
 			try {
+				checkApprovedPlan();
 				await startSupervisor(ctx, current);
 				if (!current()) return;
+				checkApprovedPlan();
 				await restoreModel("worker", ctx);
 				if (!current()) return;
+				checkApprovedPlan();
 				state = { ...state, phase: "working" };
 				resyncReason = "The plan was approved.";
 				persist();
@@ -610,12 +616,14 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				startWorkerTimers(ctx);
 				await publishWorkerView(ctx, "ready");
 				if (!current()) return;
+				checkApprovedPlan();
 				updateWidget(ctx);
 				ctx.ui.notify(`Visible supervisor opened in Herdr pane ${state.supervisorPaneId}.`, "info");
 				pi.sendUserMessage("The plan is approved. Begin implementation as the worker.");
 			} catch (error) {
 				if (!current()) return;
 				intercom.markNotReady();
+				stopWorkerTimers();
 				ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)} Use /goals reconnect to retry, or /goals restart to replace the tracked pane.`, "warning");
 				state = { ...state, phase: "planning" };
 				persist();
@@ -673,11 +681,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			if (signal?.aborted) return result("Goal sign-off cancelled; no completion recorded.", true);
+			const binding = state.approvalId;
+			const version = state.planVersion;
 			if (state.phase !== "working") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
 			if (pauseReason()) return result(`Goal sign-off blocked: ${pauseReason()}`, true);
 			if (!state.approvalId) return result("Goal sign-off blocked: no current supervisor review.", true);
 			const background = await backgroundState(pi);
+			if (signal?.aborted || intercom.ended || state.approvalId !== binding || state.planVersion !== version || state.phase !== "working") return result("Goal sign-off cancelled or superseded; no completion recorded.", true);
 			if (intercom.ended || !background.quiet || pauseReason()) return result(`Goal sign-off blocked: ${pauseReason() ?? background.description}`, true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
@@ -704,6 +716,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			})) return result("Goal sign-off blocked: no matching supervisor approval checkpoint. Request a fresh supervisor review.", true);
 			const ticked = tickGoal(plan, params.goal);
 			if (!ticked) return result(`No unique exact goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
+			if (signal?.aborted) return result("Goal sign-off cancelled; no completion recorded.", true);
 			writePlan(ctx, appendLog(ticked, `${stamp()} mechanically signed off "${params.goal}" after matching supervisor approval`));
 			state = { ...state, signedOffGoals: [...state.signedOffGoals.filter(goal => goal !== goalKey(params.goal)), goalKey(params.goal)] };
 			persist();

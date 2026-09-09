@@ -1,0 +1,26 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+
+ Test Files  19 passed (19)
+      Tests  110 passed (110)
+   Start at  12:30:42
+   Duration  3.60s (transform 4.23s, setup 0ms, import 8.38s, tests 8.31s, environment 2ms)
+
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 37 files in 34ms. No fixes applied.
+
+> @wassname2/pi-goals@0.2.2 build
+> tsc
+
