@@ -7,7 +7,7 @@ import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPa
 import { goalCommandCompletions } from "./command-help.js";
 import { GoalIntercom } from "./intercom.js";
 import { planViews } from "./plan-view.js";
-import { approveGoalDescription, approveGoalParameters, goalApprovalRecorded, steerWorkerDescription, steerWorkerInstructionDescription, supervisorCompaction, supervisorOrientation, supervisorReviewContext, workerInstructionSent } from "./prompts.js";
+import { approveGoalDescription, approveGoalParameters, goalApprovalRecorded, steerWorkerDescription, steerWorkerInstructionDescription, supervisorCompaction, supervisorOrientation, supervisorReviewContext, workerInstructionQueued, workerInstructionSent } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
@@ -256,8 +256,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 			if (modelError) return result(`Supervisor paused: ${modelError} Use /model, then /goals reconnect.`, true);
 			const instruction = params.instruction.trim();
 			if (!instruction) return result("A worker instruction cannot be empty.", true);
-			const id = intercom.steer(instruction);
-			return result(workerInstructionSent(id));
+			const delivery = intercom.steer(instruction);
+			return result(delivery.queued ? workerInstructionQueued(delivery.id) : workerInstructionSent(delivery.id));
 		},
 	});
 

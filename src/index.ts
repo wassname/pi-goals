@@ -26,7 +26,7 @@ import { goalCommandCompletions } from "./command-help.js";
 import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
 import { GoalIntercom } from "./intercom.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE } from "./plan.js";
-import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync, supervisorPlanReview } from "./prompts.js";
+import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync, supervisorPlanReview, workerCompaction } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
 import { isVisibleSupervisor, registerVisibleSupervisor, restoredSupervisor } from "./supervisor-session.js";
 import { workerView } from "./worker-view.js";
@@ -250,6 +250,21 @@ export function registerWorker(pi: ExtensionAPI): void {
 		}
 	}
 
+	/** Compact the agreed planning conversation once, before the supervisor forks it. */
+	function compactApprovedWorker(ctx: ExtensionContext): Promise<void> {
+		return new Promise((resolve, reject) => {
+			ctx.compact({
+				customInstructions: workerCompaction(planPath(ctx)),
+				onComplete: () => resolve(),
+				onError: error => {
+					// A small already-compacted session needs no second compacted fork.
+					if (/^(Already compacted|Nothing to compact)/.test(error.message)) resolve();
+					else reject(error);
+				},
+			});
+		});
+	}
+
 	function beginReview(ctx: ExtensionContext): void {
 		for (const goal of scanGoals(readPlan(ctx))) {
 			rmSync(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), goal.subject), { force: true });
@@ -335,14 +350,8 @@ export function registerWorker(pi: ExtensionAPI): void {
 			state = { ...state, previousPlan: plan };
 			persist();
 		}
-		const goals = scanGoals(plan);
-		if (goals.length > 0 && goals.every((goal) => (goal.status === "done" && state.signedOffGoals.includes(goalKey(goal.subject))) || goal.status === "cancelled")) {
-			stopWorkerTimers();
-			state = { ...state, phase: null };
-			models.leave();
-			persist();
-			intercom.detach();
-		}
+		// A fully signed-off plan remains paired: the worker or supervisor may discover a missed
+		// requirement after completion and exchange one more view without recreating the pairing.
 	}
 
 	function startWorkerTimers(ctx: ExtensionContext): void {
@@ -421,7 +430,9 @@ export function registerWorker(pi: ExtensionAPI): void {
 		const done = goals.filter(g => g.status === "done" && isSignedOff(g.subject)).length;
 		const claimed = goals.filter(g => g.status === "done" && !isSignedOff(g.subject));
 		const liveGoals = goals.filter(g => g.status === "active" || g.status === "open");
-		const stateLabel = state.phase === "working" && state.mode === "solo" ? " · UNSUPERVISED" : claimed.length ? ` · supervised worker · ${claimed.length} claimed, awaiting review` : liveGoals.length > 0 ? state.phase === "working" ? " · supervised worker" : " · inactive draft" : " · complete";
+		const supervision = "supervised worker";
+		const connectedGlyph = intercom.connected ? " 👁" : "";
+		const stateLabel = state.phase === "working" && state.mode === "solo" ? " · UNSUPERVISED" : claimed.length ? ` · ${supervision} · ${claimed.length} claimed, awaiting review${connectedGlyph}` : liveGoals.length > 0 ? state.phase === "working" ? ` · ${supervision}${connectedGlyph}` : " · inactive draft" : " · complete";
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${stateLabel}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
@@ -440,13 +451,49 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	// --- /goals: enter plan mode or configure supervision -- Pi/Codex -----------------------------
 
+	async function chooseGoalsAction(ctx: ExtensionContext): Promise<string | null> {
+		const status = state.phase === "planning"
+			? `Draft plan active at ${planRel(ctx)}. It has not approved implementation.`
+			: state.phase === "working" && state.mode === "solo"
+				? `UNSUPERVISED worker active for ${planRel(ctx)}. The approved plan is preserved.`
+				: state.phase === "working"
+					? `Supervised worker active for ${planRel(ctx)}.`
+					: "No active plan.";
+		const choices = state.phase === "planning"
+			? ["Keep drafting", "Exit planning (keep draft)", "Start a new plan"]
+			: state.phase === "working" && state.mode === "solo"
+				? ["Keep working unsupervised", "Restore supervision", "Reconnect worker model", "Start a new plan", "Disconnect current plan"]
+				: state.phase === "working"
+					? ["Keep working", "Reconnect existing supervision", "Replace supervisor", "Start a new plan", "Disconnect current plan"]
+					: ["Start a plan", "Cancel"];
+		const choice = await ctx.ui.select(status, choices);
+		if (!choice || choice === "Cancel" || choice.startsWith("Keep")) return null;
+		if (choice === "Exit planning (keep draft)") return "noplan";
+		if (choice === "Restore supervision" || choice === "Replace supervisor") return "restart";
+		if (choice === "Reconnect worker model" || choice === "Reconnect existing supervision") return "reconnect";
+		if (choice === "Disconnect current plan") return "clear";
+		const objective = await ctx.ui.editor("What should the new plan achieve?", "");
+		return objective?.trim() ? `plan ${objective.trim()}` : null;
+	}
+
 	pi.registerCommand("goals", {
-		description: `Plan goals, then open a visible supervisor session. /goals <objective> | work | supervise | solo | noplan | reconnect | restart | clear | model <supervisor>`,
+		description: "Plan goals and manage visible supervision. /goals opens safe actions; /goals plan <objective> deliberately starts or replaces planning.",
 		getArgumentCompletions: prefix => goalCommandCompletions(prefix, "worker"),
 		handler: async (args, ctx) => {
 			const command = {};
 			let arg = args.trim();
-			if (arg === "solo") {
+			if (!arg) {
+				const action = await chooseGoalsAction(ctx);
+				if (!action) return;
+				arg = action;
+			}
+			const explicitPlan = arg === "plan" || arg.startsWith("plan ");
+			if (explicitPlan) arg = arg.slice("plan".length).trim();
+			if (recoveryCommand && !explicitPlan && !["work", "reconnect", "restart", "clear"].includes(arg)) {
+				ctx.ui.notify("Goal recovery is in progress. Wait for it, or use /goals reconnect, /goals restart, /goals clear, or /goals plan <objective> to intentionally supersede it.", "warning");
+				return;
+			}
+			if (!explicitPlan && arg === "solo") {
 				if (state.phase !== "working") { ctx.ui.notify("Solo requires an already-approved plan. A draft still needs Ready.", "warning"); return; }
 				if (modelError) { ctx.ui.notify(`Cannot enter solo: ${pauseReason()}`, "warning"); return; }
 				if (state.mode === "solo") { ctx.ui.notify("Already UNSUPERVISED; plan preserved, supervisor sign-off unavailable. /goals restart restores supervision.", "warning"); return; }
@@ -455,13 +502,13 @@ export function registerWorker(pi: ExtensionAPI): void {
 				enterSolo(ctx, "You explicitly selected /goals solo.");
 				return;
 			}
-			if (arg === "supervise") { ctx.ui.notify("This is the worker session. Run /goals supervise in the saved supervisor session; no new pairing was created.", "warning"); return; }
-			if (arg === "work") {
+			if (!explicitPlan && arg === "supervise") { ctx.ui.notify("This is the worker session. Run /goals supervise in the saved supervisor session; no new pairing was created.", "warning"); return; }
+			if (!explicitPlan && arg === "work") {
 				if (state.phase === "working" && state.mode === "solo") { ctx.ui.notify("Already an unsupervised worker. Use /goals reconnect for worker-model recovery or /goals restart to restore supervision.", "warning"); return; }
 				if (state.phase !== "working" || !state.approvalId || !state.supervisorPaneId) { ctx.ui.notify("No approved worker pairing to reconnect. A retained draft still needs Ready.", "warning"); return; }
 				arg = "reconnect";
 			}
-			if (arg === "noplan") {
+			if (!explicitPlan && arg === "noplan") {
 				if (state.phase !== "planning") { ctx.ui.notify("Not in planning mode; the current plan is unchanged.", "info"); return; }
 				commandAttempt = command;
 				readyAttempt = undefined;
@@ -476,7 +523,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Planning exited. Draft preserved at ${planRel(ctx)}; no implementation was approved or started.`, "info");
 				return;
 			}
-			if (arg === "reconnect" || arg === "restart") {
+			if (!explicitPlan && (arg === "reconnect" || arg === "restart")) {
 				if (!state.phase) { ctx.ui.notify("No active plan to recover.", "info"); return; }
 				if (!ctx.isIdle()) { ctx.ui.notify("Stop the current turn before recovering goal supervision.", "warning"); return; }
 				commandAttempt = command;
@@ -529,7 +576,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				updateWidget(ctx);
 				return;
 			}
-			if (arg === "clear") {
+			if (!explicitPlan && arg === "clear") {
 				if (state.planVersion === null) {
 					ctx.ui.notify("No active plan to disconnect.", "info");
 					return;
@@ -548,7 +595,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
 				return;
 			}
-			if (arg === "model" || arg.startsWith("model ")) {
+			if (!explicitPlan && (arg === "model" || arg.startsWith("model "))) {
 				if (state.phase === "working") {
 					ctx.ui.notify("Run /goals clear before changing the active supervisor model.", "warning");
 					return;
@@ -562,6 +609,10 @@ export function registerWorker(pi: ExtensionAPI): void {
 				state = { ...state, supervisorModel: ref || null, supervisorPaneId: null, approvalId: null };
 				persist();
 				ctx.ui.notify(`Goal-supervisor model ${ref ? `set to ${ref}` : "reset to the remembered supervisor model"}.`, "info");
+				return;
+			}
+			if (state.phase && !explicitPlan) {
+				ctx.ui.notify("The active plan is unchanged. Use /goals plan <objective> to deliberately replace it, or submit /goals with no arguments for safe actions and recovery commands.", "warning");
 				return;
 			}
 			commandAttempt = command;
@@ -616,7 +667,9 @@ export function registerWorker(pi: ExtensionAPI): void {
 	pi.on("context", async (event, ctx) => {
 		const messages = state.phase === "planning" ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
 		const removedPlanningContext = messages.length !== event.messages.length;
-		if (state.phase === "planning" && planningContextPending) {
+		// Ready compacts the worker before changing phase. Its custom instructions already preserve
+		// the approved plan, so never append an extension message to that compaction transaction.
+		if (state.phase === "planning" && planningContextPending && !readyAttempt) {
 			planningContextPending = false;
 			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: planningState(planPath(ctx)) }], timestamp: Date.now() }] };
 		}
@@ -666,8 +719,9 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	// A compaction loses context, so restore either the planning snapshot or the working plan once.
 	pi.on("session_compact", async () => {
-		if (state.phase === "planning") planningContextPending = true;
-		else resyncReason = "The session was just compacted.";
+		if (state.phase === "planning") {
+			if (!readyAttempt) planningContextPending = true;
+		} else resyncReason = "The session was just compacted.";
 	});
 
 	pi.on("agent_end", async event => {
@@ -742,12 +796,15 @@ export function registerWorker(pi: ExtensionAPI): void {
 			};
 			try {
 				checkApprovedPlan();
-				let supervisorFailure: SupervisorFailure | undefined;
-				try { await startSupervisor(ctx, current); }
-				catch (error) { if (!(error instanceof SupervisorFailure)) throw error; supervisorFailure = error; }
+				await compactApprovedWorker(ctx);
 				if (!current()) return;
 				checkApprovedPlan();
 				await restoreModel("worker", ctx);
+				if (!current()) return;
+				checkApprovedPlan();
+				let supervisorFailure: SupervisorFailure | undefined;
+				try { await startSupervisor(ctx, current); }
+				catch (error) { if (!(error instanceof SupervisorFailure)) throw error; supervisorFailure = error; }
 				if (!current()) return;
 				checkApprovedPlan();
 				state = { ...state, phase: "working", mode: "supervised", soloReason: null };

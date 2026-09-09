@@ -160,6 +160,10 @@ Ready.`;
  *     appendix included. Modelled on pi-goal-x's [POST-COMPACTION RESYNC] one-shot. This is the
  *     only place the below-the-fold sections are pushed; otherwise the agent reads them on demand.
  * ──────────────────────────────────────────────────────────────────────── */
+export function workerCompaction(planPath: string): string {
+	return `The plan at ${planPath} was just approved and is the source of truth. Preserve the user's intent, agreed goals, scope boundaries, and unresolved risks while removing planning discussion that no longer helps implementation. The worker will continue implementation after this compaction; do not treat the summary as plan approval or completion.`;
+}
+
 export function resync(plan: string, planRel: string, why: string, solo = false): string {
 	return `\
 <system-reminder>
@@ -240,10 +244,13 @@ export function supervisorPlanReview(claims: string[], changes: string[], diff: 
 }
 
 /* 5. Steering: a visible message is an assessment; this tool sends an actionable instruction. */
-export const steerWorkerDescription = "Send one concrete instruction to the implementation worker. Use it to resume useful work after a stop, request a needed check, or correct drift toward the agreed goal. A recap alone does not send an instruction. Do not interrupt productive work or repeat ineffective steering without changing the approach.";
+export const steerWorkerDescription = "Send one concrete instruction to the implementation worker. Use it to resume useful work after a stop, request a needed check, or correct drift toward the agreed goal. A recap alone does not send an instruction. Do not interrupt productive work or repeat ineffective steering without changing the approach. If the worker is disconnected, one instruction is retained for reconnect; wait for a new worker view or reconnect rather than repeating it.";
 export const steerWorkerInstructionDescription = "The next useful action and its purpose toward the agreed goal; include the check or result needed to assess progress.";
 export function workerInstructionSent(id: string): string {
 	return `Worker instruction ${id} sent through pi-intercom. Receipt and execution are not confirmed by this result.`;
+}
+export function workerInstructionQueued(id: string): string {
+	return `Worker instruction ${id} is retained locally because the worker is disconnected. It can be sent if the existing pairing reconnects; no receipt or execution is confirmed. Do not repeat this instruction or compose another long recap until a worker view arrives.`;
 }
 
 /* 6. Approval: the supervisor's acceptance action AFTER judgment, not a request to judge. */

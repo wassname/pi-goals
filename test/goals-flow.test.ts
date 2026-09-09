@@ -35,6 +35,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		isIdle: vi.fn(() => true),
 		getSystemPrompt: () => "base prompt",
 		getContextUsage: () => ({ percent: 25 }),
+		compact: vi.fn((options: { onComplete?: () => void }) => options.onComplete?.()),
 		model: { provider: "test", id: "tiny" },
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 		sessionManager: {
@@ -206,7 +207,7 @@ describe("/goals flow", () => {
 			expect(flow.messages.at(-1)?.content).toContain("Revise the plan at");
 			expect((await flow.hooks.get("tool_call")({ toolName: "edit", input: { path: "README.md" } }, flow.ctx))?.block).toBe(true);
 
-			await flow.commands.get("goals").handler("second objective", flow.ctx);
+			await flow.commands.get("goals").handler("plan second objective", flow.ctx);
 			expect(readFileSync(first, "utf8")).toContain("preserve this");
 			expect(flow.messages.at(-1)?.content).toContain("session-a-v2.md");
 		} finally {
@@ -324,14 +325,10 @@ describe("/goals flow", () => {
 			expect(readFileSync(planPath, "utf8")).toContain("1. [x] goal: make the file");
 			expect(readFileSync(planPath, "utf8")).toContain("1. [ ] goal: make the file");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, signedOffGoals: [goal] });
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", approvalId, signedOffGoals: [goal] });
 			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
-			await flow.hooks.get("session_start")({}, flow.ctx);
-			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
-			const completedViews = flow.transport.sent.filter(message => message.kind === "view").length;
-			flow.transport.receive({ binding: approvalId, role: "supervisor", kind: "hello", id: "hello", ready: true });
-			await new Promise(resolve => setImmediate(resolve));
-			expect(flow.transport.sent.filter(message => message.kind === "view")).toHaveLength(completedViews);
+			flow.transport.receive({ binding: approvalId, role: "supervisor", kind: "steer", id: "post-signoff", text: "Inspect the late finding." });
+			expect(flow.messages.at(-1)?.content).toBe("[supervisor] Inspect the late finding.");
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -477,11 +474,34 @@ it.each(["launch", "model"])("rejects plan content changes during Ready %s witho
 		if (stage === "launch") openSupervisorPane.mockImplementationOnce(async () => { mutate(); return "pane-2"; });
 		else flow.pi.setModel.mockImplementationOnce(async () => { mutate(); return true; });
 		await flow.hooks.get("agent_settled")({}, flow.ctx);
-		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: "pane-2" });
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: stage === "launch" ? "pane-2" : null });
 		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
 		expect(flow.notifications.join("\n")).toContain("plan changed after Ready");
 		await flow.hooks.get("agent_settled")({}, flow.ctx);
 		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working" });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("compacts the approved worker before forking the supervisor without injecting planning context", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		let complete: (() => void) | undefined;
+		flow.ctx.compact.mockImplementationOnce((options: any) => { complete = options.onComplete; });
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		const ready = flow.hooks.get("agent_settled")({}, flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(flow.ctx.compact).toHaveBeenCalledOnce();
+		expect(flow.ctx.compact.mock.calls[0][0].customInstructions).toContain("was just approved");
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+		await flow.hooks.get("session_compact")({}, flow.ctx);
+		const context = await flow.hooks.get("context")({ messages: [] }, flow.ctx);
+		expect(context?.messages).toBeUndefined();
+		complete!();
+		await ready;
+		expect(flow.pi.setModel).toHaveBeenCalledBefore(openSupervisorPane);
+		expect(openSupervisorPane).toHaveBeenCalledOnce();
 		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working" });
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
@@ -565,11 +585,11 @@ it("keeps a failed Ready model not-ready and recovers the same real supervisor b
 		});
 		await flow.hooks.get("agent_settled")({}, flow.ctx);
 		await new Promise(resolve => setImmediate(resolve));
-		const binding = (flow.entries.at(-1)?.data as any).approvalId;
-		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", planVersion: 1 });
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", planVersion: 1, approvalId: null });
+		expect(openSupervisorPane).not.toHaveBeenCalled();
 		expect(wire.worker.sent.filter(message => message.kind === "hello" && message.ready)).toHaveLength(0);
 		expect(supervisor.connected).toBe(false);
-		expect(() => supervisor.steer("Must wait.")).toThrow("disconnected");
+		expect(() => supervisor.steer("Must wait.")).toThrow("pairing is not active");
 		await flow.hooks.get("model_select")({ source: "set", model: { provider: "test", id: "chosen" } }, flow.ctx);
 		flow.ctx.modelRegistry.find = (provider, id) => ({ provider, id });
 		await flow.commands.get("goals").handler("reconnect", flow.ctx);
@@ -577,6 +597,7 @@ it("keeps a failed Ready model not-ready and recovers the same real supervisor b
 		await flow.hooks.get("agent_settled")({}, flow.ctx);
 		await new Promise(resolve => setImmediate(resolve));
 		expect(supervisor.connected).toBe(true);
+		const binding = (flow.entries.at(-1)?.data as any).approvalId;
 		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", approvalId: binding, planVersion: 1 });
 		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
 		expect(closeSupervisorPane).not.toHaveBeenCalled();
@@ -783,10 +804,46 @@ it("stays loudly solo when replacement fails and never restores a cleared plan a
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
+it.each([
+	["planning", "planning" as const, "Keep drafting"],
+	["supervised work", "working" as const, "Keep working"],
+	["solo work", "working" as const, "Keep working unsupervised"],
+])("keeps an active %s plan when bare or free-text /goals is submitted", async (_name, phase, keepAction) => {
+	const flow = setup([keepAction]);
+	try {
+		const path = restoredPlan(flow, phase);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		if (keepAction === "Keep working unsupervised") await flow.commands.get("goals").handler("solo", flow.ctx);
+		const before = readFileSync(path, "utf8");
+		const stateBefore = flow.entries.at(-1)?.data;
+		await flow.commands.get("goals").handler("", flow.ctx);
+		await flow.commands.get("goals").handler("describe a different project", flow.ctx);
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(flow.entries.at(-1)?.data).toMatchObject(stateBefore as object);
+		expect(closeSupervisorPane).not.toHaveBeenCalled();
+		expect(flow.notifications.at(-1)).toContain("active plan is unchanged");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("keeps the first-plan objective shortcut but requires plan to deliberately replace an active draft", async () => {
+	const flow = setup([]);
+	try {
+		await flow.commands.get("goals").handler("first objective", flow.ctx);
+		const firstPath = join(flow.cwd, ".pi/plan/session-a-v1.md");
+		expect(readFileSync(firstPath, "utf8")).toBe("");
+		expect(flow.messages.at(-1)?.content).toContain("Objective: first objective");
+		await flow.commands.get("goals").handler("plan restart", flow.ctx);
+		expect(readFileSync(firstPath, "utf8")).toBe("");
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", planVersion: 2, latestDirection: "restart" });
+		expect(flow.messages.at(-1)?.content).toContain("Objective: restart");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
 it("offers per-verb autocomplete descriptions without treating an objective as a verb", () => {
 	const flow = setup([]);
 	try {
 		const complete = flow.commands.get("goals").getArgumentCompletions;
+		expect(complete("plan")).toEqual([{ value: "plan", label: "plan", description: expect.stringContaining("Deliberately") }]);
 		expect(complete("solo")).toEqual([{ value: "solo", label: "solo", description: expect.stringContaining("sign-off unavailable") }]);
 		expect(complete("re").map((item: any) => item.value)).toEqual(["reconnect", "restart"]);
 		expect(complete("write a report")).toBeNull();
@@ -882,7 +939,7 @@ it.each(["explicit solo", "terminal failure"])("announces %s to the old supervis
 		await new Promise(resolve => setImmediate(resolve));
 		expect(supervisor.connected).toBe(false);
 		expect(supervisorCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Worker entered solo mode; this pairing is detached"), "error");
-		expect(() => supervisor.steer("Obsolete advice.")).toThrow("pairing is detached");
+		expect(() => supervisor.steer("Obsolete advice.")).toThrow(cause === "explicit solo" ? "pairing is detached" : "Supervisor quota exceeded");
 		expect(flow.entries.at(-1)?.data).toMatchObject({ mode: "solo", approvalId: null });
 		expect(flow.messages.filter(message => message.display && message.content.startsWith("UNSUPERVISED WORKER"))).toHaveLength(1);
 		expect(wire.worker.sent.filter(message => message.failure?.startsWith("Worker entered solo"))).toHaveLength(1);

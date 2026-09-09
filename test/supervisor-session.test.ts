@@ -244,6 +244,26 @@ describe("visible supervisor session", () => {
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
 
+	it("retains one instruction while a worker is disconnected and delivers it once after reconnect", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
+		try {
+			const runtime = setup(cwd, join(cwd, "plan.md"));
+			await runtime.start();
+			runtime.transport.connect(false);
+			const tool = runtime.tools.get("SteerWorker");
+			const first = await tool.execute("id-1", { instruction: "Inspect the saved verification." });
+			const duplicate = await tool.execute("id-2", { instruction: "Inspect the saved verification." });
+			expect(first.isError).toBe(false);
+			expect(duplicate.isError).toBe(false);
+			expect(first.content[0].text).toContain("retained locally");
+			expect(runtime.transport.sent.filter(message => message.kind === "steer")).toHaveLength(0);
+			runtime.transport.connect(true);
+			await new Promise(resolve => setImmediate(resolve));
+			expect(runtime.transport.sent.filter(message => message.kind === "steer")).toMatchObject([{ text: "Inspect the saved verification." }]);
+			expect(runtime.transport.sent.filter(message => message.kind === "steer")).toHaveLength(1);
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
 	it("records approval only from a stopped view with evidence and no active work", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {

@@ -1,5 +1,5 @@
-export function intercomFixture() {
-	let autoHello = true;
+export function intercomFixture(initialAutoHello = true) {
+	let autoHello = initialAutoHello;
 	let registration: any;
 	const sent: any[] = [];
 	let connected = true;

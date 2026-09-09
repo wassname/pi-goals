@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { GoalIntercom } from "../src/intercom.js";
 import { intercomFixture } from "./intercom-fixture.js";
 
-function setup(role: "worker" | "supervisor", entries: any[] = []) {
-	const fixture = intercomFixture();
+function setup(role: "worker" | "supervisor", entries: any[] = [], autoHello = true) {
+	const fixture = intercomFixture(autoHello);
 	const hooks = new Map<string, any>();
 	const ctx = { isIdle: vi.fn(() => true), hasPendingMessages: vi.fn(() => false), sessionManager: { getEntries: () => entries }, ui: { notify: vi.fn() } };
 	const api = { events: fixture.events, on: (name: string, hook: any) => hooks.set(name, hook), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) };
@@ -39,7 +39,7 @@ describe("pi-intercom transport", () => {
 		const first = setup("supervisor");
 		first.link.markReady();
 		await first.link.waitReady();
-		const id = first.link.steer("Read the full output.");
+		const { id } = first.link.steer("Read the full output.");
 		await first.hooks.get("session_shutdown")();
 		const resumed = setup("supervisor", [...first.entries]);
 		resumed.link.markReady();
@@ -50,10 +50,11 @@ describe("pi-intercom transport", () => {
 		resumed.fixture.receive({ binding: "binding", role: "worker", kind: "received", id });
 		resumed.fixture.connect(false);
 		expect(resumed.link.connected).toBe(false);
-		expect(() => resumed.link.steer("Must not send.")).toThrow("disconnected");
+		const queued = resumed.link.steer("Must wait for reconnect.");
+		expect(queued.queued).toBe(true);
 		resumed.fixture.connect(true);
 		await resumed.link.waitReady();
-		expect(resumed.fixture.sent.filter(message => message.kind === "steer")).toHaveLength(retries.length);
+		expect(resumed.fixture.sent.filter(message => message.kind === "steer")).toHaveLength(retries.length + 1);
 	});
 
 	it("advances the incremental overview only after acknowledgment", async () => {
@@ -76,6 +77,18 @@ describe("pi-intercom transport", () => {
 		await runtime.hooks.get("session_shutdown")();
 		await rejection;
 	});
+});
+
+it("retries an unanswered active-binding hello twice, then leaves normal readiness recovery paused", async () => {
+	vi.useFakeTimers();
+	const runtime = setup("worker", [], false);
+	await vi.advanceTimersByTimeAsync(6_000);
+	expect(runtime.fixture.sent.filter(message => message.kind === "hello" && !message.reply)).toHaveLength(3);
+	await vi.advanceTimersByTimeAsync(60_000);
+	expect(runtime.fixture.sent.filter(message => message.kind === "hello" && !message.reply)).toHaveLength(3);
+	expect(runtime.link.connected).toBe(false);
+	await runtime.hooks.get("session_shutdown")();
+	vi.useRealTimers();
 });
 
 it("does not acknowledge a synchronous handoff failure, and retries the instruction", async () => {

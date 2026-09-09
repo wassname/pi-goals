@@ -4,10 +4,10 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 
 ## How it works
 
-1. `/goals <objective>` creates `.pi/plan/<session_id>-vN.md` and enters read-only plan mode.
+1. `/goals <objective>` creates `.pi/plan/<session_id>-vN.md` and enters read-only plan mode when no plan is active. With an active plan, `/goals` opens safe actions and only `/goals plan <objective>` deliberately replaces planning.
 2. Pi asks only material questions, writes the plan, and shows **Ready / Refine / Edit / Cancel**.
-3. **Ready** opens a second Herdr pane. The new Pi session explicitly forks the planning session and compacts that fork.
-4. The original session becomes the implementation worker. It keeps the full conversation and normal tools.
+3. **Ready** compacts the approved worker conversation once, then opens a second Herdr pane. The new Pi session forks that compacted worker session.
+4. The original session becomes the implementation worker. It keeps normal tools and resumes from the same compacted boundary.
 5. The fork becomes an inspection-only supervisor by instruction, with normal Pi tools and extensions available. Worker views and supervisor instructions travel over pi-intercom's extension channel, scoped to this plan pairing.
 6. Ready approves the displayed plan and waits for the supervisor's Intercom readiness message. If startup fails, the worker loudly switches to unsupervised work only after rechecking that approved content and restoring its worker model.
 7. The supervisor compacts again when its context reaches 100k tokens.
@@ -38,7 +38,9 @@ Run Pi from the Git repository that the plan will change. **Ready** fails if the
 ## Commands
 
 ```text
-/goals <objective>          create a new plan
+/goals                     show safe status/actions for the current plan
+/goals <objective>          create a first plan when none is active
+/goals plan <objective>     deliberately start or replace planning
 /goals model <model>        select the visible supervisor model
 /goals model                use the remembered supervisor model
 /goals work                 reconnect the existing approved worker pairing
@@ -52,7 +54,7 @@ Run Pi from the Git repository that the plan will change. **Ready** fails if the
 
 Pi argument autocomplete shows a short description for each available verb. The worker status distinguishes **supervised worker** from **UNSUPERVISED**; the supervisor status says **supervising**, **starting/reconnecting**, or **paused**.
 
-`work` and `supervise` are role-aware recovery commands, not role conversion or new-pairing commands. Wrong or missing identities are rejected. `noplan` preserves the draft/history, leaves planning restrictions, and does not select Ready, start implementation or launch a supervisor. `/goals clear` closes the tracked pane and keeps the plan file. Starting another plan also keeps older versions.
+`/goals` with no argument opens a status/action menu and does nothing until a deliberate action is chosen. While a draft, approved worker, or supervisor pairing exists, unknown/free-text `/goals ...` input is rejected without stopping or replacing it; use `/goals plan <objective>` to deliberately replace planning. With no active plan, `/goals <objective>` remains a convenient first-plan shortcut. `work` and `supervise` are role-aware recovery commands, not role conversion or new-pairing commands. Wrong or missing identities are rejected. `noplan` preserves the draft/history, leaves planning restrictions, and does not select Ready, start implementation or launch a supervisor. `/goals clear` closes the tracked pane and keeps the plan file. Starting another plan also keeps older versions.
 
 If the worker model is unavailable or fails after Pi's automatic recovery, work stays **paused**; solo does not bypass that failure or substitute another model. Human input, read-only diagnosis, `/model`, and recovery commands remain available.
 

@@ -23,6 +23,8 @@ export class GoalIntercom {
 	private received = new Set<string>();
 	private inbox = new Map<string, Message>();
 	private deliveryTimer?: ReturnType<typeof setTimeout>;
+	private peerRetryTimer?: ReturnType<typeof setTimeout>;
+	private peerRetryCount = 0;
 	private idleChecks = 0;
 	private delivering?: string;
 	private compacting = false;
@@ -57,11 +59,14 @@ export class GoalIntercom {
 			}
 		});
 		pi.on("session_before_compact", async () => { this.compacting = true; });
-		pi.on("session_compact", async () => { this.compacting = true; this.resumeDelivery(); });
-		pi.on("session_compact_failed", async () => { this.compacting = true; this.resumeDelivery(); });
+		// Do not append a queued supervision message into compaction. agent_settled releases it
+		// after Pi has finished rebuilding context (including a failed compaction recovery).
+		pi.on("session_compact", async () => { this.compacting = true; });
+		pi.on("session_compact_failed", async () => { this.compacting = true; });
 		pi.on("agent_settled", async () => this.resumeDelivery());
 		pi.on("session_shutdown", async () => {
 			if (this.deliveryTimer) clearTimeout(this.deliveryTimer);
+			this.clearPeerRetry();
 			this.stopped = true;
 			this.peerReady = false;
 			for (const wake of this.waiters) wake();
@@ -85,6 +90,7 @@ export class GoalIntercom {
 		this.idleChecks = 0;
 		if (this.deliveryTimer) clearTimeout(this.deliveryTimer);
 		this.deliveryTimer = undefined;
+		this.clearPeerRetry();
 		this.latestView = undefined;
 		this.acknowledgedEntry = undefined;
 		for (const entry of ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries()) {
@@ -102,6 +108,7 @@ export class GoalIntercom {
 			if (message.kind === "view") this.latestView = { id: message.id, text: message.text!, reason: message.reason!, through: message.through, backgroundQuiet: message.backgroundQuiet === true };
 		}
 		this.hello();
+		this.schedulePeerRetry();
 		this.scheduleDelivery(0);
 	}
 
@@ -109,6 +116,7 @@ export class GoalIntercom {
 	detach(reason?: string): void {
 		if (this.deliveryTimer) clearTimeout(this.deliveryTimer);
 		this.deliveryTimer = undefined;
+		this.clearPeerRetry();
 		this.inbox.clear();
 		this.delivering = undefined;
 		this.ready = false;
@@ -125,7 +133,7 @@ export class GoalIntercom {
 	}
 
 	failReady(reason: string): void { this.failure = reason; this.setReady(false); }
-	markReady(): void { this.failure = undefined; this.setReady(true); this.resumeDelivery(); }
+	markReady(): void { this.failure = undefined; this.setReady(true); this.schedulePeerRetry(); this.resumeDelivery(); }
 	markNotReady(): void { this.setReady(false); }
 	private setReady(ready: boolean): void {
 		if (this.stopped) return;
@@ -168,13 +176,18 @@ export class GoalIntercom {
 		return this.latestView;
 	}
 
-	steer(text: string): string {
-		if (!this.connected) throw new Error(this.peerFailure ? `Worker is disconnected: ${this.peerFailure} No instruction was sent.` : "Worker is disconnected; no instruction was sent.");
+	steer(text: string): { id: string; queued: boolean } {
+		if (!this.bound) throw new Error("Worker pairing is not active; no instruction was retained.");
+		if (this.failure || this.peerFailure) throw new Error(this.failure ?? this.peerFailure);
+		if (!this.connected) {
+			const retained = [...this.pending.values()].find(message => message.text === text);
+			if (retained) return { id: retained.id, queued: true };
+		}
 		const message: Message = { binding: this.binding, role: this.role, kind: "steer", id: randomUUID(), text };
 		this.record("out", message);
 		this.pending.set(message.id, message);
-		this.publish(message);
-		return message.id;
+		if (this.connected) this.publish(message);
+		return { id: message.id, queued: !this.connected };
 	}
 
 	// The inbox is persisted before handoff. Receipt means Pi started the user message, not model judgment or execution.
@@ -219,24 +232,43 @@ export class GoalIntercom {
 	private hello(reply = false): void {
 		if (!this.stopped && this.binding && this.channel?.snapshot().connected) this.publish({ binding: this.binding, role: this.role, kind: "hello", id: "hello", ready: this.ready, failure: this.failure, reply });
 	}
+	private clearPeerRetry(): void {
+		if (this.peerRetryTimer) clearTimeout(this.peerRetryTimer);
+		this.peerRetryTimer = undefined;
+		this.peerRetryCount = 0;
+	}
+	// Reload/reconnect races can lose the initial hello. Retry twice only while no peer exists;
+	// normal readiness timeout and explicit recovery commands remain the authority after that.
+	private schedulePeerRetry(): void {
+		if (this.peerRetryTimer || this.peer || this.failure || !this.bound || !this.channel?.snapshot().connected || this.peerRetryCount >= 2) return;
+		const delay = this.peerRetryCount++ === 0 ? 1_000 : 5_000;
+		this.peerRetryTimer = setTimeout(() => {
+			this.peerRetryTimer = undefined;
+			if (this.peer || this.failure || !this.bound || !this.channel?.snapshot().connected) return;
+			this.hello();
+			this.schedulePeerRetry();
+		}, delay);
+	}
 	private receive(event: IntercomExtensionEvent): void {
 		if (this.stopped) return;
 		if (event.type === "connection") {
 			if (!event.connected) {
 				if (this.peerReady) this.ctx?.ui.notify("Goal supervision disconnected from pi-intercom.", "warning");
 				this.peer = undefined; this.peerReady = false;
+				this.clearPeerRetry();
 			}
-			else this.hello();
+			else { this.hello(); this.schedulePeerRetry(); }
 			if (this.ctx) this.onConnectionChange(this.ctx);
 			return;
 		}
 		if (event.type === "session_left" && event.sessionId === this.peer) {
 			this.peer = undefined; this.peerReady = false;
-			this.ctx?.ui.notify("Goal supervision peer disconnected; reconnect the existing session.", "warning");
+			this.hello(); this.schedulePeerRetry();
+			this.ctx?.ui.notify("Goal supervision peer disconnected; reconnecting the existing session.", "warning");
 			if (this.ctx) this.onConnectionChange(this.ctx);
 			return;
 		}
-		if (event.type === "session_joined") { this.hello(); return; }
+		if (event.type === "session_joined") { this.hello(); this.schedulePeerRetry(); return; }
 		if (event.type !== "message") return;
 		const message = event.payload as Message;
 		if (!message || message.binding !== this.binding || message.role !== (this.role === "worker" ? "supervisor" : "worker")) return;
@@ -244,6 +276,7 @@ export class GoalIntercom {
 			if (this.peer && this.peer !== event.fromSessionId) throw new Error("Two peers claim this supervision binding. Stop the duplicate session.");
 			const changed = !this.peer || this.peerReady !== Boolean(message.ready) || this.peerFailure !== message.failure;
 			this.peer = event.fromSessionId;
+			this.clearPeerRetry();
 			this.peerReady = Boolean(message.ready);
 			this.peerFailure = message.failure;
 			if (message.failure) {

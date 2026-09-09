@@ -1,6 +1,7 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 const workerCommands: Record<string, string> = {
+	plan: "Deliberately start or replace planning: /goals plan <objective>",
 	work: "Reconnect the existing approved worker pairing (not a role conversion)",
 	supervise: "Use in the saved supervisor pane to reconnect it",
 	solo: "Continue an approved plan unsupervised; supervisor sign-off unavailable",
