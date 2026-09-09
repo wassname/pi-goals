@@ -91,6 +91,12 @@ export function isVisibleSupervisor(): boolean {
 export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
+	const reminderEvery = Number(process.env.PI_GOALS_SUPERVISOR_REMINDER_TURNS ?? 5);
+	if (!Number.isInteger(reminderEvery) || reminderEvery < 1) throw new Error("PI_GOALS_SUPERVISOR_REMINDER_TURNS must be a positive integer.");
+	let turnsSinceReminder = reminderEvery;
+	let previousPlan = "";
+	pi.on("turn_end", async () => { turnsSinceReminder++; });
+	pi.on("session_compact", async () => { turnsSinceReminder = reminderEvery; });
 	let bootstrapping = false;
 	let warnedUnknownUsage = false;
 	let modelError: string | null = null;
@@ -165,7 +171,14 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event) => {
 		if (BLOCKED_TOOLS.has(event.toolName.toLowerCase())) return { block: true, terminate: true, reason: "Supervisor is read-only; use SteerWorker for the bound worker, not the general intercom tool." };
 	});
-	pi.on("before_agent_start", async (_event, ctx) => ({ systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}` }));
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const plan = readFileSync(settings.planPath, "utf8").split(/^## Log\s*$/m)[0].trim();
+		const remind = plan !== previousPlan || turnsSinceReminder >= reminderEvery;
+		previousPlan = plan;
+		if (remind) turnsSinceReminder = 0;
+		const reminder = remind ? "\n\nSupervisor role reminder: Supervise autonomously toward the agreed outcome. Use judgment, investigate blockers, keep useful work moving, and inspect the result before accepting completion. A checkbox change is a claim to review, not proof." : "";
+		return { systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}\n\nCurrent agreed plan (reread for every review):\n${plan}\n\nJudge progress against this outcome and its discriminators. A completed artifact or task is not completion unless it satisfies the agreed goal.${reminder}` };
+	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (compacting) return;
 		const usage = ctx.getContextUsage();

@@ -131,9 +131,21 @@ describe("visible supervisor session", () => {
 	it("asks for judgment and useful recaps without inventing instructions", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-prompt-"));
 		try {
+			writeFileSync(join(cwd, "plan.md"), "# Outcome\nBeat random\n1. [ ] goal: repair\n  - discriminator: beats random\n## Log\nold history");
 			const runtime = setup(cwd, join(cwd, "plan.md"));
 			const { systemPrompt } = await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
 			expect(systemPrompt).toContain("brief visible recap");
+			expect(systemPrompt).toContain("discriminator: beats random");
+			expect(systemPrompt).not.toContain("old history");
+			expect(systemPrompt).toContain("Supervisor role reminder:");
+			const review = async () => (await runtime.hooks.get("before_agent_start")({}, runtime.ctx)).systemPrompt;
+			expect(await review()).not.toContain("Supervisor role reminder:");
+			for (let i = 0; i < 5; i++) await runtime.hooks.get("turn_end")({}, runtime.ctx);
+			expect(await review()).toContain("Supervisor role reminder:");
+			await runtime.hooks.get("session_compact")({}, runtime.ctx);
+			expect(await review()).toContain("Supervisor role reminder:");
+			writeFileSync(join(cwd, "plan.md"), "# Outcome\nBeat random\n1. [x] goal: repair\n  - discriminator: beats random\n");
+			expect(await review()).toContain("Supervisor role reminder:");
 			expect(systemPrompt).toContain("your judgment");
 			expect(systemPrompt).toContain("justified confidence, not certainty at any cost");
 			expect(systemPrompt).toContain('Treat "blocked", "waiting", "impossible", and "already done" as claims to investigate');
