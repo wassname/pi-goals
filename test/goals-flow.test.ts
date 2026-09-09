@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -90,7 +90,7 @@ afterEach(async () => {
 });
 
 describe("/goals flow", () => {
-	it("reports actual idle state, invalidates stopped views on start, and stops completed plans", async () => {
+	it("reports idleness and keeps manual completion claims supervised without reverting edits", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 		const flow = setup(["Ready"]);
 		try {
@@ -100,31 +100,96 @@ describe("/goals flow", () => {
 			const views = () => flow.transport.sent.filter(message => message.kind === "view");
 			await vi.advanceTimersByTimeAsync(60 * 60_000);
 			expect(views().at(-1)?.text).toMatch(/^The worker stopped\./);
+			writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", "[/] goal:"));
 			flow.ctx.isIdle.mockReturnValue(false);
 			await flow.hooks.get("agent_start")({}, flow.ctx);
 			expect(views().at(-1)?.text).toMatch(/^The worker is still working\./);
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			expect(views().at(-1)?.text).toMatch(/^The worker is still working\./);
 			flow.ctx.isIdle.mockReturnValue(true);
-			writeFileSync(path, readFileSync(path, "utf8").replace("[ ] goal:", "[x] goal:"));
+			writeFileSync(path, readFileSync(path, "utf8").replace("[/] goal:", "[x] goal:"));
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await flow.hooks.get("turn_end")({}, flow.ctx);
 			const count = views().length;
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null });
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", signedOffGoals: [] });
+			expect(views().at(-1)?.text).toContain("make the file: [/] -> [x]; manual completion claim, no CompleteGoal sign-off recorded");
+			expect(readFileSync(path, "utf8")).toContain("[x] goal:");
+			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/1 goals · 1 claimed, awaiting review"));
+			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", [expect.stringContaining("claimed complete; awaiting supervisor review")]);
 			const binding = (flow.entries.at(-1)?.data as any).approvalId;
-			const messageCount = flow.messages.length;
-			flow.transport.receive({ binding, role: "supervisor", kind: "steer", id: "late-completed", text: "Obsolete instruction." });
-			await flow.commands.get("goals").handler("restart", flow.ctx);
-			await flow.commands.get("goals").handler("reconnect", flow.ctx);
-			expect(flow.messages).toHaveLength(messageCount);
-			expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+			flow.transport.receive({ binding, role: "supervisor", kind: "steer", id: "review-claim", text: "Reopen the goal; verify the missing output first." });
+			expect(flow.messages.at(-1)?.content).toBe("[supervisor] Reopen the goal; verify the missing output first.");
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", signedOffGoals: [] });
 			await vi.advanceTimersByTimeAsync(60 * 60_000);
-			expect(views()).toHaveLength(count);
+			expect(views().length).toBeGreaterThan(count);
 		} finally {
 			await flow.hooks.get("session_shutdown")();
 			vi.useRealTimers();
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
 	});
+	it("wakes review for an external non-checkbox plan edit, including atomic replacement", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			const path = approvedPlan(flow.cwd);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			const before = readFileSync(path, "utf8");
+			writeFileSync(`${path}.tmp`, before.replace("output exists", "output contains exact required bytes"));
+			renameSync(`${path}.tmp`, path);
+			await vi.waitFor(() => {
+				const view = flow.transport.sent.filter(message => message.kind === "view").at(-1);
+				expect(view?.reason).toBe("plan");
+				expect(view?.text).toContain("-   - discriminator: output exists");
+				expect(view?.text).toContain("+   - discriminator: output contains exact required bytes");
+			});
+			const count = flow.transport.sent.length;
+			await flow.hooks.get("session_shutdown")();
+			writeFileSync(path, before);
+			await new Promise(resolve => setTimeout(resolve, 250));
+			expect(flow.transport.sent).toHaveLength(count);
+		} finally { await flow.hooks.get("session_shutdown")(); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it("coalesces active-worker plan edits into its settled review", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			const path = approvedPlan(flow.cwd);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			flow.ctx.isIdle.mockReturnValue(false);
+			const before = readFileSync(path, "utf8");
+			writeFileSync(path, before.replace("output exists", "intermediate discriminator"));
+			writeFileSync(path, before.replace("output exists", "final discriminator"));
+			await new Promise(resolve => setTimeout(resolve, 250));
+			expect(flow.transport.sent.filter(message => message.kind === "view" && message.reason === "plan")).toHaveLength(0);
+			flow.ctx.isIdle.mockReturnValue(true);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			const view = flow.transport.sent.filter(message => message.kind === "view").at(-1);
+			expect(view?.text).toContain("-   - discriminator: output exists");
+			expect(view?.text).toContain("+   - discriminator: final discriminator");
+			expect(view?.text).not.toContain("intermediate discriminator");
+		} finally { await flow.hooks.get("session_shutdown")(); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it("restores sign-off markers but clears one when a goal is reopened", async () => {
+		const flow = setup([]);
+		try {
+			const path = writePlan(flow.cwd, "1. [x] goal: first\n2. [ ] goal: second\n");
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", approvalId: "binding", planVersion: 1, signedOffGoals: ["first"], previousPlan: readFileSync(path, "utf8") } });
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("1/2 goals"));
+			writeFileSync(path, "1. [/] goal: first\n2. [ ] goal: second\n");
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			expect(flow.entries.at(-1)?.data).toMatchObject({ signedOffGoals: [] });
+			writeFileSync(path, "1. [x] goal: first\n2. [ ] goal: second\n");
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/2 goals · 1 claimed, awaiting review"));
+		} finally { await flow.hooks.get("session_shutdown")(); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
 	it("preserves drafts, records the interview, and keeps planning read-only", async () => {
 		const flow = setup(["Refine"], ["Keep two columns."]);
 		try {
@@ -247,7 +312,9 @@ describe("/goals flow", () => {
 			expect(readFileSync(planPath, "utf8")).toContain("1. [x] goal: make the file");
 			expect(readFileSync(planPath, "utf8")).toContain("1. [ ] goal: make the file");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
-			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null });
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, signedOffGoals: [goal] });
+			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
+			await flow.hooks.get("session_start")({}, flow.ctx);
 			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });

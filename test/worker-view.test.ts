@@ -30,7 +30,7 @@ it("bounds serialized Unicode and quoted logs while marking omissions", () => {
 	const view = workerView([
 		{ id: "compact", type: "compaction", summary: '"\\🧪'.repeat(20_000) },
 		entry("new", '"\\🧪'.repeat(20_000)),
-	], "interval", true, { ...context, latestDirection: "Remote only. ".repeat(3000) });
+	], "interval", true, { ...context, latestDirection: "Remote only. ".repeat(3000), planReview: '"\\🧪'.repeat(20_000) });
 	expect(Buffer.byteLength(JSON.stringify({ binding: "binding", role: "worker", kind: "view", id: "id", text: view }))).toBeLessThan(16_000);
 	expect(view).toContain("[truncated; inspect source session]");
 	expect(view).toContain(context.sourceSession);

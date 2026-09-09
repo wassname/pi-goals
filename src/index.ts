@@ -15,7 +15,7 @@
 
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, type FSWatcher, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -47,6 +47,8 @@ const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
 const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
 type GoalStatus = "open" | "active" | "done" | "cancelled";
 const CHAR_TO_STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "done", "-": "cancelled" };
+const STATUS_TO_CHAR: Record<GoalStatus, string> = { open: " ", active: "/", done: "x", cancelled: "-" };
+const goalKey = (subject: string) => subject.trim().toLowerCase();
 
 function scanGoals(plan: string): Array<{ status: GoalStatus; subject: string; line: number }> {
 	const goals: Array<{ status: GoalStatus; subject: string; line: number }> = [];
@@ -92,6 +94,8 @@ interface PlanState {
 	approvalId: string | null;
 	planVersion: number | null;
 	latestDirection: string;
+	signedOffGoals: string[];
+	previousPlan: string | null;
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
@@ -113,6 +117,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		approvalId: null,
 		planVersion: null,
 		latestDirection: "",
+		signedOffGoals: [],
+		previousPlan: null,
 	};
 	let modelError: string | null = null;
 	let readyAttempt: object | undefined;
@@ -135,6 +141,31 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	function persist(): void {
 		pi.appendEntry<PlanState>(STATE, state);
+	}
+
+	// Only CompleteGoal adds sign-off; direct edits remain claims for supervisor judgment.
+	function refreshSignoffs(ctx: ExtensionContext): void {
+		if (state.phase !== "working") return;
+		const goals = scanGoals(readPlan(ctx));
+		const signedOffGoals = state.signedOffGoals.filter(subject => {
+			const matches = goals.filter(goal => goalKey(goal.subject) === subject);
+			return matches.length === 1 && matches[0].status === "done";
+		});
+		if (signedOffGoals.length !== state.signedOffGoals.length) {
+			state = { ...state, signedOffGoals };
+			persist();
+		}
+	}
+
+	function planReview(plan: string): string {
+		const goals = scanGoals(plan);
+		const previous = scanGoals(state.previousPlan ?? "");
+		const changes = goals.flatMap(goal => {
+			const old = previous.find(prior => goalKey(prior.subject) === goalKey(goal.subject));
+			return old?.status === goal.status ? [] : [`${goal.subject}: ${old ? `[${STATUS_TO_CHAR[old.status]}]` : "not previously observed"} -> [${STATUS_TO_CHAR[goal.status]}]${goal.status === "done" ? state.signedOffGoals.includes(goalKey(goal.subject)) ? "; CompleteGoal sign-off recorded" : "; manual completion claim, no CompleteGoal sign-off recorded" : ""}`];
+		});
+		const claims = goals.filter(goal => goal.status === "done" && !state.signedOffGoals.includes(goalKey(goal.subject)));
+		return `Claims awaiting supervisor judgment: ${claims.map(goal => goal.subject).join(", ") || "none"}\nGoal-state changes:\n${changes.join("\n") || "none"}\nPlan diff since the previous published view:\n${planDiff(state.previousPlan ?? "", plan)}\nManual edits are allowed. Inspect changes and steer a correction when warranted; a checkbox is not sign-off.`;
 	}
 
 	function pauseReason(): string | null {
@@ -214,22 +245,31 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	let workerTurns = 0;
 	let viewGeneration = 0;
 	let viewTimer: ReturnType<typeof setInterval> | undefined;
+	let planWatcher: FSWatcher | undefined;
+	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
 
-	async function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started"): Promise<void> {
+	async function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started" | "plan"): Promise<void> {
 		if (state.phase !== "working" || modelError || !intercom.bound) return;
 		const generation = ++viewGeneration;
 		const binding = state.approvalId;
 		const background = reason === "started" ? { quiet: false, description: "agent starting; background state not queried" } : await backgroundState(pi);
 		if (!intercom.bound || modelError || generation !== viewGeneration || binding !== state.approvalId || state.phase !== "working") return;
+		refreshSignoffs(ctx);
+		const plan = readPlan(ctx);
 		const entries = ctx.sessionManager.getBranch();
 		const view = workerView(entries, reason, reason !== "started" && ctx.isIdle(), {
 			sourceSession: ctx.sessionManager.getSessionFile()!, latestDirection: state.latestDirection,
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "not selected",
 			since: intercom.acknowledgedEntry, background: background.description,
+			planReview: `Plan: ${planRel(ctx)}\n${planReview(plan)}`,
 		});
 		intercom.view(view, reason, entries.at(-1)?.id, background.quiet);
-		const goals = scanGoals(readPlan(ctx));
-		if (goals.length > 0 && goals.every((goal) => goal.status === "done" || goal.status === "cancelled")) {
+		if (reason !== "started" && intercom.connected && state.previousPlan !== plan) {
+			state = { ...state, previousPlan: plan };
+			persist();
+		}
+		const goals = scanGoals(plan);
+		if (goals.length > 0 && goals.every((goal) => (goal.status === "done" && state.signedOffGoals.includes(goalKey(goal.subject))) || goal.status === "cancelled")) {
 			stopWorkerTimers();
 			state = { ...state, phase: null };
 			models.leave();
@@ -239,12 +279,37 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function startWorkerTimers(ctx: ExtensionContext): void {
+		if (!planWatcher) {
+			const activePath = planPath(ctx);
+			try {
+				// Watch the containing directory so atomic replacement does not lose the file watch.
+				planWatcher = watch(join(ctx.cwd, PLAN_DIR), (_event, filename) => {
+					if (intercom.ended || state.phase !== "working") return;
+					if (filename && join(ctx.cwd, PLAN_DIR, filename.toString()) !== activePath) return;
+					if (planEditTimer) clearTimeout(planEditTimer);
+					planEditTimer = setTimeout(() => {
+						planEditTimer = undefined;
+						if (intercom.ended || state.phase !== "working" || planPath(ctx) !== activePath) return;
+						updateWidget(ctx);
+						// Working edits coalesce into the existing settled view; idle edits wake review now.
+						if (ctx.isIdle() && readPlan(ctx) !== state.previousPlan) {
+							void publishWorkerView(ctx, "plan").catch(error => { if (!intercom.ended) ctx.ui.notify(`Plan review failed: ${String(error)}`, "error"); });
+						}
+					}, 150);
+				});
+				planWatcher.on("error", error => { if (!intercom.ended) ctx.ui.notify(`Plan watch failed: ${error.message}`, "error"); });
+			} catch (error) { ctx.ui.notify(`Could not watch active plan: ${String(error)}`, "warning"); }
+		}
 		if (!viewTimer) viewTimer = setInterval(() => {
 			void publishWorkerView(ctx, "interval").catch(error => { if (!intercom.ended) ctx.ui.notify(`Worker view failed: ${String(error)}`, "error"); });
 		}, 60 * 60_000);
 	}
 
 	function stopWorkerTimers(): void {
+		planWatcher?.close();
+		planWatcher = undefined;
+		if (planEditTimer) clearTimeout(planEditTimer);
+		planEditTimer = undefined;
 		if (viewTimer) clearInterval(viewTimer);
 		viewTimer = undefined;
 	}
@@ -265,6 +330,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
+		refreshSignoffs(ctx);
 		const paused = pauseReason();
 		if (paused) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "goals paused"));
@@ -282,16 +348,19 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			ctx.ui.setWidget(WIDGET_KEY, undefined);
 			return;
 		}
-		const done = goals.filter((g) => g.status === "done").length;
-		const liveGoals = goals.filter((g) => g.status === "active" || g.status === "open");
-		const stateLabel = liveGoals.length > 0 ? " · supervised" : " · complete";
+		const isSignedOff = (subject: string) => state.signedOffGoals.includes(goalKey(subject));
+		const done = goals.filter(g => g.status === "done" && isSignedOff(g.subject)).length;
+		const claimed = goals.filter(g => g.status === "done" && !isSignedOff(g.subject));
+		const liveGoals = goals.filter(g => g.status === "active" || g.status === "open");
+		const stateLabel = claimed.length ? ` · ${claimed.length} claimed, awaiting review` : liveGoals.length > 0 ? " · supervised" : " · complete";
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${stateLabel}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
 		// No path line: the session id makes it too long to be useful in the widget.
 		const plan = readPlan(ctx);
-		const lines: string[] = liveGoals.length === 0 ? ["✔ complete"] : [];
+		const lines: string[] = claimed.map(g => `? claimed complete; awaiting supervisor review: ${g.subject}`);
+		if (liveGoals.length === 0 && claimed.length === 0) lines.push("✔ complete");
 		for (const g of liveGoals) {
 			lines.push(`${mark[g.status]} ${g.status === "active" ? "supervising… " : ""}${g.subject}`);
 			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
@@ -375,7 +444,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			await restoreModel("planning", ctx);
-			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx), latestDirection: arg };
+			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx), latestDirection: arg, signedOffGoals: [], previousPlan: null };
 			planningContextPending = true;
 			resyncReason = null;
 			writePlan(ctx, "");
@@ -567,6 +636,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			approvalId: last?.data?.approvalId ?? null,
 			planVersion: last?.data?.planVersion ?? null,
 			latestDirection: last?.data?.latestDirection ?? "",
+			signedOffGoals: last?.data?.signedOffGoals ?? [],
+			previousPlan: last?.data?.previousPlan ?? null,
 		};
 		modelError = state.phase ? "Role model restoration is pending." : null;
 		planningContextPending = state.phase === "planning";
@@ -633,6 +704,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			const ticked = tickGoal(plan, params.goal);
 			if (!ticked) return result(`No unique exact goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
 			writePlan(ctx, appendLog(ticked, `${stamp()} mechanically signed off "${params.goal}" after matching supervisor approval`));
+			state = { ...state, signedOffGoals: [...state.signedOffGoals.filter(goal => goal !== goalKey(params.goal)), goalKey(params.goal)] };
+			persist();
 			updateWidget(ctx);
 			return result(`Sign-off accepted. Goal ticked [x] in ${planRel(ctx)}.`);
 		},
@@ -640,6 +713,19 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 }
 
 // --- helpers (module scope) --------------------------------------------------------------------
+
+// A compact changed span, not a second plan parser. Worker views bound its serialized size.
+function planDiff(before: string, after: string): string {
+	if (before === after) return "none";
+	const old = before.split("\n");
+	const next = after.split("\n");
+	let start = 0;
+	while (start < old.length && start < next.length && old[start] === next[start]) start++;
+	let oldEnd = old.length;
+	let nextEnd = next.length;
+	while (oldEnd > start && nextEnd > start && old[oldEnd - 1] === next[nextEnd - 1]) { oldEnd--; nextEnd--; }
+	return [`@@ from line ${start + 1} @@`, ...old.slice(start, oldEnd).map(line => `- ${line}`), ...next.slice(start, nextEnd).map(line => `+ ${line}`)].join("\n");
+}
 
 function result(text: string, isError = false) {
 	return { content: [{ type: "text" as const, text }], details: {}, isError };
