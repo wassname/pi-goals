@@ -1,0 +1,9 @@
+
+ RUN  v4.1.9 /home/ubuntu/.pi/agent/worktrees/pi-goals-simple-visible-supervision
+
+
+ Test Files  3 passed (3)
+      Tests  43 passed (43)
+   Start at  09:06:46
+   Duration  2.31s (transform 729ms, setup 86ms, import 2.98s, tests 844ms, environment 0ms)
+

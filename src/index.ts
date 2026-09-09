@@ -19,15 +19,16 @@
  *                and the always-present CompleteGoal description carries the contract instead.
  *   2. format  — a skeleton convention taught in planDrafting (prompts.ts), not validated
  *   3. eyes    — CompleteGoal spawns a strictly read-only pi subprocess (--no-session, no bash)
- *                that gets the whole plan file plus the claimed goal, finds the goal itself
- *                (tolerates wording drift), checks the evidence (including the agent's saved
- *                verify output) against the repo, and returns VERDICT: accept|reject
+ *                that gets the whole plan file plus a unique exact goal subject, checks the
+ *                evidence (including the agent's saved verify output) against the repo, and
+ *                returns VERDICT: accept|reject. CompleteGoal rejects ambiguous or drifted
+ *                subjects before review and asks the worker to retry with the exact subject.
  *
- * The judge subsumes what v1 did in code: goal matching (no findGoal), evidence validation (a
- * placeholder gets rejected in words), and format reading. The extension's only
+ * The judge reads the goal's format and validates evidence (a placeholder gets rejected in
+ * words); code binds sign-off to one exact goal identity. The extension's only
  * writes are the sign-off: append a log line to ## Log (the audit trail) and tick the goal [x] when
- * an exact goal line matches (on drift the agent ticks, and the result says so). A hand-tick
- * without a matching tool-written log line is visible in the diff either way.
+ * one unique exact goal subject matches. CompleteGoal persists conclusive/inconclusive sign-offs
+ * separately from checkboxes, so manual ticks stay visible claims even across reload.
  *
  * Judge ran but failed/errored/timed out, or returned no VERDICT line => accepted_inconclusive: the
  * working agent is never blocked on judge infra; the log line says the judge ran but failed. There
@@ -137,8 +138,16 @@ interface PlanState {
 	/** Distinguishes explicit preferences from the old opt-in defaults. */
 	defaultsVersion: 1;
 	phase: Phase;
+	/** Recovery state is separate from ordinary auto-continue backoff. */
+	pausedFrom?: "planning" | "working";
+	resumeHash?: string;
+	exited?: boolean;
 	reviewRequested: boolean;
 	questionsWaived: boolean;
+	/** Only CompleteGoal records these; a plan checkbox alone is a claim. */
+	signedOffGoals: Array<{ subject: string; outcome: "accept" | "inconclusive" }>;
+	/** Pre-tracking checkboxes stay historical claims, never automatic reimplementation work. */
+	legacyCompletionClaims: string[];
 	/** Ready captured its fork, but worker model recovery is still pending (also across reload). */
 	modelRecovery: "worker" | null;
 	/** Optional model ref for the sign-off judge; unset => current session model, else pi's default. */
@@ -159,6 +168,8 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		phase: null,
 		reviewRequested: false,
 		questionsWaived: false,
+		signedOffGoals: [],
+		legacyCompletionClaims: [],
 		modelRecovery: null,
 		judgeModel: null,
 		planVersion: null,
@@ -170,6 +181,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	let planningContextPending = false;
 	let supervisorOnly = false;
 	let operation: AbortController | null = null;
+	let reviewAbort = new AbortController();
+	let workGeneration = 0;
+	let goalAbort = new AbortController();
+	let latestContext: ExtensionContext;
+	let lastRecoveryError: string | undefined;
 	const lifetime = new AbortController();
 	// The reminder sees only the working set. A repeated Log line must not look like progress.
 	let turnsStale = 0;
@@ -210,8 +226,29 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		autoTimer = null;
 	}
 
+	function refreshSignoffs(plan: string): void {
+		const goals = scanGoals(plan);
+		const signedOffGoals = state.signedOffGoals.filter(signoff => {
+			const matches = goals.filter(goal => goal.subject.toLowerCase() === signoff.subject);
+			return matches.length === 1 && matches[0].status === "done";
+		});
+		const legacyCompletionClaims = state.legacyCompletionClaims.filter(subject => goals.some(goal => goal.subject.toLowerCase() === subject && goal.status === "done"));
+		if (signedOffGoals.length !== state.signedOffGoals.length || legacyCompletionClaims.length !== state.legacyCompletionClaims.length) {
+			state = { ...state, signedOffGoals, legacyCompletionClaims }; persist();
+		}
+	}
+
+	function signedOff(subject: string): boolean {
+		return state.signedOffGoals.some(signoff => signoff.subject === subject.toLowerCase());
+	}
+
+	function pendingGoals(plan: string) {
+		refreshSignoffs(plan);
+		return scanGoals(plan).filter(goal => goal.status !== "cancelled" && (goal.status !== "done" || !signedOff(goal.subject)));
+	}
+
 	function activeGoals(ctx: ExtensionContext): boolean {
-		return scanGoals(readPlan(ctx)).some((goal) => goal.status === "active" || goal.status === "open");
+		return pendingGoals(readPlan(ctx)).some(goal => !state.legacyCompletionClaims.includes(goal.subject.toLowerCase()));
 	}
 
 	function scheduleAutoContinue(ctx: ExtensionContext, delayMs = state.autoIntervalMs): void {
@@ -263,6 +300,11 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	function updateWidget(ctx: ExtensionContext): void {
 		const tools = pi.getActiveTools().filter(tool => tool !== "RequestPlanReview");
 		pi.setActiveTools(state.phase === "planning" && !supervisorOnly ? [...tools, "RequestPlanReview"] : tools);
+		if (state.pausedFrom || state.exited) {
+			ctx.ui.setStatus(STATUS_KEY, state.exited ? undefined : "goals stopped · /goals resume");
+			ctx.ui.setWidget(WIDGET_KEY, state.exited ? undefined : ["Goals stopped by user. Plan and evidence retained."]);
+			return;
+		}
 		if (state.phase === "planning") {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", state.modelRecovery ? models.ready ? "retry Ready" : "worker model paused" : "planning"));
 			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
@@ -273,23 +315,29 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: starting the supervisor session"]);
 			return;
 		}
-		const goals = scanGoals(readPlan(ctx));
+		const plan = readPlan(ctx);
+		refreshSignoffs(plan);
+		const goals = scanGoals(plan);
 		if (goals.length === 0) {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			ctx.ui.setWidget(WIDGET_KEY, undefined);
 			return;
 		}
-		const done = goals.filter((g) => g.status === "done").length;
+		const done = goals.filter((g) => g.status === "done" && signedOff(g.subject)).length;
+		const claimed = goals.filter(g => g.status === "done" && !signedOff(g.subject));
 		const auto = state.autoPaused ? " · waiting for user" : state.autoIntervalMs === null ? "" : ` · auto ${state.autoIntervalMs / 60_000}m`;
-		const steward = state.stewardEnabled ? " · supervisor" : "";
+		const steward = (state.stewardEnabled ? " · supervisor" : "") + (claimed.length ? ` · ${claimed.length} claimed, awaiting review` : "");
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${auto}${steward}`));
 		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
 		// Only live goals get lines so finished work never pushes current work off screen. The active
 		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
 		// No path line: the session id makes it 47 chars, too long to be worth a widget row. The
 		// human opens the file from the Ready menu, and every injected reminder still names it.
-		const plan = readPlan(ctx);
 		const lines: string[] = state.autoPaused ? [ctx.ui.theme.fg("warning", "⏸ waiting for user")] : [];
+		lines.push(...claimed.map(g => state.legacyCompletionClaims.includes(g.subject.toLowerCase())
+			? `? legacy completion — sign-off not recorded: ${g.subject}`
+			: `? claimed complete; awaiting CompleteGoal: ${g.subject}`));
+		lines.push(...state.signedOffGoals.filter(s => s.outcome === "inconclusive").map(s => `? accepted inconclusive (not verified): ${s.subject}`));
 		for (const g of goals.filter((g) => g.status === "active" || g.status === "open")) {
 			lines.push(`${mark[g.status]} ${g.subject}`);
 			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
@@ -319,6 +367,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		state = { ...state, phase: "starting" };
 		persist(); updateWidget(ctx);
 		try {
+			// A stopped, never-attached bootstrap cannot be rejoined. A new explicit Ready
+			// may replace it; reconnect/resume never create another fork.
+			if (state.supervisor) {
+				const previous = await supervisor.status(signal);
+				if (previous.binding?.paused && previous.role === "none") {
+					await supervisor.stop(state.supervisor.id);
+					state = { ...state, supervisor: null }; persist();
+				}
+			}
 			if (recoveringWorker) {
 				const workerReady = await models.enter("worker", ctx);
 				if (signal.aborted || state.planVersion !== version || !state.stewardEnabled) return;
@@ -343,7 +400,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			if (signal.aborted || state.planVersion !== version || state.supervisor?.id !== binding.id || !state.stewardEnabled) return;
 			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisor.stop(binding.id); state = { ...state, supervisor: null }; throw new Error("The plan changed during model restoration; select Ready again"); }
 			state = { ...state, modelRecovery: null }; persist();
-			await supervisor.activate(binding.id, signal);
+			const peerStatus = await supervisor.status(signal);
+			if (peerStatus.binding?.paused) await supervisor.resume(binding.id, approvedDraft, signal);
+			else await supervisor.activate(binding.id, signal);
 			if (signal.aborted || state.planVersion !== version || state.supervisor?.id !== binding.id || !state.stewardEnabled) return;
 			if (planHash(readPlan(ctx)) !== approvedDraft) { await supervisor.stop(binding.id); state = { ...state, supervisor: null }; throw new Error("The plan changed during activation; select Ready again"); }
 			state = { ...state, phase: "working" };
@@ -354,7 +413,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			state = { ...state, phase: "planning", modelRecovery: null }; persist(); updateWidget(ctx);
 			ctx.ui.notify(`Could not initialize the supervisor: ${String(error)}. Use /goals supervisor to inspect startup, or /goals steward off and retry Ready.`, "error");
 		} finally {
-			if (!lifetime.signal.aborted && state.phase !== "working" && !state.modelRecovery) {
+			if (!lifetime.signal.aborted && state.phase !== "working" && !state.modelRecovery && !state.pausedFrom && !state.exited) {
 				await models.enter("planning", ctx);
 				if (!state.phase) models.leave();
 			}
@@ -362,11 +421,99 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	// --- /goals: enter plan mode (or clear / set judge / set steward) -------------------------------
+	function pauseGoals(ctx: ExtensionContext, exit: boolean): void {
+		workGeneration++;
+		goalAbort.abort(); goalAbort = new AbortController();
+		operation?.abort(); operation = null;
+		reviewAbort.abort(); reviewAbort = new AbortController();
+		clearAutoTimer();
+		planningContextPending = false; resyncReason = null;
+		if (!supervisorOnly) {
+			state = { ...state, pausedFrom: state.pausedFrom ?? (state.phase === "working" ? "working" : state.planVersion !== null ? "planning" : undefined),
+				resumeHash: state.resumeHash ?? (state.phase === "working" ? planHash(readPlan(ctx)) : undefined),
+				phase: null, reviewRequested: false, modelRecovery: null, autoPaused: true, exited: exit };
+			persist(); updateWidget(ctx); models.leave();
+		}
+	}
+
+	const recoveryHelp = [
+		"/goals status — phase, connection, recorded sessions and last failure",
+		"/goals stop — stop goal work and supervision; keep plan, evidence and pair",
+		"/goals exit — leave goals/planning mode for chat; keep files; no approval",
+		"/goals reconnect — reconnect the existing pair; never launch or authorize work",
+		"/goals resume — worker only: resume authorized work, or return a draft to planning (Ready still required)",
+		"/goals supervisor | worker | zoom — focus the recorded pane",
+		"/goals clear — disconnect the plan; keep its file",
+		"/goals plan <objective> — start a new draft; free-text objectives still work",
+		"Stop/exit do not kill detached processes. A disconnected peer is unconfirmed; stop it in its own pane. Supervisor chat stays inspection-only.",
+	].join("\n");
+
+	async function recoveryCommand(arg: string, ctx: ExtensionContext): Promise<boolean> {
+		const verb = arg.split(/\s+/)[0];
+		if (!["help", "status", "stop", "exit", "reconnect", "resume"].includes(verb)) return false;
+		if (arg !== verb) { ctx.ui.notify(`Use /goals ${verb} without arguments. To draft an objective, use /goals plan <objective>.`, "warning"); return true; }
+		if (verb === "help") { ctx.ui.notify(recoveryHelp, "info"); return true; }
+		if (verb === "stop" || verb === "exit") {
+			pauseGoals(ctx, verb === "exit");
+			try { supervisor.pause(verb === "exit"); } catch (error) { lastRecoveryError = String(error); ctx.ui.notify(`Stopped locally; peer unconfirmed: ${error}`, "warning"); }
+			ctx.abort();
+			ctx.ui.notify(verb === "exit" ? "Goals mode exited. Files retained; no work approved. Supervisor sessions remain inspection-only." : "Goals stopped. Use /goals resume in the worker when ready. Detached processes are not killed.", "info");
+			return true;
+		}
+		try {
+			if (verb === "status") {
+				const status = await supervisor.status();
+				const binding = status.binding ?? state.supervisor ?? supervisorBootstrap(ctx)?.binding;
+				ctx.ui.notify([`Goals: ${supervisorOnly ? "supervisor" : state.exited ? "ordinary chat (goals exited)" : state.pausedFrom ? "stopped by user" : state.phase ?? "ordinary chat"}.`,
+					`Pair: ${status.connected ? "connected" : "disconnected/unconfirmed"}; ${status.activity ?? "inactive"}.`,
+					`Worker: ${binding?.workerPane ?? "not recorded"} · ${binding?.workerSession ?? "no paired session"}`,
+					`Supervisor: ${binding?.supervisorPane ?? "not recorded"} · ${binding?.supervisorSession ?? "no paired session"}`,
+					`Last failure: ${lastRecoveryError ?? status.lastFailure ?? "none recorded in this runtime"}`].join("\n"), "info");
+			} else if (verb === "reconnect") {
+				await supervisor.reconnect(lifetime.signal);
+				ctx.ui.notify("Reconnect handshake sent to the existing pair. No pane created or work authorized. Use /goals status to inspect connectivity.", "info");
+			} else if (supervisorOnly) {
+				ctx.ui.notify("Resume must be authorized in the worker: /goals worker, then /goals resume. Reconnect alone never starts work.", "info");
+			} else if (!state.pausedFrom) {
+				ctx.ui.notify("No user-stopped plan to resume. Use /goals status; a draft needs Ready.", "info");
+			} else if (state.pausedFrom === "planning" || state.resumeHash !== planHash(readPlan(ctx))) {
+				const generation = workGeneration;
+				if (!await models.enter("planning", ctx) || generation !== workGeneration || lifetime.signal.aborted) return true;
+				state = { ...state, phase: "planning", pausedFrom: undefined, resumeHash: undefined, exited: false, reviewRequested: false };
+				planningContextPending = true; persist(); updateWidget(ctx);
+				ctx.ui.notify("Draft restored; no work started. Review the plan and request Ready before working.", "info");
+			} else {
+				if (operation) throw new Error("Recovery already in progress");
+				const controller = new AbortController(); operation = controller;
+				const signal = AbortSignal.any([controller.signal, lifetime.signal]);
+				const generation = workGeneration;
+				const hash = state.resumeHash;
+				try {
+					if (!await models.enter("worker", ctx)) return true;
+					signal.throwIfAborted();
+					if (state.stewardEnabled) {
+						if (!state.supervisor) throw new Error("No recorded pair; return to planning and choose Ready, or turn the steward off explicitly.");
+						await supervisor.resume(state.supervisor.id, hash, signal);
+					}
+					signal.throwIfAborted();
+					if (generation !== workGeneration || hash !== planHash(readPlan(ctx))) throw new Error("Plan changed during resume; review before working.");
+					state = { ...state, phase: "working", pausedFrom: undefined, resumeHash: undefined, exited: false, autoPaused: false };
+					persist(); updateWidget(ctx);
+					pi.sendUserMessage(workMessage(ctx), { deliverAs: "followUp" });
+				} finally { if (operation === controller) operation = null; }
+			}
+		} catch (error) { lastRecoveryError = String(error); ctx.ui.notify(`Recovery failed; no new work authorized: ${error}`, "warning"); }
+		return true;
+	}
+
+	// --- /goals: plan entry and explicit human recovery -----------------------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals plan <objective> | /goals model current | /goals supervisor | /goals worker | /goals zoom | /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals judge <model> | /goals steward [on|off|status]`,
+		description: `Plan mode: draft goals into ${PLAN_SHAPE}, review, then work them. /goals help | status | stop | exit | reconnect | resume | /goals plan <objective> | /goals model current | /goals supervisor | /goals worker | /goals zoom | /goals <objective> | /goals clear | /goals auto [minutes|off] | /goals judge <model> | /goals steward [on|off|status]`,
+		getArgumentCompletions: (prefix) => ["help", "status", "stop", "exit", "reconnect", "resume", "supervisor", "worker", "zoom", "clear", "plan", "steward", "auto"].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
 		handler: async (args, ctx) => {
+			latestContext = ctx;
+			if (await recoveryCommand(args.trim(), ctx)) return;
 			if (args.trim() === "model current") {
 				if (await models.useCurrent(ctx)) modelRecovered(ctx);
 				return;
@@ -397,6 +544,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				state = {
 					...state,
 					phase: null,
+					pausedFrom: undefined, resumeHash: undefined, exited: false,
 					modelRecovery: null,
 					planVersion: null,
 					autoPaused: false,
@@ -477,14 +625,20 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(ref ? `Sign-off judge model set to ${ref}` : "Sign-off judge reset to the session model", "info");
 				return;
 			}
+			if (!explicitPlan && (/^(?:--|\/)/.test(arg) || /^(?:connect|disconnect|pause|quit|restart|reset|resum|reconect|stpo|stats)(?:\s|$)/i.test(arg))) {
+				ctx.ui.notify("Unknown recovery command. Use /goals help; for an objective use /goals plan <objective>.", "warning"); return;
+			}
 			await stopSupervisor(ctx);
 			if (!await models.enter("planning", ctx)) return;
 			state = {
 				...state,
 				phase: "planning",
+				pausedFrom: undefined, resumeHash: undefined, exited: false,
 				modelRecovery: null,
 				reviewRequested: false,
 				questionsWaived: waivesAlignment(arg),
+				signedOffGoals: [],
+				legacyCompletionClaims: [],
 				planVersion: nextVersion(ctx),
 				supervisor: null,
 			};
@@ -512,7 +666,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			resyncReason = null;
 			return why;
 		};
-		if (state.phase === "planning" || state.phase === "starting") return null;
+		if (state.phase !== "working" || state.pausedFrom || state.exited) return null;
 		if (!plan.trim()) return null;
 		const why = drainResync();
 		if (why) return resync(plan, planRel(ctx), why);
@@ -523,7 +677,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			// widget, no injection, no reminders). Say so instead -- cooperative but confused.
 			return `<system-reminder>\n${planRel(ctx)} exists but has no goal line pi-goals recognizes. A goal is a checkbox list line starting "goal:", e.g. "1. [ ] goal: <imperative>" ([ ] open, [/] active, [x] done, [-] cancelled). Reformat it if it's meant to be the plan.\n</system-reminder>`;
 		}
-		if (!goals.some((g) => g.status === "active" || g.status === "open")) return null;
+		if (!pendingGoals(plan).length) return null;
 		return reminder(foldPlan(plan), planRel(ctx));
 	}
 
@@ -553,11 +707,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
 	pi.on("input", async (event, ctx) => {
+		if ((state.pausedFrom || state.exited) && event.source === "extension" &&
+			(event.text.startsWith("Work the goals in ") || event.text.startsWith("<system-reminder>Auto-continue") || event.text.startsWith("[supervisor]") || event.text === discussPlan || event.text.startsWith("We're in plan mode."))) return { action: "handled" as const };
 		if (!models.ready) { ctx.ui.notify("Role model unavailable. Select a different model with /model, explicitly use the current one with /goals model current, or configure the saved model and reload.", "error"); return { action: "handled" as const }; }
 		if (event.source !== "extension") {
 			clearAutoTimer();
 			autoImmediateUsed = false;
-			if (state.autoPaused) {
+			if (state.autoPaused && !state.pausedFrom && !state.exited) {
 				state = { ...state, autoPaused: false };
 				persist();
 				updateWidget(ctx);
@@ -628,7 +784,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				printed = plan;
 				pi.sendMessage({ customType: "plan", content: plan, display: true });
 			}
-			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Discuss", "Edit", "Cancel"]);
+			const version = state.planVersion;
+			const generation = workGeneration;
+			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Discuss", "Edit", "Cancel"], { signal: reviewAbort.signal });
+			if (state.phase !== "planning" || generation !== workGeneration || version !== state.planVersion || lifetime.signal.aborted) return;
 			if (choice === "Discuss" || choice === undefined) {
 				if (state.modelRecovery && !await models.enter("planning", ctx)) return;
 				state = { ...state, modelRecovery: null };
@@ -639,6 +798,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			}
 			if (choice === "Edit") {
 				const edited = await ctx.ui.editor("Edit the plan", plan);
+				if (generation !== workGeneration || version !== state.planVersion || state.phase !== "planning") return;
 				if (edited !== undefined && edited !== plan) writePlan(ctx, edited);
 				continue;
 			}
@@ -663,7 +823,6 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				await startPlanSupervisor(ctx);
 				return;
 			}
-			const version = state.planVersion;
 			const approvedDraft = planHash(readPlan(ctx));
 			state = { ...state, modelRecovery: "worker" }; persist();
 			const workerReady = await models.enter("worker", ctx);
@@ -685,6 +844,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", async (_event, ctx) => reviewPlan(ctx));
 
 	pi.on("session_start", async (_event, ctx) => {
+		latestContext = ctx;
 		const bootstrap = supervisorBootstrap(ctx);
 		if (bootstrap) {
 			supervisorOnly = true;
@@ -693,7 +853,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		const last = ctx.sessionManager
-			.getEntries()
+			.getBranch()
 			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
 			.pop() as { data?: PlanState } | undefined;
 		// Upgrade cleared/unused legacy sessions, but never attach supervision mid-plan.
@@ -701,9 +861,12 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const useNewDefaults = saved?.defaultsVersion !== 1 && saved?.planVersion == null;
 		state = {
 			defaultsVersion: 1,
-			phase: last?.data?.phase === "working" ? "working" : last?.data?.phase ? "planning" : null,
+			phase: saved?.pausedFrom || saved?.exited ? null : saved?.phase === "working" ? "working" : saved?.phase ? "planning" : null,
+			pausedFrom: saved?.pausedFrom, resumeHash: saved?.resumeHash, exited: saved?.exited,
 			reviewRequested: last?.data?.reviewRequested ?? true,
 			questionsWaived: last?.data?.questionsWaived ?? false,
+			signedOffGoals: last?.data?.signedOffGoals ?? [],
+			legacyCompletionClaims: last?.data?.legacyCompletionClaims ?? [],
 			modelRecovery: last?.data?.modelRecovery ?? null,
 			judgeModel: last?.data?.judgeModel ?? null,
 			planVersion: last?.data?.planVersion ?? null,
@@ -712,6 +875,10 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			stewardEnabled: useNewDefaults ? true : saved?.stewardEnabled ?? true,
 			supervisor: last?.data?.supervisor ?? null,
 		};
+		if (saved && saved.signedOffGoals === undefined) {
+			state.legacyCompletionClaims = scanGoals(readPlan(ctx)).filter(goal => goal.status === "done").map(goal => goal.subject.toLowerCase());
+			persist();
+		}
 		lastSeenWorkingSet = foldPlan(readPlan(ctx));
 		autoLastWorkingSet = lastSeenWorkingSet;
 		planningContextPending = state.phase === "planning" || state.phase === "starting";
@@ -723,6 +890,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		lifetime.abort();
+		goalAbort.abort(); reviewAbort.abort();
 		operation?.abort();
 		clearAutoTimer();
 	});
@@ -730,7 +898,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "RequestPlanReview",
 		label: "Review plan",
-		description: "Planning only: after task-specific alignment questions have been answered (or explicitly waived for this objective), and the final plan is ready, show the human Ready / Discuss / Edit / Cancel. Do not call while waiting for answers. Call again after discussion is finished, even for an unchanged draft. This does not approve or start work.",
+		description: "Planning only: after material unresolved questions have been answered (no fixed quota), and the final plan is ready, show the human Ready / Discuss / Edit / Cancel. Do not call while waiting for answers. Call again after discussion is finished, even for an unchanged draft. This does not approve or start work.",
 		parameters: Type.Object({}),
 		async execute(_id, _params, _signal, _update, ctx) {
 			if (supervisorOnly || state.phase !== "planning") return result("Only a planning session can request plan review.", true);
@@ -750,6 +918,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			goal: Type.String({ description: completeGoalParamDescription }),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
+			signal = AbortSignal.any([lifetime.signal, goalAbort.signal, ...(signal ? [signal] : [])]);
+			if (state.pausedFrom || state.exited) return result("Goals stopped. Resume explicitly before signing off.", true);
+			const generation = workGeneration;
 			if (state.phase === "planning" || state.phase === "starting") return result("Planning is not approved. Wait for the steward or choose Ready before signing off a goal.", true);
 			let plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
@@ -759,7 +930,9 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 			// A model may tick before calling this tool. The submitted goal is still under review;
 			// a rejection or cancellation must not leave that premature success visible.
 			const submitted = scanGoals(plan).filter(goal => goal.subject.toLowerCase() === params.goal.trim().toLowerCase());
-			if (submitted.length === 1 && submitted[0].status === "done") {
+			if (submitted.length !== 1) return result("CompleteGoal requires one unique exact goal subject (ignoring case and surrounding whitespace). Copy the text after 'goal:' from the current plan; give duplicate goals distinct subjects before retrying. No sign-off recorded.", true);
+			refreshSignoffs(plan);
+			if (submitted[0].status === "done") {
 				const lines = plan.split("\n");
 				lines[submitted[0].line] = lines[submitted[0].line].replace(/\[[xX]\]/, "[/]");
 				plan = lines.join("\n");
@@ -778,6 +951,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				} catch (error) { return result(`Supervisor review failed: ${String(error)}`, true); }
 			}
 
+			if (generation !== workGeneration) return result("Sign-off stopped; no goal signed off.", true);
 			const reviewedPlanHash = planHash(plan);
 			const reviewedVersion = state.planVersion;
 			const reviewedPairing = state.supervisor?.id;
@@ -801,21 +975,24 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				writeFileSync(join(ctx.cwd, rel), `goal: ${params.goal}\nmodel: ${judgeModel ?? "pi default"}\nerror: ${raw.error ?? "none"}\n\n${raw.output}\n`);
 				transcriptNote = ` (${rel})`;
 			}
+			if (signal?.aborted || lifetime.signal.aborted || generation !== workGeneration) return result("Sign-off aborted; no goal was signed off.", true);
 			if (state.planVersion !== reviewedVersion || state.supervisor?.id !== reviewedPairing || planHash(readPlan(ctx)) !== reviewedPlanHash) return result("The plan or supervisor changed during evidence review; no goal was signed off. Retry.", true);
 			if (outcome.logEntry) {
-				// Sign-off write: tick the goal [x] (exact-subject match; dogfood showed agent bookkeeping
-				// is the drift point) and append the audit log line, one write. On wording drift the tick
-				// falls to the agent and the result says so -- both paths are explicit, never silent.
 				let updated = readPlan(ctx);
 				let tickNote = "";
-				if (outcome.logEntry.startsWith("signed off")) {
+				const signedOutcome = outcome.status === "accept" || outcome.status === "inconclusive" ? outcome.status : undefined;
+				if (signedOutcome) {
 					const ticked = tickGoal(updated, params.goal);
-					updated = ticked ?? updated;
-					tickNote = ticked
-						? `\n\nGoal ticked [x] in ${planRel(ctx)}.`
-						: `\n\nNo exact goal line matched your wording -- tick it [x] in ${planRel(ctx)} yourself.`;
+					if (!ticked) return result("Goal identity changed; retry with one unique exact goal subject. No sign-off recorded.", true);
+					updated = ticked;
+					tickNote = `\n\nGoal ticked [x] in ${planRel(ctx)}.`;
 				}
 				writePlan(ctx, appendLog(updated, `${stamp()} ${outcome.logEntry}${transcriptNote}`));
+				if (signedOutcome) {
+					const subject = submitted[0].subject.toLowerCase();
+					state = { ...state, signedOffGoals: [...state.signedOffGoals.filter(s => s.subject !== subject), { subject, outcome: signedOutcome }] };
+					persist();
+				}
 				updateWidget(ctx);
 				return result(outcome.resultText + tickNote, outcome.isError);
 			}
@@ -823,7 +1000,15 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		},
 	});
 	// Registered after role restoration, so rejoin cannot start a supervisor turn on the worker model.
-	const supervisor = supervise(pi, () => models.ready);
+	const supervisor = supervise(pi, () => models.ready, (plan) => {
+		const pending = pendingGoals(plan);
+		const claims = pending.filter(goal => goal.status === "done");
+		const inconclusive = state.signedOffGoals.filter(signoff => signoff.outcome === "inconclusive");
+		return {
+			completion: { planHash: planHash(plan), total: scanGoals(plan).length, pending: pending.length, inconclusive: inconclusive.length },
+			summary: `CompleteGoal records: ${state.signedOffGoals.length - inconclusive.length} conclusive, ${inconclusive.length} accepted inconclusive (not verified); ${pending.length} goals await sign-off.\nUnsigned completion claims: ${claims.map(goal => goal.subject).join(", ") || "none"}. Legacy completions without tracking: ${state.legacyCompletionClaims.join(", ") || "none"}; preserve their history and use CompleteGoal re-review if needed, not automatic reimplementation. A checkbox is not proof; inspect the current plan and artifacts.`,
+		};
+	}, exit => { if (latestContext) pauseGoals(latestContext, exit); });
 	function modelRecovered(ctx: ExtensionContext): void {
 		if (supervisorOnly) {
 			const bootstrap = supervisorBootstrap(ctx);
@@ -879,6 +1064,7 @@ export interface SignOffInput {
 /** The outcome of a sign-off: the reply text, whether it's a hard error, and the one ## Log line to
  *  append (null when nothing should be written, e.g. aborted before any verdict). */
 export interface SignOffOutcome {
+	status: "accept" | "reject" | "inconclusive" | "aborted";
 	resultText: string;
 	isError: boolean;
 	logEntry: string | null;
@@ -898,13 +1084,14 @@ export async function decideSignOff(
 	const task = judgeUser({ goal: input.goal, plan: input.plan, planPath: input.planRel });
 	const judge = await runJudgeFn(task);
 
-	if (signal?.aborted) return { resultText: "Sign-off aborted.", isError: true, logEntry: null };
+	if (signal?.aborted) return { status: "aborted", resultText: "Sign-off aborted.", isError: true, logEntry: null };
 
 	// Judge ran but failed/errored/timed out: fail forward, say so in the log.
 	if (judge.error) {
 		const partial = judge.output ? `\n\npartial judge output:\n${judge.output}` : "";
 		return {
-			resultText: `Judge ran but failed (${judge.error}). Accepted inconclusive — logged.${partial}`,
+			status: "inconclusive",
+			resultText: `Judge ran but failed (${judge.error}). Accepted inconclusive — logged; this is not verified completion.${partial}`,
 			isError: false,
 			logEntry: `signed off "${input.goal}" (judge inconclusive: ran but failed: ${oneLine(judge.error)})`,
 		};
@@ -923,12 +1110,14 @@ export async function decideSignOff(
 		const checks = /^[ \t]*(?:[-*]|\d+[.)])[ \t]+\S.*$/m.test(checksBody);
 		if (!checks) {
 			return {
+				status: "reject",
 				resultText: `Sign-off REJECTED. Missing:\nchecked-artifact list before VERDICT: accept\n\n--- judge ---\n${reasoning}`,
 				isError: true,
 				logEntry: `reject "${input.goal}": judge accept had no checked-artifact list`,
 			};
 		}
 		return {
+			status: "accept",
 			resultText: `Sign-off ACCEPTED (log line appended).\n\n--- judge ---\n${reasoning}`,
 			isError: false,
 			logEntry: `signed off "${input.goal}" (judge accept)`,
@@ -937,6 +1126,7 @@ export async function decideSignOff(
 	if (verdict === "reject") {
 		const missing = judge.output.match(/missing\s*:\s*([\s\S]*)$/i)?.[1].trim() || judge.output.slice(-500);
 		return {
+			status: "reject",
 			resultText: `Sign-off REJECTED. Missing:\n${missing}\n\n--- judge ---\n${reasoning}`,
 			isError: true,
 			logEntry: `reject "${input.goal}": ${oneLine(missing)}`,
@@ -944,15 +1134,16 @@ export async function decideSignOff(
 	}
 	// No VERDICT line: same fail-forward as a judge error -- the judge ran but didn't answer.
 	return {
-		resultText: `Judge returned no VERDICT line. Accepted inconclusive — logged.\n\n--- judge ---\n${reasoning || "(no output)"}`,
+		status: "inconclusive",
+		resultText: `Judge returned no VERDICT line. Accepted inconclusive — logged; this is not verified completion.\n\n--- judge ---\n${reasoning || "(no output)"}`,
 		isError: false,
 		logEntry: `signed off "${input.goal}" (judge inconclusive: no VERDICT line)`,
 	};
 }
 
 /** Tick the goal line whose subject exactly matches `goal` (trimmed, case-insensitive) to [x].
- *  Null when there is no unique exact match (wording drift / duplicates) -- the caller then asks the
- *  agent to tick it itself. Reuses GOAL_LINE; deliberately NOT fuzzy, that's the judge's job. */
+ *  Null when there is no unique exact match (wording drift / duplicates). CompleteGoal refuses
+ *  ambiguous identity before review; this helper never chooses a different goal. */
 export function tickGoal(plan: string, goal: string): string | null {
 	const lines = plan.split("\n");
 	const want = goal.trim().toLowerCase();

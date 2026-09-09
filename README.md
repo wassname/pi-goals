@@ -67,10 +67,11 @@ pi -e .
 
 `/goals` enters plan mode and starts a conversation; the objective is an optional seed. From there:
 
-1. Align. The agent inspects technical facts read-only, then asks at least three task-specific
-   questions in one chat round about the expected result, scope/constraints, and success/failure
-   criteria. It waits for your answers before proposing the final plan. An explicit “no questions”
-   or “skip questions” clause in the current objective waives this round for that plan only.
+1. Align. The agent inspects technical facts read-only, then asks only material unresolved
+   questions about outcome, scope, constraints, or success criteria. There is no fixed quota or
+   confirmation ritual for ordinary implementation details. It waits for required answers before
+   proposing the final plan. An explicit “no questions” or “skip questions” clause waives optional
+   questions for that plan only, not missing permissions.
    “No q's” and “skip q's” are also supported. Negated instructions (“do not skip questions”) and
    quoted feature references (“add a 'skip questions' button”) do not waive alignment.
 2. Review. When alignment is complete, the agent requests review and the full draft is printed.
@@ -138,8 +139,24 @@ calls, with no plan-lifecycle RPC dispatcher or headless live Pi process. Discon
 pending approval and is shown explicitly; a send does not prove receipt or execution.
 
 One `CompleteGoal` call asks this supervisor about direction and scope, then runs the normal fresh
-read-only evidence judge. A prematurely checked submitted goal is reopened before review; only accepted
-sign-off checks it again. The judge's checks section accepts ordinary numbered and indented Markdown lists,
+read-only evidence judge. Use one unique exact goal subject (case and surrounding whitespace do not
+matter); ambiguous or drifted wording gets an actionable retry, not a manual-tick fallback.
+Manual `[x]` marks are visible completion claims, not sign-off, even before this tool is called or
+after reload. A prematurely checked submitted goal is reopened before review. Only accepted sign-off
+checks it again and persists a per-goal record; observed reopening invalidates that record. The widget
+and supervisor distinguish conclusive acceptance from **accepted inconclusive** (judge failure or no
+verdict). Inconclusive still permits fail-forward, but is not verified completion. Git status is context,
+not a gate: the judge can inspect cited uncommitted and ignored files directly. No commit or clean
+worktree is required unless the goal itself requires it.
+
+Older sessions have no trusted per-goal records. Their existing checkboxes/evidence/logs are preserved
+as “legacy completion — sign-off not recorded,” not rejected or automatically reimplemented. Use normal
+CompleteGoal re-review if needed; editable historical log text is not imported as trusted sign-off.
+Stopped pairings remain stopped. New worker views include current completion claims and whether the
+canonical plan changed; a manual tick cannot end supervision. Ordinary supervisor prose and genuine
+questions no longer suppress later worker direction. Explicit human pauses remain instructions to
+respect, not a reason to discard new views; idle responses do not immediately retry themselves.
+ The judge's checks section accepts ordinary numbered and indented Markdown lists,
 but an empty section cannot borrow a list from a later heading. Approving one goal does not finish supervision. Cancelled, stale or
 mismatched replies do not sign off goals. Goal/revision identity is bound in code to the checkpoint
 actually presented to the supervisor, not copied into a form by the model. Supervisor model checkpoints

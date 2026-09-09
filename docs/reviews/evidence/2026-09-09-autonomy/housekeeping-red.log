@@ -1,0 +1,81 @@
+
+ RUN  v4.1.9 /home/ubuntu/.pi/agent/worktrees/pi-goals-simple-visible-supervision
+
+ ❯ test/prompts.test.ts (6 tests | 2 failed | 4 skipped) 23ms
+     × keeps signed-off goal identities during plan housekeeping 18ms
+     × gives the judge an exact subject rather than a fuzzy-match fallback 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/prompts.test.ts > planning prompt > keeps signed-off goal identities during plan housekeeping
+AssertionError: expected '<system-reminder>\nYour plan (.pi/pla…' to contain 'keep every goal line and its completi…'
+
+- Expected
++ Received
+
+- keep every goal line and its completion status above ## Log
++ <system-reminder>
++ Your plan (.pi/plan/test.md, above the fold; the log, learnings and appendix are in the file):
++
++ plan
++
++ Keep it current as you work, with your normal edit tool:
++ - tick finished subtasks ([/] in progress), add discovered ones
++ - append ONE short line to ## Log, and a line to ## Learnings for a gotcha worth keeping
++ - when the active goal's discriminator is satisfied, fill its evidence: list (each item = a durable
++   artifact + a verbatim quote you actually observed + a short read of it), then call CompleteGoal.
++   Don't tick a goal [x] before CompleteGoal accepts; the sign-off log line is the audit trail.
++ - if the working set has grown long, prune finished goals (their evidence lives in git history and
++   ## Log) and move settled detail down to ## Appendix, which is unlimited
++ - the human's latest message outranks this plan. If it corrects the deliverable or scope, amend the
++   user-visible result, user voice, and affected goals before continuing; don't defend the old plan
++ - otherwise keep working toward the active goal; don't stop to ask unless genuinely blocked
++ </system-reminder>
+
+ ❯ test/prompts.test.ts:34:16
+     32|  it("keeps signed-off goal identities during plan housekeeping", () =>…
+     33|   const text = reminder("plan", ".pi/plan/test.md");
+     34|   expect(text).toContain("keep every goal line and its completion stat…
+       |                ^
+     35|   expect(text).toContain("evidence references beside each goal");
+     36|   expect(text).not.toContain("prune finished goals");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/prompts.test.ts > planning prompt > gives the judge an exact subject rather than a fuzzy-match fallback
+AssertionError: expected 'The working agent claims this goal is…' to contain 'unique exact goal subject'
+
+- Expected
++ Received
+
+- unique exact goal subject
++ The working agent claims this goal is complete:
++
++   goal: first
++
++ Below is the full plan file (plan.md). Find that goal in it (tolerate small wording drift; if
++ you cannot find a matching goal at all, reject and say so). Read User-visible result and User voice
++ first, then its discriminator, subtle failure modes, verify command, and evidence list.
++
++ --- plan file ---
++ 1. [ ] goal: first
++ --- end plan file ---
++
++ Read the cited artifacts (you cannot execute anything), then give your VERDICT.
+
+ ❯ test/prompts.test.ts:42:16
+     40|  it("gives the judge an exact subject rather than a fuzzy-match fallba…
+     41|   const text = judgeUser({ goal: "first", plan: "1. [ ] goal: first", …
+     42|   expect(text).toContain("unique exact goal subject");
+       |                ^
+     43|   expect(text).not.toContain("tolerate small wording drift");
+     44|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  2 failed | 1 passed | 37 skipped (40)
+   Start at  09:06:07
+   Duration  1.42s (transform 314ms, setup 63ms, import 1.30s, tests 38ms, environment 0ms)
+

@@ -1,0 +1,34 @@
+
+[Prompts]
+  /council, /gather-context-and-clarify, /parallel-cleanup, /parallel-research, /parallel-review, /review-loop
+
+[Extensions]
+  @aliou/pi-processes:processes, @aliou/pi-processes:processes-dock, @aliou/pi-processes:processes-logs, @ff-labs/pi-fff:src, herdr-agent-state.ts, pi-annotated-journal, pi-better-compaction, pi-sandbox, pi-schedule-prompt:src, pi-subagents,
+pi-zed-shift-enter:extension.ts, pi-zentui:zentui, src, wassname/pi-copilot-web
+
+[Themes]
+  adventure, adwaita-dark, arcoiris, arthur, atom, aura, black-metal-bathory, black-metal-burzum, black-metal-khold, box, brogrammer, carbonfox, catppuccin-mocha, citruszest, cursor-dark, cutie-pro, dark-modern, dark-pastel, dimmed-monokai, doom-peacock, dracula-plus,
+earthsong, everforest-dark-hard, fahrenheit, flatland, flexoki-dark, front-end-delight, fun-forrest, galizur, github-dark-colorblind, github-dark-high-contrast, glacier, gruber-darker, gruvbox-dark, gruvbox-dark-hard, gruvbox-material, guezwhoz, hacktober, hardcore,
+havn-skumring, ic-orange-ppl, iterm2-smoooooth, iterm2-tango-dark, japanesque, jellybeans, kanagawa-wave, kurokula, later-this-evening, lovelace, material-darker, matte-black, mellow, miasma, nvim-dark, popping-and-locking, sea-shells, sleepy-hollow, smyck, tomorrow-night,
+tomorrow-night-bright, tomorrow-night-burns, twilight, vague, vesper, xcode-dark-hc
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Operator-created recovery command fixture. The plan is a draft, not approved. Do not implement it.
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Operator fixture marker, not a model response.
+
+ Warning: ⚠️ Network sandbox allows all domains because network.allowedDomains contains "*". Only use this intentionally; remove "*" to restore per-domain prompts.
+
+ Reloaded keybindings, extensions, skills, prompts, themes, and context files
+
+ Goals stopped by user. Plan and evidence retained.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│
+│
+│
+│ gpt-6-astra  Github Copilot  minimal
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ trial-nAjUyF                                                                                                                                              goals stopped · /goals resume | 🔒 Sandbox: all domains, 4 write paths | [░░░░░░░░░░] 0.0%/400k (auto) | $0.000 (sub)

@@ -8,6 +8,17 @@
 import { type SupervisorBinding, validBinding } from "../../supervisor.js";
 import { MAX_VIEW_BYTES } from "./view.js";
 
+/** Compact completion bookkeeping from the worker, bound to the exact plan it observed. */
+export interface PlanCompletion {
+  planHash: string;
+  total: number;
+  pending: number;
+  inconclusive: number;
+}
+function validCompletion(value: any): value is PlanCompletion {
+  return !!value && typeof value.planHash === "string" && [value.total, value.pending, value.inconclusive].every(n => Number.isSafeInteger(n) && n >= 0) && value.pending + value.inconclusive <= value.total;
+}
+
 export interface GoalReview {
   requestId: string;
   bindingId: string;
@@ -44,14 +55,20 @@ export interface GoalDecision extends GoalReview {
   reason: string;
 }
 export type PlanWire =
-  | { t: "plan_hello" | "plan_hello_ack"; to: string; bindingId: string; role: "worker" | "supervisor"; sessionFile: string }
+  | { t: "plan_hello" | "plan_hello_ack"; to: string; bindingId: string; role: "worker" | "supervisor"; sessionFile: string; paused?: boolean; pauseId?: string }
+  | { t: "plan_pause"; to: string; bindingId: string; exit: boolean; pauseId: string }
+  | { t: "plan_resume"; to: string; bindingId: string; requestId: string; planHash: string; pauseId?: string }
+  | { t: "plan_resumed"; to: string; bindingId: string; requestId: string; accepted: boolean }
   | ({ t: "goal_review"; to: string } & GoalReviewRequest)
   | ({ t: "goal_decision"; to: string } & GoalDecision)
   | { t: "goal_cancel"; to: string; requestId: string; bindingId: string }
   | { t: "plan_activate" | "plan_stop"; to: string; bindingId: string };
 export function validPlanWire(value: any): value is PlanWire {
   if (!value || typeof value.to !== "string" || typeof value.bindingId !== "string") return false;
-  if (value.t === "plan_hello" || value.t === "plan_hello_ack") return ["worker", "supervisor"].includes(value.role) && typeof value.sessionFile === "string";
+  if (value.t === "plan_hello" || value.t === "plan_hello_ack") return ["worker", "supervisor"].includes(value.role) && typeof value.sessionFile === "string" && (value.paused === undefined || typeof value.paused === "boolean") && (value.pauseId === undefined || typeof value.pauseId === "string");
+  if (value.t === "plan_pause") return typeof value.exit === "boolean" && typeof value.pauseId === "string";
+  if (value.t === "plan_resume") return typeof value.requestId === "string" && typeof value.planHash === "string" && (value.pauseId === undefined || typeof value.pauseId === "string");
+  if (value.t === "plan_resumed") return typeof value.requestId === "string" && typeof value.accepted === "boolean";
   if (value.t === "plan_activate" || value.t === "plan_stop") return true;
   if (typeof value.requestId !== "string") return false;
   if (value.t === "goal_cancel") return true;
@@ -77,7 +94,7 @@ export type Wire = (PlanWire
   | { t: "paired"; to: string; plan?: SupervisorBinding }
   | { t: "goal"; to: string; goal: string }
   /** stopped: the worker settled, so this is a decision point. false: a check in mid-turn. */
-  | { t: "view"; to: string; view: string; stopped: boolean; refreshed?: boolean }
+  | { t: "view"; to: string; view: string; stopped: boolean; refreshed?: boolean; completion?: PlanCompletion }
   /** Supervisor asks for a view now. Its own turn cannot make one: the worker publishes them. */
   | { t: "look"; to: string }
   | { t: "directive"; to: string; text: string }
@@ -88,11 +105,11 @@ export type Wire = (PlanWire
 export function isWire(payload: unknown): payload is Wire {
   if (typeof payload !== "object" || payload === null) return false;
   if (validPlanWire(payload)) return true;
-  const { t, to, goal, view, stopped, refreshed, text, reason, plan } = payload as Record<string, unknown>;
+  const { t, to, goal, view, stopped, refreshed, text, reason, plan, completion } = payload as Record<string, unknown>;
   if ((t === "pair" || t === "paired") && plan !== undefined && !validBinding(plan)) return false;
   if (typeof to !== "string") return false;
   if (t === "pair" || t === "goal") return typeof goal === "string";
-  if (t === "view") return typeof view === "string" && typeof stopped === "boolean" && (refreshed === undefined || typeof refreshed === "boolean");
+  if (t === "view") return typeof view === "string" && typeof stopped === "boolean" && (refreshed === undefined || typeof refreshed === "boolean") && (completion === undefined || validCompletion(completion));
   if (t === "directive") return typeof text === "string" && text.trim().length > 0;
   if (t === "done") return typeof reason === "string";
   return t === "unpair" || t === "paired" || t === "look" || t === "who" || t === "here";

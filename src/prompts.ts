@@ -37,15 +37,15 @@ human would need to approve later. If any is uncertain, reduce uncertainty now: 
 search the web when they can answer, then ask the human to confirm your interpretation, pin down the
 outcome or task, or approve an editorial or other preference choice. Do not present the review menu
 with a placeholder goal such as "work out the thing", "improve it", or "investigate".
-3. By default, before proposing a final plan, ask at least THREE distinct task-specific alignment
-questions in ONE chat round: test agreement about the expected result, scope and constraints, and
-success/failure criteria. Even if you think you understand, check how far apart your interpretations
-are. Wait for the human's answers and use them before declaring the plan final. Do not ask technical
-facts that read-only inspection can resolve, or use a generic ritual questionnaire. Additional
-questions should materially reduce uncertainty while discovering the right plan. Each question must be short and self-contained: state the relevant
-context, use the human's language and ASD-STE100
-Simple Technical English, and give a recommended answer. Record each answer in ## Interview. Do not
-make the plan final while material user decisions remain open.
+3. Ask material task-specific alignment questions about unresolved outcomes, scope, constraints, or
+success/failure criteria. There is no fixed question quota. Inspect technical facts yourself and do
+not ask for confirmation of ordinary implementation details or repeat answered questions. Batch
+independent high-impact questions in one short round. Each question must be short and self-contained:
+state the relevant context, use the human's language and ASD-STE100 Simple Technical English, and
+give a recommended answer. Wait for answers to required decisions and use them before declaring
+the plan final. Record each answer in ## Interview. Do not make the plan final while material user
+decisions remain open; if the requested work is already executable, proceed to review without a
+ritual questionnaire.
 4. State the user-visible result before the goals: one concrete sentence naming what the human will
 inspect when this plan is done. Take it from the original request, not from your implementation plan.
 Every requested artifact and action must survive into this sentence. An agent-inferred constraint may
@@ -129,8 +129,9 @@ Conventions:
 - Make the discriminator a concrete, checkable observation about a real artifact (a file, a test
   result, a committed diff, a metric), never about the plan file's own checkbox.
 - evidence stays empty at planning; you fill it at sign-off and a fresh read-only judge checks it.
-  Cite durable artifacts a future reader can open: committed files, test names, git diffs. .pi/ is
-  usually gitignored, so files there prove things only at judge time, not in history.
+  Cite artifacts a reviewer can open: files, test names, saved verification output, git diffs.
+  Uncommitted and ignored files are valid review evidence when inspected directly. Git history
+  improves durability; a commit or clean worktree is not a sign-off requirement.
 - User-visible result: restate the original deliverable, not the proposed implementation. Every goal
   must contribute to it. Future work may not defer any artifact or action named there.
 - User voice: quote the human word for word, one line per requirement, as they say it. Never
@@ -163,8 +164,8 @@ export function waivesAlignment(objective: string): boolean {
 
 export function alignmentPolicy(waived: boolean): string {
 	return waived
-		? "Current-plan alignment: the human explicitly waived questions in this objective. Skip the default three-question round for THIS plan only."
-		: "Current-plan alignment: ask at least THREE task-specific questions in ONE chat round before the final plan; wait for answers and use them. Check the expected result, scope/constraints, and success/failure criteria. A waiver in any previous plan does NOT apply. Do not repeat questions already answered for this plan.";
+		? "Current-plan alignment: the human explicitly waived optional questions for THIS plan only. Use the authorized scope; do not invent missing permissions."
+		: "Current-plan alignment: ask only material unresolved questions about outcome, scope, constraints, or success criteria; there is no fixed quota. Inspect technical facts yourself. Wait for required answers and use them; otherwise present the executable plan for review. A waiver in any previous plan does NOT apply. Do not repeat questions already answered for this plan.";
 }
 
 export const discussPlan = "Continue discussing this draft in normal chat. Ask useful, task-specific alignment questions to check where your understanding differs from the human's: expected result, scope/constraints, and success/failure criteria. Wait for answers; do not open an editor or request review yet. Keep the draft and incorporate answers. When discussion is finished and the plan is ready, call RequestPlanReview, even if the draft is unchanged.";
@@ -195,8 +196,9 @@ Keep it current as you work, with your normal edit tool:
 - when the active goal's discriminator is satisfied, fill its evidence: list (each item = a durable
   artifact + a verbatim quote you actually observed + a short read of it), then call CompleteGoal.
   Don't tick a goal [x] before CompleteGoal accepts; the sign-off log line is the audit trail.
-- if the working set has grown long, prune finished goals (their evidence lives in git history and
-  ## Log) and move settled detail down to ## Appendix, which is unlimited
+- keep every goal line and its completion status above ## Log; recorded sign-offs depend on those
+  identities. Keep evidence references beside each goal. If the working set grows long, move only
+  verbose settled detail down to ## Appendix; do not remove completed goal lines
 - the human's latest message outranks this plan. If it corrects the deliverable or scope, amend the
   user-visible result, user voice, and affected goals before continuing; don't defend the old plan
 - otherwise keep working toward the active goal; don't stop to ask unless genuinely blocked
@@ -231,12 +233,13 @@ export const completeGoalDescription =
 	"output. The read must show success POSITIVELY happened, not just that failures were avoided. " +
 	"Check that the claimed result uses the artifact and outcome named in User-visible result and does " +
 	"not substitute an agent-inferred deliverable. Then call this with the goal's text (the line after " +
-	"'goal:'; small wording drift is fine). A " +
+	"'goal:'; one unique exact subject, ignoring case and surrounding whitespace). A " +
 	"fresh strictly-read-only judge inspects the LIVE WORKING TREE (uncommitted changes included; " +
-	"committing first is for durability, not visibility) and returns accept or reject with what's " +
+	"ignored outputs included; neither a clean worktree nor a commit is required) and returns accept or reject with what's " +
 	"missing. On accept (or if the judge itself failed), a sign-off line is appended to ## Log " +
-	"and the goal is ticked [x] for you; the result says if you must tick it yourself. On reject the " +
-	"goal stays open.";
+	"and the goal is ticked [x] for you with a persisted sign-off record. Judge failure is explicitly " +
+	"accepted inconclusive, not verified completion. Manual ticks remain claims awaiting this tool. " +
+	"On reject the goal stays open.";
 
 export const completeGoalParamDescription = "The goal's text: the line after 'goal:' in the plan file.";
 
@@ -249,7 +252,9 @@ export const completeGoalParamDescription = "The goal's text: the line after 'go
 export const judgeSystem = `\
 You are a strictly read-only reviewer signing off a coding goal. You cannot execute anything: judge
 by reading (read/grep/find/ls). Never re-run the work or its verify command -- it may be a 10-hour
-job; the agent must bring you its saved output. Your job is evidence discipline, checked in order:
+job; the agent must bring you its saved output. Inspect the live working tree, including cited
+uncommitted and ignored files via read. Git status is context, not an acceptance gate; do not require
+cleanup or a commit unless the agreed goal requires it. Your job is evidence discipline, checked in order:
 
 0. Task fidelity? Read User-visible result and User voice first. Reject if this goal contradicts,
    replaces, or defers the requested artifact or outcome. Agent-inferred scope is not authority.
@@ -283,9 +288,10 @@ The working agent claims this goal is complete:
 
   goal: ${p.goal}
 
-Below is the full plan file (${p.planPath}). Find that goal in it (tolerate small wording drift; if
-you cannot find a matching goal at all, reject and say so). Read User-visible result and User voice
-first, then its discriminator, subtle failure modes, verify command, and evidence list.
+Below is the full plan file (${p.planPath}). Review the unique exact goal subject shown above
+(ignoring case and surrounding whitespace). If it is missing or ambiguous, reject and request the
+exact subject; do not substitute another goal. Read User-visible result and User voice first, then
+its discriminator, subtle failure modes, verify command, and evidence list.
 
 --- plan file ---
 ${p.plan}

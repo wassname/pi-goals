@@ -1,0 +1,20 @@
+node:net:1986
+      const error = new UVExceptionWithHostPort(rval, 'listen', address, port);
+                    ^
+
+Error: listen EPERM: operation not permitted /tmp/claude/tsx-1000/28.pipe
+    at Server.setupListenHandle [as _listen2] (node:net:1986:21)
+    at listenInCluster (node:net:2065:12)
+    at Server.listen (node:net:2187:5)
+    at file:///tmp/pi-goals-broker-diagnostic-1T7ENA/package/node_modules/tsx/dist/cli.mjs:53:31472
+    at new Promise (<anonymous>)
+    at createIpcServer (file:///tmp/pi-goals-broker-diagnostic-1T7ENA/package/node_modules/tsx/dist/cli.mjs:53:31450)
+    at async file:///tmp/pi-goals-broker-diagnostic-1T7ENA/package/node_modules/tsx/dist/cli.mjs:55:542 {
+  code: 'EPERM',
+  errno: -1,
+  syscall: 'listen',
+  address: '/tmp/claude/tsx-1000/28.pipe',
+  port: -1
+}
+
+Node.js v25.8.1

@@ -366,7 +366,8 @@ test("the second view carries only what happened after the first", async () => {
   await new Promise(resolve => setTimeout(resolve, 50));
   const second = worker.published.filter((p) => p.t === "view").at(-1).view;
   assert.match(second, /THE SECOND THING/);
-  assert.doesNotMatch(second, /THE FIRST INSTRUCTION/, "the supervisor already read this one");
+  assert.match(second, /# Latest user direction\nTHE FIRST INSTRUCTION/, "direction and human pauses remain available outside incremental history");
+  assert.doesNotMatch(second.split("# New turns since your last look")[1], /THE FIRST INSTRUCTION/, "turn history stays incremental");
 });
 
 test("a message addressed to a different session is ignored", async () => {
@@ -1345,13 +1346,16 @@ test("a human message in the worker session is not a reason to stand back", asyn
   await sup.start();
   await sup.run("supervise", "@worker make the results table");
 
-  assert.match(sup.contextMessages.at(-1)!.content, /not a handover, and it is not a reason to stand back/);
+  assert.match(sup.contextMessages.at(-1)!.content, /new direction, not an automatic handover/);
+  assert.match(sup.contextMessages.at(-1)!.content, /do not steer the paused work until authorized/);
+  assert.match(sup.contextMessages.at(-1)!.content, /question or pause is not a reason to discard them/);
   assert.match(sup.tools.get("let_it_run")!.description, /A human message does not end supervision/);
 
   // And on the view that carries a stopped worker, where the excuse actually got used.
   sup.deliver(WORKER_ID, { t: "view", to: SUPER_ID, view: "worker view", stopped: true });
   await new Promise((r) => setTimeout(r, 5));
-  assert.match(sup.userMessages[0].content, /concrete continuation if work remains/);
+  assert.match(sup.userMessages[0].content, /steer a useful authorized continuation/);
+  assert.match(sup.userMessages[0].content, /Respect explicit human pauses/);
 });
 
 test("letting a stopped worker run says plainly that the worker stays stopped", async () => {

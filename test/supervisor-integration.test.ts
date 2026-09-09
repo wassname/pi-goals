@@ -210,7 +210,13 @@ describe("actual goals and supervisor package hooks (Herdr and judge mocked)", (
 				const completed = await completion;
 				expect(completed.isError, JSON.stringify(completed)).toBe(false);
 				expect(readFileSync(path, "utf8")).toContain(`[x] goal: ${goal}`);
+				const records = manager.getBranch().findLast((entry: any) => entry.customType === "pi-goals-state") as any;
+				expect(records.data.signedOffGoals).toContainEqual({ subject: goal, outcome: "accept" });
 			}
+			await supervisor.commands.get("supervise").handler("look", supervisor.ctx); await tick();
+			expect(wires.findLast(w => w.t === "view").completion).toMatchObject({ total: 2, pending: 0, inconclusive: 0 });
+			await supervisor.tools.get("let_it_run").execute("reviewed", { reason: "Both goals signed off" }, undefined, undefined, supervisor.ctx);
+			await supervisor.hook("agent_settled");
 			expect(judge.calls).toHaveLength(2); expect(judge.calls.every(args => args.includes("--no-extensions") && args.includes("offline/judge"))).toBe(true);
 			expect(worker.ctx.model.id).toBe("worker");
 			expect(supervisor.ctx.model.id).toBe("supervisor");
@@ -223,6 +229,8 @@ describe("actual goals and supervisor package hooks (Herdr and judge mocked)", (
 			await tick(); await worker.commands.get("goals").handler("steward off", worker.ctx);
 			expect((await pending).isError).toBe(true); await tick();
 			expect(judge.calls).toHaveLength(2); expect(supervisor.aborts).toBeGreaterThan(0);
+			const cancelledRecords = manager.getBranch().findLast((entry: any) => entry.customType === "pi-goals-state") as any;
+			expect(cancelledRecords.data.signedOffGoals).toEqual([{ subject: "second", outcome: "accept" }]);
 		} finally { for (const peer of peers) await peer.hook("session_shutdown"); rmSync(cwd, { recursive: true, force: true }); }
 	}, 15_000);
 });

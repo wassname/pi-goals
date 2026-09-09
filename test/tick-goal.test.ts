@@ -13,7 +13,7 @@ const plan = `# Plan
 ## Log
 `;
 
-describe("tickGoal (sign-off ticks the goal; agent only ticks on wording drift)", () => {
+describe("tickGoal (recorded sign-off ticks one exact goal)", () => {
 	it("ticks the exact-matching goal line, case-insensitive, leaving subtasks alone", () => {
 		const out = tickGoal(plan, "implement the CACHE layer");
 		expect(out).toContain("1. [x] goal: Implement the cache layer");
@@ -21,7 +21,7 @@ describe("tickGoal (sign-off ticks the goal; agent only ticks on wording drift)"
 		expect(out).toContain("2. [ ] goal: Ship the docs"); // other goal untouched
 	});
 
-	it("returns null on wording drift (fuzzy matching is the judge's job, not TypeScript's)", () => {
+	it("returns null on wording drift so the caller can request the exact subject", () => {
 		expect(tickGoal(plan, "Implement caching")).toBeNull();
 	});
 

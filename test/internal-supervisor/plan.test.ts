@@ -8,6 +8,62 @@ import extension from "../../src/internal/supervisor/index.js";
 import { type SupervisorBinding as PlanBinding, planHash } from "../../src/supervisor.js";
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test("human pause survives reload/reconnect; only explicit resume reactivates the same pair", async () => {
+  const h = pairHarness();
+  try {
+    await h.start();
+    await h.worker.controller.activate(h.binding.id);
+    await tick();
+    h.worker.controller.pause(); await tick();
+    assert.equal((await h.worker.controller.status()).binding.paused, true);
+    assert.equal((await h.supervisor.controller.status()).binding.active, false);
+    const reloaded = await h.restart(h.supervisor, "supervisor-reloaded");
+    const views = h.wire.filter(w => w.t === "view").length;
+    await h.worker.controller.reconnect(); await tick();
+    assert.equal((await reloaded.controller.status()).binding.paused, true);
+    assert.equal(h.wire.filter(w => w.t === "view").length, views);
+    const pairs = h.wire.filter(w => w.t === "pair").length;
+    await h.worker.controller.resume(h.binding.id, planHash(readFileSync(h.planPath, "utf8")));
+    assert.equal((await reloaded.controller.status()).binding.paused, false);
+    assert.equal((await h.worker.controller.status()).binding.active, true);
+    assert.equal(h.wire.filter(w => w.t === "pair").length, pairs);
+    const oldResume = h.wire.findLast(w => w.t === "plan_resume");
+    h.worker.controller.pause(); await tick();
+    reloaded.receive({ type: "message", fromSessionId: "worker", payload: oldResume }); await tick();
+    assert.equal((await reloaded.controller.status()).binding.paused, true, "a delayed old resume cannot undo a newer stop");
+  } finally { await h.close(); }
+});
+
+test("stop cancels an in-flight checkpoint even when the cancel notification cannot be sent", async () => {
+  const h = pairHarness();
+  try {
+    await h.start();
+    const review = h.worker.controller.review(h.binding.id, "first", planHash(readFileSync(h.planPath, "utf8")));
+    const cancelled = assert.rejects(review, /Stopped/);
+    await tick();
+    h.worker.connected = false;
+    h.worker.controller.pause();
+    await cancelled;
+    assert.equal((await h.worker.controller.status()).binding.paused, true);
+  } finally { await h.close(); }
+});
+
+test("supervisor pause cancels checkpoint and a disconnected local stop still persists", async () => {
+  const h = pairHarness();
+  try {
+    await h.start();
+    const pending = h.worker.controller.review(h.binding.id, "first", planHash(readFileSync(h.planPath, "utf8")));
+    const cancelled = assert.rejects(pending, /cancelled|Stopped/);
+    await tick();
+    h.supervisor.controller.pause(true); await tick(); await cancelled;
+    assert.equal((await h.worker.controller.status()).binding.paused, true);
+    h.worker.connected = false;
+    assert.doesNotThrow(() => h.worker.controller.pause());
+    assert.equal((await h.worker.controller.status()).activity, "stopped by user");
+    await assert.rejects(h.worker.controller.resume(h.binding.id, planHash(readFileSync(h.planPath, "utf8"))), /Intercom/);
+  } finally { await h.close(); }
+});
 function pairHarness() {
   const cwd = mkdtempSync(join(tmpdir(), "supervise-plan-"));
   const peers: any[] = [];
@@ -40,7 +96,10 @@ function pairHarness() {
     const ctx: any = { cwd, hasUI: true, model: { provider: "native", id: "test", contextWindow: 200_000 }, isIdle: () => peer.idle, abort: () => { peer.aborts++; }, getContextUsage: () => ({ tokens: peer.tokens }), compact({ onComplete }: any) { peer.compactions++; peer.tokens = 10_000; onComplete({}); }, ui: { notify() {}, setStatus() {}, theme: { fg: (_: any, text: string) => text } }, sessionManager: { getEntries: () => entries, getBranch: () => entries, getSessionFile: () => sessionFile } };
     peer.pi = pi; peer.ctx = ctx;
     peer.hook = async (name: string, event = {}) => { let result: any; for (const fn of hooks.get(name) ?? []) result = await fn(event, ctx) ?? result; return result; };
-    peers.push(peer); const controller = extension(pi, () => peer.modelReady);
+    peers.push(peer); const controller = extension(pi, () => peer.modelReady, (plan) => {
+      const goals = plan.match(/^\d+\. \[[ x/]\] goal:/gm) ?? [];
+      return { completion: { planHash: planHash(plan), total: goals.length, pending: goals.length - (peer.signedOffCount ?? 0), inconclusive: peer.inconclusiveCount ?? 0 }, summary: `Manual completion claims await CompleteGoal; ${peer.signedOffCount ?? 0} recorded sign-offs.` };
+    });
     peer.controller = controller;
     peer.request = (method: string, p: any = {}) => {
       switch (method) {
@@ -69,6 +128,51 @@ function pairHarness() {
   const worker = make("worker"); const supervisor = make("supervisor");
   return { worker, supervisor, binding, wire, planPath, async restart(peer: any, id: string) { await peer.hook("session_shutdown"); peers.splice(peers.indexOf(peer), 1); const replacement = make(id, structuredClone(peer.entries), peer.ctx.sessionManager.getSessionFile()); await replacement.hook("session_start"); await tick(); return replacement; }, async start() { await worker.hook("session_start"); await supervisor.hook("session_start"); await worker.request("prepare", { binding }); const attached = worker.request("attached", { bindingId: binding.id }); void attached.catch(() => {}); await supervisor.request("bootstrap", { binding, workerId: "worker" }); await attached; }, async close() { for (const peer of peers) await peer.hook("session_shutdown"); rmSync(cwd, { recursive: true, force: true }); } };
 }
+
+for (const assessment of ["On course; the saved check is the next useful evidence.", "Which output format do you want?"]) test(`ordinary prose leaves future reviews live: ${assessment}`, async () => {
+  const h = pairHarness(); try {
+    await h.start(); await h.worker.controller.activate(h.binding.id); await tick();
+    const before = h.supervisor.messages.length;
+    const looks = h.wire.filter((w: any) => w.t === "look").length;
+    await h.supervisor.hook("agent_end", { messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: assessment }] }] });
+    for (let i = 0; i < 3; i++) { await h.supervisor.hook("agent_settled"); await tick(); }
+    assert.equal(h.supervisor.messages.length, before, "no immediate idle retry");
+    assert.equal(h.wire.filter((w: any) => w.t === "look").length, looks);
+    h.worker.entries.push({ type: "message", message: { role: "user", content: "Use the agreed text format. Pause deployment until I authorize it; continue independent checks." } });
+    await h.supervisor.receive({ type: "message", fromSessionId: "worker", payload: { t: "view", to: "supervisor", bindingId: h.binding.id, view: "New worker direction and progress", stopped: true } });
+    await tick();
+    assert.equal(h.supervisor.messages.length, before + 1, "new worker progress is not discarded after prose or a real question");
+    await h.supervisor.finishAssessment();
+    await h.supervisor.commands.get("supervise").handler("look", h.supervisor.ctx); await tick();
+    assert.match(h.supervisor.messages.at(-1).text, /Pause deployment until I authorize it/);
+  } finally { await h.close(); }
+});
+
+test("manual last-goal ticks cannot end plan supervision before CompleteGoal", async () => {
+  const h = pairHarness(); try {
+    await h.start();
+    writeFileSync(h.planPath, "# Plan\n1. [x] goal: first\n2. [x] goal: second\n");
+    await h.worker.controller.activate(h.binding.id); await tick();
+    await assert.rejects(h.supervisor.tools.get("done").execute("", { reason: "All boxes checked" }, undefined, undefined, h.supervisor.ctx), /sign.off|claim|Open plan goals/i);
+    assert.equal((await h.worker.controller.status()).connected, true);
+    assert.equal(h.wire.filter((w: any) => w.t === "done").length, 0);
+  } finally { await h.close(); }
+});
+
+test("completion counts are plan-bound and distinguish inconclusive sign-off when ending supervision", async () => {
+  const h = pairHarness(); try {
+    await h.start();
+    writeFileSync(h.planPath, "# Plan\n1. [x] goal: first\n2. [x] goal: second\n");
+    h.worker.signedOffCount = 2; h.worker.inconclusiveCount = 1;
+    await h.worker.controller.activate(h.binding.id); await tick();
+    const plan = readFileSync(h.planPath, "utf8");
+    writeFileSync(h.planPath, plan + "3. [x] goal: unreviewed addition\n");
+    await assert.rejects(h.supervisor.tools.get("done").execute("", { reason: "Old counts said complete" }, undefined, undefined, h.supervisor.ctx), /fresh CompleteGoal tracking/);
+    writeFileSync(h.planPath, plan);
+    await h.supervisor.tools.get("done").execute("", { reason: "Conclusive first goal; second accepted inconclusive" }, undefined, undefined, h.supervisor.ctx);
+    assert.ok(h.supervisor.contexts.some((m: any) => /accepted inconclusive.*not independently verified/.test(m.content)));
+  } finally { await h.close(); }
+});
 
 test("each checkpoint freezes fresh worker evidence and direction without replacing a busy assessment", async () => {
   const h = pairHarness(); try {
@@ -212,13 +316,14 @@ test("empty low-level response may continue through compaction, ask a human, or 
     assert.equal(h.wire.filter((w: any) => w.t === "goal_decision").length, 0);
     await h.supervisor.hook("agent_end", { messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Should we keep the output format?" }] }] });
     await h.supervisor.hook("agent_settled"); await tick();
-    assert.equal(h.wire.filter((w: any) => w.t === "goal_decision").length, 0, "nonempty human question still waits");
+    assert.equal((await pending).decision, "needs_work", "prose alone cannot leave a checkpoint pending indefinitely");
+    const retry = h.worker.controller.review(h.binding.id, "first", planHash(readFileSync(h.planPath, "utf8"))); await tick();
     await h.supervisor.hook("context", { messages: h.supervisor.contexts });
     await h.supervisor.tools.get("review_goal").execute("approved", { decision: "approve", reason: "The user confirmed the format" });
     await h.supervisor.hook("agent_end", empty);
     await h.supervisor.hook("agent_settled"); await tick();
-    assert.equal((await pending).decision, "approve");
-    assert.equal(h.wire.filter((w: any) => w.t === "goal_decision").length, 1);
+    assert.equal((await retry).decision, "approve");
+    assert.equal(h.wire.filter((w: any) => w.t === "goal_decision").length, 2);
   } finally { await h.close(); }
 });
 
@@ -502,6 +607,7 @@ for (const stop of ["command", "done"]) test(`${stop} preserves a stopped superv
     if (stop === "command") await h.supervisor.commands.get("supervise").handler("stop", h.supervisor.ctx);
     else {
       writeFileSync(h.planPath, "# Plan\n\n1. [x] goal: first\n2. [x] goal: second\n");
+      h.worker.signedOffCount = 2;
       await h.worker.request("activate", { bindingId: h.binding.id }); await tick();
       await h.supervisor.tools.get("done").execute("", { reason: "All goals accepted" }, undefined, undefined, h.supervisor.ctx);
     }
@@ -803,10 +909,15 @@ test("explicit checkpoints wait separately from routine coalescing and do not re
     await h.supervisor.review("needs_user", "The user must choose the output format");
     assert.equal((await pending).decision, "needs_user");
     const looks = h.wire.filter((wire: any) => wire.t === "look").length;
-    h.supervisor.receive({ type: "message", fromSessionId: "worker", payload: { t: "view", to: "supervisor", bindingId: h.binding.id, view: "More routine status", stopped: false } });
-    await h.supervisor.hook("agent_settled"); await tick();
-    assert.equal(h.wire.filter((wire: any) => wire.t === "look").length, looks, "awaiting a user decision must not wake routine reviews");
-    assert.equal(h.supervisor.messages.length, 1);
+    await h.supervisor.receive({ type: "message", fromSessionId: "worker", payload: { t: "view", to: "supervisor", bindingId: h.binding.id, view: "More routine status", stopped: false } });
+    await tick();
+    for (let n = 0; n < 3; n++) { await h.supervisor.hook("agent_settled"); await tick(); }
+    assert.equal(h.wire.filter((wire: any) => wire.t === "look").length, looks, "a settled response must not poll idle work");
+    assert.equal(h.supervisor.messages.length, 2, "a real needs_user decision must not discard subsequent views");
+    await h.supervisor.finishAssessment();
+    h.worker.entries.push({ type: "message", message: { role: "user", content: "Use text output; continue goal two now." } });
+    await h.supervisor.commands.get("supervise").handler("look", h.supervisor.ctx); await tick();
+    assert.match(h.supervisor.messages.at(-1).text, /Use text output; continue goal two now/);
   } finally { await h.close(); }
 });
 

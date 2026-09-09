@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { alignmentPolicy, judgeSystem, planDrafting, planningState, reminder, resync, waivesAlignment } from "../src/prompts.js";
+import { alignmentPolicy, judgeSystem, judgeUser, planDrafting, planningState, reminder, resync, waivesAlignment } from "../src/prompts.js";
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {
 		expect(planDrafting).toContain("Use read-only repository tools or web search when either can\nresolve a fact.");
 		expect(planDrafting).toContain("ask the human to confirm your interpretation");
 		expect(planDrafting).toContain("approve an editorial or other preference choice");
-		expect(planDrafting).toContain("ask at least THREE distinct task-specific alignment");
-		expect(planDrafting).toContain("questions in ONE chat round");
-		expect(planDrafting).toContain("Wait for the human's answers and use them");
-		expect(planDrafting).toContain("self-contained: state the relevant\ncontext, use the human's language and ASD-STE100");
+		expect(planDrafting).toContain("Ask material task-specific alignment questions");
+		expect(planDrafting).toContain("There is no fixed question quota");
+		expect(planDrafting).toContain("Wait for answers to required decisions");
+		expect(planDrafting).toContain("self-contained:\nstate the relevant context, use the human's language and ASD-STE100");
 		expect(planDrafting).toContain("placeholder goal such as \"work out the thing\"");
 		expect(planDrafting).toContain("object, observable result, settled scope, and required approval");
 	});
@@ -29,6 +29,20 @@ describe("planning prompt", () => {
 		expect(planningState(".pi/plan/test.md")).toContain("self-contained round with relevant context and a recommendation");
 	});
 
+	it("keeps signed-off goal identities during plan housekeeping", () => {
+		const text = reminder("plan", ".pi/plan/test.md");
+		expect(text).toContain("keep every goal line and its completion status above ## Log");
+		expect(text).toContain("evidence references beside each goal");
+		expect(text).not.toContain("prune finished goals");
+		expect(text).not.toContain("evidence lives in git history");
+	});
+
+	it("gives the judge an exact subject rather than a fuzzy-match fallback", () => {
+		const text = judgeUser({ goal: "first", plan: "1. [ ] goal: first", planPath: "plan.md" });
+		expect(text).toContain("unique exact goal subject");
+		expect(text).not.toContain("tolerate small wording drift");
+	});
+
 	it("anchors work and sign-off to the user-visible result", () => {
 		expect(planDrafting).toContain("## User-visible result");
 		expect(planDrafting).toContain("Take it from the original request, not from your implementation plan");
@@ -37,5 +51,7 @@ describe("planning prompt", () => {
 		expect(resync("plan", ".pi/plan/test.md", "Compacted.")).toContain("amend the plan rather than preserving an obsolete decision");
 		expect(judgeSystem).toContain("Task fidelity?");
 		expect(judgeSystem).toContain("Agent-inferred scope is not authority");
+		expect(judgeSystem).toContain("uncommitted and ignored files via read");
+		expect(judgeSystem).toContain("Git status is context, not an acceptance gate");
 	});
 });

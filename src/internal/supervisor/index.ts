@@ -7,6 +7,7 @@
  * triggers its own turn locally with pi.sendUserMessage. The broker stamps fromSessionId from its
  * own registry, so pairing on that ID cannot be forged by a payload.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -18,7 +19,7 @@ import { Type } from "typebox";
 import { loadBundledIntercom } from "../../intercom.js";
 import { type Bootstrap, pendingReply, planHash, planText, type SupervisorBinding, type SupervisorController, validBinding } from "../../supervisor.js";
 import { backgroundState } from "./background.js";
-import type { GoalDecision, GoalReview, GoalReviewRequest } from "./protocol.js";
+import type { GoalDecision, GoalReview, GoalReviewRequest, PlanCompletion } from "./protocol.js";
 
 /**
  * Public event names from the bundled pi-intercom/extension-api.ts protocol. The channel types
@@ -53,6 +54,7 @@ import {
   STEER_ACK,
   TOOL_DONE,
   TOOL_LET_IT_RUN,
+  TOOL_REVIEW_GOAL,
   TOOL_STEER,
   VIEW_PRUNED,
 } from "./prompts.js";
@@ -166,7 +168,7 @@ const INSPECTION_TOOLS = new Set(["read", "grep", "find", "ls"]);
  */
 const SUPERVISOR_TOOLS = ["worker_view", "set_goal", "steer", "let_it_run", "done", "review_goal"];
 
-export default function (pi: any, modelReady: () => boolean = () => true): SupervisorController {
+export default function (pi: any, modelReady: () => boolean = () => true, planProgress?: (plan: string) => { completion: PlanCompletion; summary: string }, onPause?: (exit: boolean) => void): SupervisorController {
   let duplicateIntercom = false;
   let channel: IntercomExtensionChannel | undefined;
   let sessionInitialized = false;
@@ -187,12 +189,15 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
   let peerDisconnected = false;
   let activeAssessment: "view" | "goal" | undefined;
   let assessmentFailure: string | undefined;
+  let lastFailure: string | undefined;
+  let resuming: ReturnType<typeof pendingReply<boolean>> | undefined;
   let assessmentEmpty = false;
   let routineDirty = false;
   let refreshInFlight = false;
   let advancing = false;
   let checkpointQueued = false;
-  let awaitingUser = false;
+  let latestCompletion: PlanCompletion | undefined;
+  let lastPublishedPlanHash: string | undefined;
   let lookPending = false;
   let publishAgain = false;
   let publishingLeaf: string | number | undefined;
@@ -258,11 +263,13 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
         } else reject(error);
       },
     }));
+    showStatus();
     try { await compacting; }
-    finally { compacting = undefined; }
+    finally { compacting = undefined; showStatus(); }
   }
 
   function cancelGoalRequests(reason: string) {
+    resuming?.finish(undefined, new Error(reason)); resuming = undefined;
     attached?.finish(undefined, new Error(reason)); attached = undefined;
     outgoingReview?.finish(undefined, new Error(reason)); outgoingReview = undefined;
     if (incomingReview && state.pairedId && channel?.snapshot().connected) send({ t: "goal_cancel", to: state.pairedId, requestId: incomingReview.requestId, bindingId: incomingReview.bindingId });
@@ -294,10 +301,51 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
 
   const controller: SupervisorController = {
     async status(signal) {
-      await ready(signal, true);
-      const live = await channel!.listSessions();
-      return { workerId: await resolveOwnId(), role: state.role, binding: state.plan,
-        connected: state.role === "worker" && !!state.plan && live.some(s => s.id === state.pairedId) };
+      signal?.throwIfAborted();
+      if (duplicateIntercom) throw new Error("Multiple Intercom runtimes are loaded. Keep one Intercom installation and reload.");
+      const available = !!channel?.snapshot().connected && !!channel.snapshot().supported;
+      const live = available ? await channel!.listSessions() : [];
+      return { workerId: available ? await resolveOwnId() : ownId, role: state.role, binding: state.plan,
+        connected: available && !!state.pairedId && !peerDisconnected && live.some(s => s.id === state.pairedId),
+        activity: state.plan?.stopped ? "ended" : state.plan?.paused ? "stopped by user" : compacting ? "compacting" : bootstrapPending ? "starting" : activeAssessment ? "reviewing" : refreshInFlight ? "requesting overview" : state.plan?.active ? "monitoring" : "inactive",
+        lastFailure };
+    },
+    pause(exit = false) {
+      pauseLocally(exit);
+      if (state.plan && state.pairedId) {
+        try { send({ t: "plan_pause", to: state.pairedId, bindingId: state.plan.id, exit, pauseId: state.plan.pauseId! }); }
+        catch (error) { lastFailure = String(error); }
+        ctx.ui.notify("Stopped locally. Peer stop requested but not confirmed; inspect the other pane. Independently running processes are not killed.", "warning");
+      }
+    },
+    async reconnect(signal) {
+      await ready(signal);
+      if (!state.plan || state.plan.stopped || !state.pairedId) throw new Error("No recoverable pair. Reconnect never creates a supervisor; inspect the recorded pane or select Ready for a new pairing.");
+      await rejoinOrDrop();
+      signal?.throwIfAborted();
+    },
+    async resume(bindingId, hash, signal) {
+      await ready(signal);
+      const plan = workerPlan(bindingId);
+      if (plan.stopped) throw new Error("This pairing ended; it cannot be resumed. Review the plan with Ready.");
+      if (hash !== planHash(planText(plan))) throw new Error("Plan changed before resume; review it with Ready.");
+      if (resuming) throw new Error("Resume already pending");
+      const generation = pairingGeneration;
+      const pending = pendingReply<boolean>(signal, () => {}, 10_000);
+      resuming = pending;
+      try {
+        send({ t: "plan_resume", to: state.pairedId, bindingId, requestId: pending.requestId, planHash: hash, pauseId: plan.pauseId });
+        if (!await pending.promise) throw new Error("Peer rejected resume; inspect its state and the plan.");
+        signal?.throwIfAborted();
+        if (generation !== pairingGeneration || state.plan?.id !== bindingId || hash !== planHash(planText(state.plan))) throw new Error("Plan or pairing changed during resume");
+        state = { ...state, plan: { ...state.plan, paused: false, active: true } }; save();
+        startWatch();
+      } catch (error) {
+        pending.finish(false);
+        // A lost acknowledgement must not leave the worker running or the peer silently active.
+        controller.pause();
+        throw error;
+      } finally { if (resuming === pending) resuming = undefined; }
     },
     async prepare(binding, signal) {
       await ready(signal, true);
@@ -314,6 +362,7 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
       if (state.role === "supervisor" && state.plan?.id === binding.id && state.planInitialized && state.pairedId) {
         await rejoinOrDrop(); return state.plan;
       }
+      if (state.plan?.id === binding.id && state.plan.paused) return binding;
       bootstrapPending = true;
       const generation = ++pairingGeneration;
       const cancelled = () => stopping || generation !== pairingGeneration || state.plan?.id !== binding.id || state.plan.stopped || signal?.aborted;
@@ -354,6 +403,7 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
     },
     async activate(bindingId, signal) {
       await ready(signal); workerPlan(bindingId);
+      if (state.plan?.paused || state.plan?.stopped) throw new Error("Pairing stopped; use explicit /goals resume from the worker.");
       state = { ...state, plan: { ...state.plan!, active: true } }; save();
       send({ t: "plan_activate", to: state.pairedId, bindingId });
       startWatch();
@@ -362,6 +412,7 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
     async review(bindingId, goal, hash, signal) {
       await ready(signal);
       const plan = workerPlan(bindingId);
+      if (plan.paused || plan.stopped) throw new Error("Goal work stopped; resume explicitly before sign-off.");
       if (outgoingReview) throw new Error("A goal review is already pending");
       if (!goal || hash !== planHash(planText(plan))) throw new Error("The plan changed before goal review");
       const peer = state.pairedId;
@@ -408,13 +459,14 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
    */
   function showStatus() {
     if (!ctx?.hasUI) return;
+    if (state.plan?.paused) { ctx.ui.setStatus(STATUS_ID, "supervision stopped by user"); return; }
     if (state.role === "none") {
       ctx.ui.setStatus(STATUS_ID, undefined);
       return;
     }
     if (peerDisconnected || !channel?.snapshot().connected) { ctx.ui.setStatus(STATUS_ID, "supervision disconnected"); return; }
     const text = state.role === "supervisor"
-      ? awaitingUser ? "waiting for user" : refreshInFlight ? "waiting for worker overview" : `watching ${state.steerRounds}${routineDirty ? " · update pending" : ""}`
+      ? compacting ? "compacting supervisor context" : lastFailure ? "assessment failed · /goals status" : refreshInFlight ? "waiting for worker overview" : `watching ${state.steerRounds}${routineDirty ? " · update pending" : ""}`
       : "watched";
     ctx.ui.setStatus(STATUS_ID, ctx.ui.theme.fg("accent", `${EYE} `) + ctx.ui.theme.fg("dim", text));
   }
@@ -515,6 +567,7 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
 
   pi.on("tool_call", (event: any, context: any) => {
     initializeSession(context);
+    if (state.plan?.paused && SUPERVISOR_TOOLS.includes(event.toolName)) return { block: true, reason: "Supervision stopped by user. Resume explicitly from the worker." };
     if (supervisorMode && !inspectionAllowed(event.toolName)) return { block: true, reason: "Supervisor mode is inspection-only. Steer the worker; do not execute, delegate, schedule, or mutate files." };
   });
   pi.on("user_bash", () => {
@@ -545,12 +598,26 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
    * The broker's registry is the truth about who exists now, so ask it. Either way this prints,
    * because "supervising, waiting" and "the other session is gone" look identical otherwise.
    */
+  function pauseLocally(exit: boolean, pauseId: string = randomUUID()) {
+    pairingGeneration++;
+    if (state.plan) state = { ...state, plan: { ...state.plan, paused: true, active: false, pauseId } };
+    // Local state wins even when cancellation cannot be delivered to the peer.
+    try { cancelGoalRequests("Stopped by user"); } catch (error) { lastFailure = String(error); }
+    clearAssessments();
+    clearInterval(watchTimer); clearTimeout(pairTimer);
+    watchTimer = undefined; pairTimer = undefined;
+    finishPair(new Error("Stopped by user"));
+    save();
+    onPause?.(exit);
+    ctx?.abort();
+  }
+
   async function rejoinOrDrop() {
     if (!modelReady() || duplicateIntercom || bootstrapPending || !state.role || !state.pairedId || (state.plan && state.role === "supervisor" && !state.planInitialized)) return;
     const live = await channel!.listSessions();
     if (state.plan) {
       // Pi session files identify the pair across process restarts; broker IDs identify live peers.
-      send({ t: "plan_hello", to: "*", bindingId: state.plan.id, role: state.role as "worker" | "supervisor", sessionFile: ctx.sessionManager.getSessionFile() });
+      send({ t: "plan_hello", to: "*", bindingId: state.plan.id, role: state.role as "worker" | "supervisor", sessionFile: ctx.sessionManager.getSessionFile(), paused: state.plan.paused, pauseId: state.plan.pauseId });
       if (!live.some((s: any) => s.id === state.pairedId)) {
         if (state.role === "supervisor") stripWriters();
         ctx.ui.notify("Plan supervisor peer is disconnected; retaining this session and waiting for reconnect.", "warning");
@@ -561,6 +628,7 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
       reset(`intercom-supervisor: ${state.pairedId.slice(0, 8)} is gone, so the pairing is dropped. Run /supervise to start again.`);
       return;
     }
+    if (state.plan?.paused) { showStatus(); return; }
     if (state.role !== "supervisor") {
       // A worker reloaded at the prompt takes no turn, so this is its only chance to start watching.
       startWatch();
@@ -626,15 +694,16 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
     routineDirty = false;
     refreshInFlight = false;
     checkpointQueued = false;
-    awaitingUser = false;
+    latestCompletion = undefined;
+    lastPublishedPlanHash = undefined;
     lookPending = false;
     publishAgain = false;
   }
 
   function failAssessment(reason: string, includeQueued = true) {
+    lastFailure = reason;
     // A failed assessment is not a human-input dependency. Resume on later worker
     // progress/cadence, without retrying the same dirty view from agent_settled.
-    awaitingUser = false;
     routineDirty = false;
     refreshInFlight = false;
     ctx.ui.notify(reason, "error");
@@ -647,7 +716,7 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
   }
 
   async function advanceSupervisor() {
-    if (stopping || advancing || activeAssessment || !ctx?.isIdle() || !modelReady() || peerDisconnected || !channel?.snapshot().connected || state.role !== "supervisor" || (state.plan && ((!state.plan.active && !incomingReview) || !state.planInitialized))) return;
+    if (stopping || state.plan?.paused || advancing || activeAssessment || !ctx?.isIdle() || !modelReady() || peerDisconnected || !channel?.snapshot().connected || state.role !== "supervisor" || (state.plan && ((!state.plan.active && !incomingReview) || !state.planInitialized))) return;
     advancing = true;
     const generation = pairingGeneration;
     try {
@@ -663,14 +732,14 @@ export default function (pi: any, modelReady: () => boolean = () => true): Super
         workerStopped = false;
         pi.sendMessage({ customType: "supervisor_checkpoint", display: true, details: { requestId: review.requestId },
           content: `Goal sign-off: ${review.goal}
-Assess direction and scope against the current plan and evidence. Give a brief useful assessment, then call review_goal. The fresh evidence judge still checks artifacts independently. This is one goal, not the end of supervision.
+Inspect the actual result against the agreed outcome, discriminator and evidence. A completed task or existing file is not enough. Give a brief useful judgment, then call review_goal; if the goal is unmet, name the next useful work or check. The fresh evidence judge still checks artifacts independently. This is one goal, not the end of supervision.
 
 Worker context frozen for this checkpoint (not a live view):
 ${latestView}` },
           { triggerTurn: true, deliverAs: "followUp" });
         return;
       }
-      if (incomingReview || awaitingUser || refreshInFlight || !routineDirty) return;
+      if (incomingReview || refreshInFlight || !routineDirty) return;
       routineDirty = false;
       refreshInFlight = true;
       showStatus();
@@ -681,7 +750,7 @@ ${latestView}` },
       advancing = false;
       // Reconnect/checkpoint handlers may have hit the guard while this obsolete compaction
       // was pending. Re-drive only actual current work, never a same-generation failure loop.
-      if (generation !== pairingGeneration && !stopping && ((incomingReview && checkpointQueued) || (!incomingReview && !awaitingUser && !refreshInFlight && routineDirty))) void advanceSupervisor();
+      if (generation !== pairingGeneration && !stopping && ((incomingReview && checkpointQueued) || (!incomingReview && !refreshInFlight && routineDirty))) void advanceSupervisor();
     }
   }
 
@@ -711,7 +780,8 @@ ${latestView}` },
       const returning = peerDisconnected;
       peerDisconnected = false;
       state = { ...state, pairedId: from }; save();
-      if (wire.t === "plan_hello") send({ t: "plan_hello_ack", to: from, bindingId: wire.bindingId, role: state.role as "worker" | "supervisor", sessionFile: ctx.sessionManager.getSessionFile() });
+      if (wire.paused && (!state.plan?.paused || (wire.pauseId ?? "") > (state.plan.pauseId ?? ""))) pauseLocally(false, wire.pauseId);
+      if (wire.t === "plan_hello") send({ t: "plan_hello_ack", to: from, bindingId: wire.bindingId, role: state.role as "worker" | "supervisor", sessionFile: ctx.sessionManager.getSessionFile(), paused: state.plan?.paused, pauseId: state.plan?.pauseId });
       if (state.role === "worker") { attached?.finish(state.plan); attached = undefined; startWatch(); }
       else if (returning) requestFreshView();
       return;
@@ -736,7 +806,7 @@ ${latestView}` },
       clearTimeout(pairTimer);
       pairTimer = undefined;
       // A same-binding replay must not undo Ready already completed by this worker.
-      const plan = wire.plan ? { ...wire.plan, active: state.plan?.active ?? wire.plan?.active } : undefined;
+      const plan = wire.plan ? { ...wire.plan, active: state.plan?.active ?? wire.plan?.active, paused: state.plan?.paused ?? wire.plan.paused } : undefined;
       peerDisconnected = false;
       state = { ...EMPTY_STATE, role: "worker", pairedId: from, goal: plan ? planText(plan) : wire.goal, ...(plan ? { plan } : {}) };
       latestView = "";
@@ -769,6 +839,15 @@ ${latestView}` },
       peerDisconnected = false;
       showStatus();
     }
+    if (wire.t === "plan_pause" && state.plan) { pauseLocally(wire.exit, wire.pauseId); return; }
+    if (wire.t === "plan_resume" && state.role === "supervisor" && state.plan) {
+      const accepted = wire.pauseId === state.plan.pauseId && !state.plan.stopped && !!state.planInitialized && !bootstrapPending && modelReady() && wire.planHash === planHash(planText(state.plan));
+      if (accepted) { state = { ...state, plan: { ...state.plan, active: true, paused: false } }; lastFailure = undefined; save(); }
+      send({ t: "plan_resumed", to: from, bindingId: wire.bindingId, requestId: wire.requestId, accepted });
+      return;
+    }
+    if (wire.t === "plan_resumed" && resuming?.requestId === wire.requestId) { resuming.finish(wire.accepted); return; }
+    if (state.plan?.paused && !["goal_cancel", "unpair", "done"].includes(wire.t)) return;
     if (wire.t === "plan_activate") { state = { ...state, plan: { ...state.plan!, active: true } }; save(); return; }
     if (wire.t === "goal_cancel") {
       if (outgoingReview?.requestId === wire.requestId) outgoingReview.finish(undefined, new Error("Supervisor cancelled the review; retry"));
@@ -794,7 +873,6 @@ ${latestView}` },
       }
       incomingReview = { ...reviewIdentity(wire), view: wire.view };
       checkpointQueued = true;
-      awaitingUser = false;
       if (refreshInFlight) { refreshInFlight = false; routineDirty = true; }
       await advanceSupervisor();
       return;
@@ -845,11 +923,12 @@ ${latestView}` },
         if (!refreshInFlight) { routineDirty = true; return; }
         refreshInFlight = false;
       } else if (refreshInFlight) { routineDirty = true; return; }
-      if (activeAssessment || !ctx.isIdle() || advancing || compacting || incomingReview || awaitingUser) {
+      if (activeAssessment || !ctx.isIdle() || advancing || compacting || incomingReview) {
         routineDirty = true;
         return;
       }
       activeAssessment = "view";
+      lastFailure = undefined;
       assessmentFailure = undefined;
       assessmentEmpty = false;
       const generation = pairingGeneration;
@@ -861,6 +940,7 @@ ${latestView}` },
       }
       if (stopping || generation !== pairingGeneration || state.role !== "supervisor" || from !== state.pairedId || state.plan?.id !== bindingId || peerDisconnected || !channel?.snapshot().connected || (state.plan && !state.plan.active)) return;
       latestView = wire.view;
+      latestCompletion = wire.completion;
       showStatus();
       workerStopped = wire.stopped;
       if (!state.plan && reviewsSinceGoal >= GOAL_REVIEW_INTERVAL - 1) tellGoal();
@@ -893,9 +973,6 @@ ${latestView}` },
     verdictsThisLook = 0;
   });
 
-  pi.on("input", (event: any) => {
-    if (event.source !== "extension") awaitingUser = false;
-  });
   pi.on("agent_end", (event: any) => {
     if (state.role !== "supervisor" || !activeAssessment) return;
     const last = event.messages?.findLast((message: any) => message.role === "assistant");
@@ -926,7 +1003,7 @@ ${latestView}` },
    */
   const LOOKS_KEPT = 3;
   pi.on("context", (event: any) => {
-    if (state.role !== "supervisor") return;
+    if (state.role !== "supervisor" || state.plan?.paused) return;
     const checkpoint = event.messages.findLast((m: any) => m.customType === "supervisor_checkpoint");
     presentedReview = checkpoint?.details?.requestId === incomingReview?.requestId ? incomingReview : undefined;
     const messages = event.messages.filter((m: any) => m.customType !== "supervisor_plan");
@@ -963,7 +1040,7 @@ ${planText(state.plan)}` });
     ctx = context;
     // Pi retries overflow recovery immediately after this event. Queue the rubric for its next
     // ordinary turn, so the failed assistant remains final and can be removed.
-    if (state.role === "supervisor") {
+    if (state.role === "supervisor" && !state.plan?.paused) {
       if (event.willRetry) reviewsSinceGoal = GOAL_REVIEW_INTERVAL - 1;
       else tellGoal();
     }
@@ -1073,6 +1150,9 @@ ${planText(state.plan)}` });
     const subagents = state.plan ? [] : await childPiProcesses();
     const entries = context.sessionManager.getBranch();
     const idle = !starting && context.isIdle() && (!background || background.quiet);
+    const currentPlan = state.plan ? planText(state.plan) : undefined;
+    const progress = currentPlan === undefined ? undefined : planProgress?.(currentPlan);
+    const currentPlanHash = currentPlan === undefined ? undefined : planHash(currentPlan);
     const view = buildView({
       goal: state.goal,
       sourceSession: context.sessionManager.getSessionFile?.(),
@@ -1082,8 +1162,9 @@ ${planText(state.plan)}` });
       subagents,
       model: workerModel(context),
       background: background?.description,
+      planReview: currentPlanHash ? `Canonical plan ${currentPlanHash === lastPublishedPlanHash ? "unchanged" : "changed since the previous published view (or first view)"}; read ${state.plan!.planPath} for scope and goal-state changes.\n${progress?.summary ?? "CompleteGoal sign-off tracking unavailable; checked boxes alone do not establish completion."}` : undefined,
     });
-    return { view, idle, entries };
+    return { view, idle, entries, completion: progress?.completion, currentPlanHash };
   }
 
   /**
@@ -1110,7 +1191,7 @@ ${planText(state.plan)}` });
     // Claimed before the await, not after. ps takes long enough that a second timer tick would
     // otherwise start its own look while this one is still waiting.
     lastLook = Date.now();
-    const { view, idle, entries } = await captureWorkerView(context, why, since, starting);
+    const { view, idle, entries, completion, currentPlanHash } = await captureWorkerView(context, why, since, starting);
     if (generation !== pairingGeneration || state.pairedId !== peer || state.plan?.id !== bindingId || stopping || peerDisconnected || outgoingReview) return;
     // A timer look at a worker that has done nothing since the last one wakes the supervisor to read
     // a view it has already read. Session 019ffa73: 13 of 92 verdicts were "check-in with no new
@@ -1125,8 +1206,9 @@ ${planText(state.plan)}` });
       }
       looksSkipped = 0;
     }
-    send({ t: "view", to: state.pairedId, view, stopped: idle, ...(refreshed ? { refreshed: true } : {}) });
+    send({ t: "view", to: state.pairedId, view, stopped: idle, ...(refreshed ? { refreshed: true } : {}), ...(completion ? { completion } : {}) });
     published = true;
+    lastPublishedPlanHash = currentPlanHash;
     if (refreshed) lookPending = false;
     lastViewBody = bodyOf(view);
     modelTurns = 0;
@@ -1202,15 +1284,14 @@ ${planText(state.plan)}` });
     if (state.role === "supervisor") {
       const unresolved = (activeAssessment === "goal" && incomingReview && !checkpointQueued) || (activeAssessment === "view" && verdictsThisLook === 0);
       if (activeAssessment && assessmentFailure) failAssessment(assessmentFailure, false);
-      else if (unresolved && assessmentEmpty) failAssessment("Supervisor assessment incomplete: empty final response without a verdict or user question. Retry the checkpoint.", false);
+      else if (unresolved && assessmentEmpty) failAssessment("Supervisor assessment incomplete: empty final response without a verdict. Retry the checkpoint.", false);
+      else if (activeAssessment === "goal" && incomingReview && !checkpointQueued) failAssessment("Supervisor checkpoint incomplete: no review_goal decision. Read the visible assessment and retry when ready; prose alone is not an approval or a human-input dependency.", false);
       assessmentFailure = undefined;
       assessmentEmpty = false;
-      const completed = activeAssessment;
+      // Ordinary prose (including questions) is not a transport latch. Respect human pause
+      // instructions in context, but keep later views flowing. Only genuinely queued new work
+      // can trigger another look here; an idle response never retries itself.
       activeAssessment = undefined;
-      if ((completed === "goal" && incomingReview && !checkpointQueued) || (completed === "view" && verdictsThisLook === 0)) {
-        awaitingUser = true;
-        context.ui.notify("Supervisor is waiting for user input or an explicit checkpoint decision; routine refresh is paused.", "info");
-      }
       await advanceSupervisor();
       return;
     }
@@ -1308,7 +1389,6 @@ ${planText(state.plan)}` });
           context.ui?.notify?.("intercom-supervisor: not supervising, so there is nothing to look at", "error");
           return;
         }
-        awaitingUser = false;
         requestFreshView(true);
         context.ui?.notify?.(`requested a complete view from ${state.pairedId.slice(0, 8)}; waiting for the worker overview`, "info");
         return;
@@ -1333,7 +1413,6 @@ ${planText(state.plan)}` });
         // waiting up to half an hour for the next look.
         tellSupervisor(GOAL_CHANGED(goal));
         reviewsSinceGoal = 0;
-        awaitingUser = false;
         requestFreshView();
         context.ui?.notify?.(`goal changed: ${goal}`, "info");
         return;
@@ -1430,7 +1509,7 @@ ${planText(state.plan)}` });
 
   pi.registerTool({
     name: "review_goal", label: "Review goal",
-    description: "Assess the current goal checkpoint: approve trajectory/scope, request further work, or name a human decision. The extension binds the decision to the exact goal and revision you were shown. This does not complete the goal or stop supervision.",
+    description: TOOL_REVIEW_GOAL,
     parameters: Type.Object({ decision: Type.String({ enum: ["approve", "needs_work", "needs_user"] }), reason: Type.String() }),
     execute: async (_id: string, params: { decision: GoalDecision["decision"]; reason: string }) => {
       const review = incomingReview;
@@ -1443,7 +1522,7 @@ ${planText(state.plan)}` });
       send({ ...reviewIdentity(review), decision: params.decision, reason: params.reason, t: "goal_decision", to: state.pairedId });
       tellSupervisor(`Goal assessment — ${review.goal}: ${params.decision}. ${params.reason}`);
       incomingReview = undefined;
-      awaitingUser = params.decision === "needs_user";
+      // A human decision blocks its dependent work, not delivery of later worker direction.
       return { content: [{ type: "text", text: "Goal decision sent. Supervision remains active. End this response." }], terminate: true };
     },
   });
@@ -1572,7 +1651,7 @@ Tell them in your reply, quoting it, so they can correct it.`,
         return { content: [{ type: "text", text: "Not supervising." }], isError: true };
       }
       if (routineDirty || refreshInFlight) throw new Error("New worker progress awaits a complete overview; do not finish from the older assessment.");
-      if (state.plan && (incomingReview || /^\s*(?:\d+\.|[-*])\s*\[[ /]\]\s*goal:/im.test(planText(state.plan)))) throw new Error("Open plan goals remain. Use review_goal for an individual goal request.");
+      if (state.plan && (incomingReview || !latestCompletion || latestCompletion.planHash !== planHash(planText(state.plan)) || !latestCompletion.total || latestCompletion.pending > 0)) throw new Error("Open plan goals or unsigned claims remain, or fresh CompleteGoal tracking is unavailable. Use review_goal for an individual goal request; manual checkboxes are not sign-off.");
       if (state.plan && /tracked background work:.*unknown|tracked background work:.*(?:processes|subagents): [1-9]/.test(latestView)) throw new Error("Tracked background work is active or unknown");
       // "done" while a delegated tool call has no result is a false completion: the worker settled
       // but its subagent or background job is still spending. This proves only that no tracked
@@ -1585,6 +1664,7 @@ Tell them in your reply, quoting it, so they can correct it.`,
           isError: true,
         };
       }
+      if (latestCompletion?.inconclusive) tellSupervisor(`${latestCompletion.inconclusive} goal(s) accepted inconclusive under fail-forward policy, not independently verified. Ending supervision does not turn those records into conclusive success.`);
       send({ t: "done", to: state.pairedId, reason: params.reason });
       const rounds = state.steerRounds;
       reset(`supervision finished: ${params.reason}`, true);

@@ -12,6 +12,14 @@ test("goal_review accepts an optional bounded snapshot but rejects malformed sna
   }
 });
 
+test("worker completion metadata is optional but cannot claim malformed counts", () => {
+  const view = { t: "view", to: "supervisor", view: "Worker evidence", stopped: true };
+  const completion = { planHash: "hash", total: 2, pending: 1, inconclusive: 1 };
+  assert.equal(isWire(view), true);
+  assert.equal(isWire({ ...view, completion }), true);
+  for (const bad of [null, {}, { ...completion, total: -1 }, { ...completion, pending: 0.5 }, { ...completion, inconclusive: 2 }, { ...completion, total: Infinity }, { ...completion, total: "2" }, { ...completion, planHash: false }]) assert.equal(isWire({ ...view, completion: bad }), false);
+});
+
 test("checkpoint snapshot bounding counts JSON escapes and does not split Unicode characters", () => {
   const review = { requestId: "request", bindingId: "binding", goal: "goal ".repeat(1800), planHash: "hash" };
   const wire = goalReviewWire("supervisor", review, '😀\\"\n'.repeat(2000));

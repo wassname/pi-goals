@@ -248,10 +248,11 @@ export interface ViewInput {
    */
   model?: string;
   background?: string;
+  planReview?: string;
 }
 
 /** Render the view, and cut it to MAX_VIEW_BYTES so the broker cannot reject it. */
-export function buildView({ goal, status, entries, since = 0, stale = 0, subagents = [], model = "", sourceSession, background }: ViewInput): string {
+export function buildView({ goal, status, entries, since = 0, stale = 0, subagents = [], model = "", sourceSession, background, planReview }: ViewInput): string {
   const messages = entries.filter((e) => e.type === "message" && e.message);
   const pending = outstandingWork(messages);
   const workerMessages = messagesSince(entries);
@@ -268,7 +269,7 @@ export function buildView({ goal, status, entries, since = 0, stale = 0, subagen
   const latestUser = [...entries].reverse().find(e => e.type === "message" && e.message?.role === "user" && textOf(e.message).trim() && !textOf(e.message).startsWith(SUPERVISOR_PREFIX));
   const direction = latestUser?.message ? textOf(latestUser.message) : "";
   const head = [
-    ...(from === 0 && direction ? [
+    ...(direction ? [
       `# Latest user direction${latestUser?.timestamp ? ` (${latestUser.timestamp})` : ""}`,
       direction.length > 2000 ? `${direction.slice(0, 2000)}\n[user direction truncated; inspect the worker source session for full text]` : direction,
       "",
@@ -287,6 +288,7 @@ export function buildView({ goal, status, entries, since = 0, stale = 0, subagen
     `tool calls with no result: ${pending.length ? pending.join(", ") : "none"}`,
     `child pi processes still running: ${subagents.length ? subagents.join(", ") : "none"}`,
     ...(background ? [`tracked background work: ${background}`] : []),
+    ...(planReview ? [`plan review: ${planReview}`] : []),
     ...(stale > 0 ? [`no new file or commit for ${stale} reviews in a row`] : []),
     ``,
     // Sent when this view starts at the compaction boundary, which is the first view and every

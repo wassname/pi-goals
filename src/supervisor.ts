@@ -12,12 +12,15 @@ export interface SupervisorBinding {
 	supervisorSession?: string;
 	active?: boolean;
 	stopped?: boolean;
+	/** User pause: retain the pair, but no autonomous work until explicit resume. */
+	paused?: boolean;
+	pauseId?: string;
 	everyTurns: number;
 	intervalMs: number;
 	compactTokens: number;
 }
 export interface Bootstrap { binding: SupervisorBinding; workerId: string }
-export interface SupervisorStatus { connected: boolean; binding?: SupervisorBinding; workerId: string; role?: string }
+export interface SupervisorStatus { connected: boolean; binding?: SupervisorBinding; workerId: string; role?: string; activity?: string; lastFailure?: string }
 export interface SupervisorDecision { bindingId: string; goal: string; planHash: string; decision: "approve" | "needs_work" | "needs_user"; reason: string }
 
 export function planHash(text: string): string {
@@ -32,6 +35,9 @@ export interface SupervisorController {
  activate(bindingId: string, signal?: AbortSignal): Promise<void>;
  review(bindingId: string, goal: string, hash: string, signal?: AbortSignal): Promise<SupervisorDecision>;
  stop(bindingId: string): Promise<void>;
+ pause(exit?: boolean): void;
+ reconnect(signal?: AbortSignal): Promise<void>;
+ resume(bindingId: string, hash: string, signal?: AbortSignal): Promise<void>;
 }
 
 export function validBinding(value: unknown): value is SupervisorBinding {
@@ -55,7 +61,11 @@ export function pendingReply<T>(signal: AbortSignal | undefined, cancel: () => v
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      if (error) { cancel(); reject(error); } else resolve(value as T);
+      if (error) {
+        // Local cancellation must settle even if notifying a disconnected peer throws.
+        try { cancel(); } catch { /* The caller reports the request failure; remote state is unconfirmed. */ }
+        reject(error);
+      } else resolve(value as T);
     };
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) queueMicrotask(abort);

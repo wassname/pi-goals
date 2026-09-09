@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +7,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import piGoalsExtension from "../src/index.js";
 
-vi.mock("../src/internal/supervisor/index.js", () => ({ default: () => {} }));
+vi.mock("../src/internal/supervisor/index.js", () => ({ default: () => ({ pause() {}, reconnect: async () => {}, status: async () => ({ connected: false, activity: "inactive" }) }) }));
+const judgeRun = vi.hoisted(() => ({ output: "", beforeReply: undefined as (() => void) | undefined, calls: [] as string[][] }));
+vi.mock("node:child_process", async (original) => {
+	const actual = await original<typeof import("node:child_process")>();
+	return { ...actual, spawn: (_command: string, args: string[]) => {
+		judgeRun.calls.push(args);
+		const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() {} });
+		queueMicrotask(() => { judgeRun.beforeReply?.(); proc.stdout.emit("data", judgeRun.output); proc.emit("close", 0); });
+		return proc;
+	} };
+});
 
 function setup(
 	selectChoices: Array<string | undefined>,
@@ -37,11 +49,12 @@ function setup(
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 		hasUI: true,
 		isIdle: () => true,
+		abort: vi.fn(),
 		sessionManager: { getSessionId: () => "session-a", getSessionFile: () => join(cwd, "session-a.jsonl"), getEntries: () => entries, getBranch: () => entries },
 		ui: {
 			theme: { fg: (_kind: string, text: string) => text },
-			setStatus: () => {},
-			setWidget: () => {},
+			setStatus: vi.fn(),
+			setWidget: vi.fn(),
 			notify: vi.fn(),
 			select: async () => {
 				events.push("select");
@@ -78,7 +91,203 @@ async function settleDraft(flow: ReturnType<typeof setup>) {
 	await flow.hooks.get("agent_settled")({}, flow.ctx);
 }
 
+describe("/goals recovery", () => {
+	it("help, status and invalid recovery arguments never start a plan", async () => {
+		const f = setup([]);
+		try {
+			for (const text of ["help", "status", "stop now", "exit now", "reconnect now", "resume now", "--unknown", "connect", "reconect"]) await f.commands.get("goals").handler(text, f.ctx);
+			expect(f.messages).toHaveLength(0);
+			expect(f.entries.filter(e => e.customType === "pi-goals-state")).toHaveLength(0);
+		} finally { rmSync(f.cwd, { recursive: true, force: true }); }
+	});
+
+	it.each(["stop", "exit"])("%s keeps the draft, exits the gate and persists through reload and chat", async command => {
+		const f = setup([]);
+		try {
+			await f.commands.get("goals").handler("plan recovery fixture", f.ctx);
+			const path = join(f.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(path, "1. [ ] goal: retain this draft\n");
+			await f.commands.get("goals").handler(command, f.ctx);
+			const count = f.messages.length;
+			await f.hooks.get("session_start")({}, f.ctx);
+			await f.hooks.get("input")({ text: "ordinary chat", source: "interactive" }, f.ctx);
+			await f.hooks.get("agent_settled")({}, f.ctx);
+			expect(f.messages).toHaveLength(count);
+			expect(await f.hooks.get("input")({ text: "Process finished", source: "extension" }, f.ctx)).toBeUndefined();
+			expect(await f.hooks.get("input")({ text: "Work the goals in stale.md", source: "extension" }, f.ctx)).toEqual({ action: "handled" });
+			expect(readFileSync(path, "utf8")).toBe("1. [ ] goal: retain this draft\n");
+			expect(await f.hooks.get("tool_call")({ toolName: "write", input: { path: "other.txt" } }, f.ctx)).toBeUndefined();
+			expect((f.entries.filter(e => e.customType === "pi-goals-state").at(-1)?.data as any).pausedFrom).toBe("planning");
+			await f.commands.get("goals").handler("resume", f.ctx);
+			expect(f.messages).toHaveLength(count); // returning to a draft is NOT Ready
+			expect((f.entries.filter(e => e.customType === "pi-goals-state").at(-1)?.data as any).phase).toBe("planning");
+		} finally { rmSync(f.cwd, { recursive: true, force: true }); }
+	});
+
+	it("stop invalidates an outstanding Ready selection", async () => {
+		const f = setup([]);
+		try {
+			await f.commands.get("goals").handler("plan cancel selection", f.ctx);
+			writeFileSync(join(f.cwd, ".pi/plan/session-a-v1.md"), "1. [ ] goal: not authorized\n");
+			let answer!: (s: string) => void;
+			f.ctx.ui.select = () => new Promise<string>(resolve => { answer = resolve; });
+			const selecting = settleDraft(f);
+			await new Promise(resolve => setImmediate(resolve));
+			await f.commands.get("goals").handler("stop", f.ctx);
+			answer("Ready"); await selecting;
+			expect(f.messages.some(m => m.content.startsWith("Work the goals"))).toBe(false);
+			expect((f.entries.filter(e => e.customType === "pi-goals-state").at(-1)?.data as any).phase).toBeNull();
+		} finally { rmSync(f.cwd, { recursive: true, force: true }); }
+	});
+
+	it("resume starts unchanged authorized work but a changed plan returns to review", async () => {
+		const f = setup(["Ready"]);
+		try {
+			await f.commands.get("goals").handler("plan bounded work", f.ctx);
+			await f.commands.get("goals").handler("steward off", f.ctx);
+			const path = join(f.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(path, "1. [ ] goal: first\n");
+			await settleDraft(f);
+			await f.commands.get("goals").handler("stop", f.ctx);
+			let count = f.messages.length;
+			await f.commands.get("goals").handler("resume", f.ctx);
+			expect(f.messages.length).toBe(count + 1);
+			await f.commands.get("goals").handler("exit", f.ctx);
+			writeFileSync(path, "1. [ ] goal: changed scope\n");
+			count = f.messages.length;
+			await f.commands.get("goals").handler("resume", f.ctx);
+			expect(f.messages).toHaveLength(count);
+			expect((f.entries.filter(e => e.customType === "pi-goals-state").at(-1)?.data as any).phase).toBe("planning");
+		} finally { await f.hooks.get("session_shutdown")({}, f.ctx); rmSync(f.cwd, { recursive: true, force: true }); }
+	});
+});
+
 describe("/goals draft flow", () => {
+	it.each(["accept", "inconclusive", "reject", "abort", "shutdown", "stop", "plan change"])("records only legitimate sign-offs on a dirty repo with ignored artifacts: %s", async (verdict) => {
+		const flow = setup([]); const fresh = setup([]); const abort = new AbortController();
+		try {
+			execFileSync("git", ["init", "-q", flow.cwd]);
+			writeFileSync(join(flow.cwd, ".gitignore"), "outputs/\n.pi/\n");
+			writeFileSync(join(flow.cwd, "unrelated.txt"), "preserve this unrelated file\n");
+			execFileSync("git", ["-C", flow.cwd, "add", "unrelated.txt"]); // isolated fixture only, no commit
+			writeFileSync(join(flow.cwd, "unrelated.txt"), "preserve this unrelated dirty edit\n");
+			mkdirSync(join(flow.cwd, "outputs"));
+			writeFileSync(join(flow.cwd, "outputs/artifact.txt"), "hello\n");
+			const observed = execFileSync(process.execPath, ["-e", "const fs=require('fs'); if(fs.readFileSync('outputs/artifact.txt','utf8')!=='hello\\n') process.exit(1); console.log('PASS exact bytes');"], { cwd: flow.cwd, encoding: "utf8" });
+			writeFileSync(join(flow.cwd, "outputs/verify.log"), observed);
+			expect(execFileSync("git", ["-C", flow.cwd, "check-ignore", "outputs/verify.log"], { encoding: "utf8" })).toContain("outputs/verify.log");
+			const dirty = execFileSync("git", ["-C", flow.cwd, "status", "--porcelain"], { encoding: "utf8" });
+			expect(dirty).toContain("AM unrelated.txt");
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			const file = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(file, "# Plan\n1. [x] goal: exact output\n  - evidence: outputs/artifact.txt `hello`; outputs/verify.log `PASS exact bytes` from node byte check\n");
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, signedOffGoals: [], stewardEnabled: false, autoIntervalMs: null } });
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			judgeRun.calls = [];
+			judgeRun.output = verdict === "inconclusive" ? "No verdict from judge" : verdict === "reject" ? "VERDICT: reject\nmissing: test failed" : `checks:\n- outputs/verify.log: \`${readFileSync(join(flow.cwd, "outputs/verify.log"), "utf8").trim()}\`; execution passed\nVERDICT: accept\nmissing:`;
+			judgeRun.beforeReply = () => {
+				if (verdict === "abort") abort.abort();
+				if (verdict === "shutdown") void flow.hooks.get("session_shutdown")({}, flow.ctx);
+				if (verdict === "stop") void flow.commands.get("goals").handler("stop", flow.ctx);
+				if (verdict === "plan change") writeFileSync(file, readFileSync(file, "utf8") + "\nNew scope requiring review\n");
+			};
+			const outcome = await flow.tools.get("CompleteGoal").execute("", { goal: " EXACT OUTPUT " }, abort.signal, undefined, flow.ctx);
+			const signed = verdict === "accept" || verdict === "inconclusive";
+			expect(outcome.isError).toBe(!signed);
+			expect(judgeRun.calls).toHaveLength(1);
+			expect(judgeRun.calls[0]).toContain("--no-extensions");
+			expect(judgeRun.calls[0]).toContain("read,grep,find,ls");
+			expect(readFileSync(file, "utf8").includes("[x] goal: exact output")).toBe(signed);
+			if (verdict === "inconclusive") expect(outcome.content[0].text).toContain("not verified completion");
+			expect(readFileSync(join(flow.cwd, "unrelated.txt"), "utf8")).toBe("preserve this unrelated dirty edit\n");
+			expect(execFileSync("git", ["-C", flow.cwd, "status", "--porcelain"], { encoding: "utf8" })).toBe(dirty);
+			fresh.entries.push(...structuredClone(flow.entries));
+			fresh.ctx.cwd = flow.cwd; // genuinely new extension instance, same plan and persisted entries
+			await fresh.hooks.get("session_start")({}, fresh.ctx);
+			expect(fresh.ctx.ui.setStatus.mock.lastCall?.[1]).toContain(verdict === "stop" ? "goals stopped" : signed ? "1/1" : "0/1");
+			expect(fresh.messages).toHaveLength(0);
+		} finally {
+			judgeRun.beforeReply = undefined; judgeRun.calls = [];
+			await flow.hooks.get("session_shutdown")({}, flow.ctx); await fresh.hooks.get("session_shutdown")({}, fresh.ctx);
+			rmSync(flow.cwd, { recursive: true, force: true }); rmSync(fresh.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves legacy completion on reload without inventing sign-off or restarting work", async () => {
+		vi.useFakeTimers(); const flow = setup([]);
+		try {
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			const file = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			const plan = '1. [x] goal: historical result\n\n## Log\n- signed off "historical result" (judge accept)\n';
+			writeFileSync(file, plan);
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: false, autoIntervalMs: 1000 } });
+			for (let n = 0; n < 2; n++) {
+				await flow.hooks.get("session_start")({}, flow.ctx);
+				await flow.hooks.get("agent_settled")({}, flow.ctx);
+				await vi.advanceTimersByTimeAsync(5000);
+				expect(flow.ctx.ui.setWidget.mock.lastCall?.[1]?.join("\n")).toContain("legacy completion — sign-off not recorded");
+				expect(flow.messages).toHaveLength(0);
+				expect(readFileSync(file, "utf8")).toBe(plan);
+			}
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); vi.useRealTimers(); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+	it("keeps unsigned manual ticks visible across reload without reopening legitimate sign-offs", async () => {
+		const flow = setup([]);
+		try {
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: false, autoIntervalMs: null, signedOffGoals: [{ subject: "first", outcome: "accept" }, { subject: "second", outcome: "inconclusive" }] } });
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			const file = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			writeFileSync(file, "# Plan\n1. [x] goal: first\n2. [x] goal: second\n3. [x] goal: manual claim\n");
+			for (let i = 0; i < 2; i++) {
+				await flow.hooks.get("session_start")({}, flow.ctx);
+				expect(flow.ctx.ui.setStatus.mock.lastCall?.[1]).toContain("2/3");
+				expect(flow.ctx.ui.setWidget.mock.lastCall?.[1]?.join("\n")).toMatch(/claimed.*manual claim/);
+				expect(flow.ctx.ui.setWidget.mock.lastCall?.[1]?.join("\n")).toMatch(/inconclusive.*second/);
+			}
+			writeFileSync(file, readFileSync(file, "utf8").replace("[x] goal: first", "[/] goal: first"));
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			writeFileSync(file, readFileSync(file, "utf8").replace("[/] goal: first", "[x] goal: first"));
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			expect(flow.ctx.ui.setStatus.mock.lastCall?.[1]).toContain("1/3");
+			expect(flow.ctx.ui.setWidget.mock.lastCall?.[1]?.join("\n")).toMatch(/claimed.*first/);
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it("retains conclusive and inconclusive sign-offs when settled detail moves below the fold", async () => {
+		const flow = setup([]);
+		try {
+			const signoffs = [{ subject: "first", outcome: "accept" }, { subject: "second", outcome: "inconclusive" }];
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: false, autoIntervalMs: null, signedOffGoals: signoffs } });
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			const file = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			const goals = "# Plan\n1. [x] goal: first\n  - evidence: outputs/first.log\n2. [x] goal: second\n  - evidence: outputs/second.log\n";
+			writeFileSync(file, `${goals}  - settled detail: implementation notes\n\n## Log\n`);
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			writeFileSync(file, `${goals}\n## Log\n\n## Appendix\nSettled detail: implementation notes\n`);
+			await flow.hooks.get("turn_end")({}, flow.ctx);
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			expect(flow.ctx.ui.setStatus.mock.lastCall?.[1]).toContain("2/2");
+			expect(flow.ctx.ui.setWidget.mock.lastCall?.[1]?.join("\n")).toMatch(/inconclusive.*second/);
+			expect((flow.entries.at(-1)?.data as any).signedOffGoals).toEqual(signoffs);
+			expect(flow.messages).toHaveLength(0);
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
+	it.each(["missing", "first with wording drift", "duplicate"])("requires unique goal identity before review: %s", async (goal) => {
+		const flow = setup([]);
+		try {
+			flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", planVersion: 1, stewardEnabled: true, autoIntervalMs: null } });
+			mkdirSync(join(flow.cwd, ".pi/plan"), { recursive: true });
+			const file = join(flow.cwd, ".pi/plan/session-a-v1.md");
+			const plan = "1. [ ] goal: first\n2. [x] goal: duplicate\n3. [ ] goal: duplicate\n";
+			writeFileSync(file, plan);
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			const outcome = await flow.tools.get("CompleteGoal").execute("", { goal }, undefined, undefined, flow.ctx);
+			expect(outcome.isError).toBe(true);
+			expect(outcome.content[0].text).toMatch(/unique exact goal/i);
+			expect(readFileSync(file, "utf8")).toBe(plan);
+		} finally { await flow.hooks.get("session_shutdown")({}, flow.ctx); rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
 	it("reopens a prematurely ticked submitted goal before a failed sign-off", async () => {
 		const flow = setup([]);
 		try {

@@ -1,0 +1,8 @@
+PASS: stop persisted paused draft.
+PASS: resume restored planning without Ready authorization.
+PASS: exit persisted ordinary-chat state.
+PASS: no assistant turn beyond operator fixture marker.
+PASS: draft bytes unchanged.
+PASS: actual reload rendered; stopped status retained.
+PASS: reconnect without a pair reports failure instead of launching one.
+PASS: fresh-shell --session retained exit; status reports ordinary chat.

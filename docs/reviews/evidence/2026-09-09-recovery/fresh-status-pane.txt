@@ -1,0 +1,70 @@
+                                                                                                                                                                                                                                                                                │
+[Extensions]                                                                                                                                                                                                                                                                    │
+  @aliou/pi-processes:processes, @aliou/pi-processes:processes-dock, @aliou/pi-processes:processes-logs, @ff-labs/pi-fff:src, herdr-agent-state.ts, pi-annotated-journal, pi-better-compaction, pi-sandbox, pi-schedule-prompt:src, pi-subagents,                               │
+pi-zed-shift-enter:extension.ts, pi-zentui:zentui, src, wassname/pi-copilot-web                                                                                                                                                                                                 │
+                                                                                                                                                                                                                                                                                │
+[Themes]                                                                                                                                                                                                                                                                        │
+  adventure, adwaita-dark, arcoiris, arthur, atom, aura, black-metal-bathory, black-metal-burzum, black-metal-khold, box, brogrammer, carbonfox, catppuccin-mocha, citruszest, cursor-dark, cutie-pro, dark-modern, dark-pastel, dimmed-monokai, doom-peacock, dracula-plus,    │
+earthsong, everforest-dark-hard, fahrenheit, flatland, flexoki-dark, front-end-delight, fun-forrest, galizur, github-dark-colorblind, github-dark-high-contrast, glacier, gruber-darker, gruvbox-dark, gruvbox-dark-hard, gruvbox-material, guezwhoz, hacktober, hardcore,      │
+havn-skumring, ic-orange-ppl, iterm2-smoooooth, iterm2-tango-dark, japanesque, jellybeans, kanagawa-wave, kurokula, later-this-evening, lovelace, material-darker, matte-black, mellow, miasma, nvim-dark, popping-and-locking, sea-shells, sleepy-hollow, smyck, tomorrow-night│
+tomorrow-night-bright, tomorrow-night-burns, twilight, vague, vesper, xcode-dark-hc                                                                                                                                                                                             │
+                                                                                                                                                                                                                                                                                │
+                                                                                                                                                                                                                                                                                │
+ Warning: ⚠️ Network sandbox allows all domains because network.allowedDomains contains "*". Only use this intentionally; remove "*" to restore per-domain prompts.                                                                                                             │
+                                                                                                                                                                                                                                                                                │
+ pi-better-compaction loaded • debug artifacts → /home/ubuntu/.pi/agent/artifacts/pi-better-compaction/sessions/01a084a5-a0f4-74c9-99fc-f9e5ae61adec/lifecycle/2026-09-09T05-35-21-169Z-lifecycle.json                                                                          │
+                                                                                                                                                                                                                                                                                │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+                                                                                                                                                                                                                                                                                │
+ Operator-created recovery command fixture. The plan is a draft, not approved. Do not implement it.                                                                                                                                                                             │
+                                                                                                                                                                                                                                                                                │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+                                                                                                                                                                                                                                                                                ┃
+ Operator fixture marker, not a model response.                                                                                                                                                                                                                                 ┃
+                                                                                                                                                                                                                                                                                ┃
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┃
+ Package Updates Available                                                                                                                                                                                                                                                      ┃
+ Package updates are available. Run pi update --extensions                                                                                                                                                                                                                      ┃
+ Packages:                                                                                                                                                                                                                                                                      ┃
+ - pi-sandbox                                                                                                                                                                                                                                                                   ┃
+ - pi-zentui                                                                                                                                                                                                                                                                    ┃
+ - github.com/wassname/pi-annotated-journal                                                                                                                                                                                                                                     ┃
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┃
+                                                                                                                                                                                                                                                                                ┃
+ Goals: ordinary chat (goals exited).                                                                                                                                                                                                                                           ┃
+ Pair: disconnected/unconfirmed; inactive.                                                                               ↓ Jump to latest message · End                                                                                                                         │
+
+ Warning: ⚠️ Network sandbox allows all domains because network.allowedDomains contains "*". Only use this intentionally; remove "*" to restore per-domain prompts.
+
+ pi-better-compaction loaded • debug artifacts → /home/ubuntu/.pi/agent/artifacts/pi-better-compaction/sessions/01a084a5-a0f4-74c9-99fc-f9e5ae61adec/lifecycle/2026-09-09T05-35-21-169Z-lifecycle.json
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Operator-created recovery command fixture. The plan is a draft, not approved. Do not implement it.
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Operator fixture marker, not a model response.
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Package Updates Available
+ Package updates are available. Run pi update --extensions
+ Packages:
+ - pi-sandbox
+ - pi-zentui
+ - github.com/wassname/pi-annotated-journal
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Goals: ordinary chat (goals exited).
+ Pair: disconnected/unconfirmed; inactive.
+ Worker: not recorded · no paired session
+ Supervisor: not recorded · no paired session
+ Last failure: none recorded in this runtime
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│
+│
+│
+│ gpt-6-astra  Github Copilot  minimal
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ trial-nAjUyF                                                                                                                                                                              🔒 Sandbox: all domains, 4 write paths | [░░░░░░░░░░] 0.0%/400k (auto) | $0.000 (sub)
