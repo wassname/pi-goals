@@ -18,7 +18,8 @@ describe("supervisor pane command", () => {
 		const command = supervisorCommand(input());
 		expect(command).toContain("'PI_GOALS_ROLE=supervisor'");
 		expect(command).toContain("'PI_GOALS_APPROVAL_ID=approval-1'");
-		expect(command).toContain("'pi' '--no-extensions' '-e' '/repo/src/index.ts'");
+		expect(command).toContain("'pi' '-e' '/repo/src/index.ts'");
+		expect(command).not.toMatch(/--no-(?:extensions|skills|prompt-templates|themes|context-files)/);
 		expect(command).toContain("'--fork' '/sessions/worker.jsonl'");
 		expect(command).toContain("'--model' 'provider/supervisor'");
 		expect(command).not.toContain("pi-supervise");

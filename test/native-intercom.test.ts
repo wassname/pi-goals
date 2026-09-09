@@ -89,7 +89,10 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 		workerFile = state.data.sessionFile;
 		expect(workerFile).toBeTruthy();
 		writeFileSync(join(cwd, "plan.md"), "1. [ ] goal: inspect actual outputs\n  - discriminator: raw output inspected\n");
-		const supervisorProcess = spawn(resolve("node_modules/.bin/pi"), [...common, "-e", resolve("src/index.ts"), "--fork", workerFile!], { cwd, env: {
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(join(agentDir, "extensions/profile-tools.ts"), `export { default } from ${JSON.stringify(resolve("test/fixtures/profile-tools.ts"))};`);
+		// Exercise normal discovery in an isolated profile; never load the user's extensions in this test.
+		const supervisorProcess = spawn(resolve("node_modules/.bin/pi"), [...common.filter(arg => arg !== "--no-extensions"), "-e", resolve("src/index.ts"), "--fork", workerFile!], { cwd, env: {
 			...env, PI_GOALS_ROLE: "supervisor", PI_GOALS_WORKER_ID: state.data.sessionId, PI_GOALS_OWNER_SESSION_ID: state.data.sessionId,
 			PI_GOALS_PLAN_PATH: join(cwd, "plan.md"), PI_GOALS_APPROVAL_ID: "native-pair-test", PI_GOALS_MODEL_EXPLICIT: "0",
 		} });
@@ -100,8 +103,11 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 		const result = await supervisor.wait(message => message.type === "tool_execution_end" && message.toolName === "SteerWorker");
 		expect(result.isError).toBe(false);
 		expect(supervisorTools).toContain("SteerWorker");
-		expect(supervisorTools).not.toContain("intercom");
-		expect(supervisorTools).not.toContain("bash");
+		expect(supervisorTools).toContain("intercom");
+		expect(supervisorTools).toContain("bash");
+		expect(supervisorTools).toContain("edit");
+		expect(supervisorTools).toContain("write");
+		expect(supervisorTools).toContain("profile_inspection");
 		expect(JSON.stringify(supervisorRequest.messages)).toContain(supervisorStoppedReview);
 		const description = (name: string) => supervisorRequest.tools.find((tool: any) => tool.function.name === name).function.description;
 		expect(description("SteerWorker")).toBe(steerWorkerDescription);

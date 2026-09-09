@@ -54,7 +54,6 @@ export function supervisorCommand(input: LaunchSupervisorInput): string {
 	];
 	const args = [
 		"pi",
-		"--no-extensions",
 		"-e", input.extensionPath,
 		"--fork", input.sourceSessionFile,
 		"--name", `goals-supervisor-${input.workerSessionId.slice(0, 8)}`,

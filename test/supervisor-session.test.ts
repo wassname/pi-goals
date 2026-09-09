@@ -24,7 +24,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 	const entries: any[] = [];
 	const messages: string[] = [];
 	let branch: any[] = [];
-	let activeTools = ["read", "grep", "bash", "write", "edit", "intercom"];
+	let activeTools = ["read", "grep", "bash", "write", "edit", "intercom", "custom_inspection", "custom_action"];
 	const ctx = {
 		cwd,
 		isIdle: () => true,
@@ -70,7 +70,7 @@ afterEach(async () => {
 });
 
 describe("visible supervisor session", () => {
-	it("restores monitoring and read-only tools without replaying persisted views", async () => {
+	it("restores monitoring without removing normal or custom tools or replaying persisted views", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-resume-"));
 		try {
 			const first = setup(cwd, join(cwd, "plan.md"));
@@ -81,7 +81,8 @@ describe("visible supervisor session", () => {
 			const resumed = setup(cwd, join(cwd, "plan.md"), 30_000);
 			resumed.entries.push(...first.entries);
 			await resumed.start();
-			expect(resumed.activeTools()).toEqual(["read", "grep"]);
+			expect(resumed.activeTools()).toEqual(first.activeTools());
+			expect(resumed.activeTools()).toEqual(["read", "grep", "bash", "write", "edit", "intercom", "custom_inspection", "custom_action"]);
 			expect(resumed.ctx.compact).not.toHaveBeenCalled();
 			resumed.view("first", view.text);
 			expect(resumed.messages).toEqual([]);
@@ -147,6 +148,8 @@ describe("visible supervisor session", () => {
 			const next = await review();
 			expect(next.message).toBeUndefined();
 			expect(next.systemPrompt).toContain("autonomously extending the user's agency");
+			expect(next.systemPrompt).toContain("Inspect and diagnose directly. Delegate changes to the worker through SteerWorker; do not take over implementation or alter shared state.");
+			expect(first.message.content).toContain("instruction, not an enforced sandbox");
 			await runtime.hooks.get("session_compact")({}, runtime.ctx);
 			expect((await review()).message.content).toContain("Protect the user's epistemic autonomy");
 			writeFileSync(join(cwd, "plan.md"), "# Outcome\nBeat random\n1. [x] goal: repair\n  - discriminator: beats random\n");
@@ -169,7 +172,7 @@ describe("visible supervisor session", () => {
 			expect(systemPrompt).toContain("give a short assessment and stop");
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
-	it("writes readiness only after removing writing tools", async () => {
+	it("writes readiness without removing normal or custom extension tools", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
 			const runtime = setup(cwd, join(cwd, ".pi/plan/worker-v1.md"));
@@ -177,7 +180,7 @@ describe("visible supervisor session", () => {
 			await new Promise((resolve) => setImmediate(resolve));
 			expect(runtime.ctx.compact).not.toHaveBeenCalled();
 			expect(runtime.ready()).toBe(true);
-			expect(runtime.activeTools()).toEqual(["read", "grep"]);
+			expect(runtime.activeTools()).toEqual(["read", "grep", "bash", "write", "edit", "intercom", "custom_inspection", "custom_action"]);
 			expect(runtime.entries.at(-1)).toMatchObject({ customType: "pi-goals-visible-supervisor-v2" });
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
@@ -264,15 +267,17 @@ describe("visible supervisor session", () => {
 	});
 });
 
-it("blocks the general intercom actuator even if enabled after startup", async () => {
+it("does not enforce a supervisor tool-call denylist or reset extension tool selections", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "goals-supervisor-actuators-"));
 	try {
 		const runtime = setup(cwd, join(cwd, "plan.md"));
 		await runtime.start();
-		expect(runtime.activeTools()).not.toContain("intercom");
-		runtime.pi.setActiveTools(["intercom", "SteerWorker", "read"]);
-		expect((await runtime.hooks.get("tool_call")({ toolName: "intercom" }, runtime.ctx)).block).toBe(true);
-		expect(await runtime.hooks.get("tool_call")({ toolName: "SteerWorker" }, runtime.ctx)).toBeUndefined();
+		expect(runtime.activeTools()).toContain("intercom");
+		const selection = ["intercom", "SteerWorker", "bash", "write", "edit", "custom_action"];
+		runtime.pi.setActiveTools(selection);
+		await runtime.commands.get("goals").handler("reconnect", runtime.ctx);
+		expect(runtime.activeTools()).toEqual(selection);
+		expect(runtime.hooks.has("tool_call")).toBe(false);
 	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 

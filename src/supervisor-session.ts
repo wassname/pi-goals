@@ -11,7 +11,6 @@ import { RoleModels } from "./role-models.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
 const COMPACT_AT_TOKENS = 100_000;
-const BLOCKED_TOOLS = new Set(["intercom", "bash", "edit", "write", "multi_edit", "multiedit", "apply_patch", "notebook_edit", "edit_file", "write_file", "quick_edit", "target_edit"]);
 
 interface SupervisorConfig {
 	workerSessionId: string;
@@ -89,10 +88,6 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		const entries = ctx.sessionManager.getEntries();
 		bootstrapping = true;
 		try {
-			const active = pi.getActiveTools();
-			pi.setActiveTools(active.filter((tool) => !BLOCKED_TOOLS.has(tool.toLowerCase())));
-			const blocked = pi.getActiveTools().filter((tool) => BLOCKED_TOOLS.has(tool.toLowerCase()));
-			if (blocked.length) throw new Error(`Could not remove supervisor writing or messaging tools: ${blocked.join(", ")}`);
 			if (!entries.some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED)) {
 				pi.appendEntry(BOOTSTRAPPED, { version: 2, workerSessionId: settings.workerSessionId, planPath: settings.planPath });
 			}
@@ -129,7 +124,6 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const start = async (ctx: ExtensionContext): Promise<void> => {
 		modelError = "Supervisor model restoration is pending.";
 		intercom.configure(settings.approvalId, "supervisor", ctx);
-		pi.setActiveTools(pi.getActiveTools().filter((tool) => !BLOCKED_TOOLS.has(tool.toLowerCase())));
 		try {
 			await models.enter("supervisor", ctx, process.env.PI_GOALS_MODEL_EXPLICIT === "1");
 			modelError = null;
@@ -147,9 +141,6 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			if (!ctx.isIdle() || compacting) { ctx.ui.notify("Wait for the supervisor to settle before reconnecting.", "warning"); return; }
 			await start(ctx);
 		},
-	});
-	pi.on("tool_call", async (event) => {
-		if (BLOCKED_TOOLS.has(event.toolName.toLowerCase())) return { block: true, terminate: true, reason: "Supervisor is read-only; use SteerWorker for the bound worker, not the general intercom tool." };
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
 		const plan = planViews(readFileSync(settings.planPath, "utf8"));

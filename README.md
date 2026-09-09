@@ -8,14 +8,14 @@ Plan in one Pi session, then do the work there while a stronger visible Pi sessi
 2. Pi asks only material questions, writes the plan, and shows **Ready / Refine / Edit / Cancel**.
 3. **Ready** opens a second Herdr pane. The new Pi session explicitly forks the planning session and compacts that fork.
 4. The original session becomes the implementation worker. It keeps the full conversation and normal tools.
-5. The fork becomes a read-only supervisor. Worker views and supervisor instructions travel over pi-intercom's extension channel, scoped to this plan pairing.
+5. The fork becomes an inspection-only supervisor by instruction, with normal Pi tools and extensions available. Worker views and supervisor instructions travel over pi-intercom's extension channel, scoped to this plan pairing.
 6. Ready waits for the supervisor's Intercom readiness message; the worker does not begin before the fork has compacted and started.
 7. The supervisor compacts again when its context reaches 100k tokens.
 8. The supervisor records a private approval only after it sees a stopped worker, no active work, a clean worktree (or an explicit inspected-state override), evidence, and saved verification output. `CompleteGoal` checks that approval against the exact plan block and Git tree before it ticks `[x]`.
 
 The two Pi sessions are visible. You can switch to the supervisor pane and talk to it directly. Supervisor instructions are shown in full, including in collapsed tool rows; ordinary messages and emitted thinking use Pi's display settings. The supervisor is prompted to give brief progress assessments and use judgment about when to intervene.
 
-On resume, monitoring and read-only tools are restored. Views include the latest human direction, source-session path, worker model, and new messages since the last acknowledged view. They report Pi idleness and tracked process/subagent activity separately. Unavailable trackers stay unknown; unregistered detached jobs are not tracked. Approval is blocked while tracked work is active or unknown. Intercom disconnects are reported; unsent current views and unacknowledged instructions are retained in Pi session history for reconnect. A receipt confirms adapter handling only—not durable queue persistence, model receipt, or execution. Pi's void message API can fail asynchronously after that acknowledgement; crashes can also cause duplicate handoffs. End-to-end exactly-once or durable delivery is not guaranteed. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
+On same-process reload, monitoring is restored without removing normal or custom tools. Views include the latest human direction, source-session path, worker model, and new messages since the last acknowledged view. They report Pi idleness and tracked process/subagent activity separately. Unavailable trackers stay unknown; unregistered detached jobs are not tracked. Approval is blocked while tracked work is active or unknown. Intercom disconnects are reported; unsent current views and unacknowledged instructions are retained in Pi session history for reconnect. A receipt confirms adapter handling only—not durable queue persistence, model receipt, or execution. Pi's void message API can fail asynchronously after that acknowledgement; crashes can also cause duplicate handoffs. End-to-end exactly-once or durable delivery is not guaranteed. Reviews stop after all goals are completed or cancelled, and both panes remain available. These mechanics are tested; useful judgment and savings from a cheaper worker still require a representative two-model run. -- Pi/OpenAI
 
 ## Install
 
@@ -24,6 +24,8 @@ This branch requires Herdr 0.7.5 or newer and one Pi package. It reuses installe
 ```bash
 pi install npm:@wassname2/pi-goals
 ```
+
+The supervisor launcher uses the normal Pi profile: it inherits the agent directory/environment and discovers configured extensions, skills, prompt templates, themes and authentication. It explicitly loads this pi-goals source and forks the planning session with the supervisor role/model. Existing Intercom is reused when registered. The repeated role instruction says to inspect and diagnose directly, but delegate changes through `SteerWorker` rather than alter shared state. **This is not an enforced sandbox:** bash, edit, write and extension actions remain available; other extensions may have their own hooks or restrictions. Planning-mode restrictions and approval checks are unchanged. Fresh-shell role recovery and the broader reload/compaction lifecycle remain separate acceptance work.
 
 For a local checkout:
 
@@ -62,7 +64,7 @@ The supervisor can call `ApproveGoal` with `force: true` and a nonempty `reason`
 
 The approval JSON stores the reason, NUL-delimited Git status, an index SHA-256 digest and per-dirty/untracked-file content SHA-256 digests (including modes, symlink targets and deletions). `CompleteGoal` requires the same state; even editing an already-dirty file without changing its status invalidates approval. Normal clean approvals behave as before. Git-ignored files and pi-goals' private plan/approval/model paths remain excluded. Dirty submodule/nested-repository directories or other unhashable paths fail closed; there is no recursive submodule override. Fingerprinting reads all included dirty/untracked bytes and can be expensive for large outputs; it does not lock concurrent writers.
 
-A gate rejection is not automatically an experiment failure or a dependency of other authorized work. The read-only supervisor should inspect the exact error and implementation, distinguish causes with a cheap check, and steer repairs plus safe independent progress instead of repeating an unproductive status check. -- Pi/OpenAI
+A gate rejection is not automatically an experiment failure or a dependency of other authorized work. The supervisor should inspect the exact error and implementation, distinguish causes with a cheap check, and steer repairs plus safe independent progress instead of repeating an unproductive status check. -- Pi/OpenAI
 
 ## Plan format
 

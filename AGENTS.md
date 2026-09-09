@@ -61,6 +61,8 @@ The supervisor's job is to supervise autonomously until the agreed goal is achie
 
 Treat claims of being blocked, waiting, unable to proceed, or already done skeptically. Inspect the evidence, question assumptions, and look for authorized ways forward. Do not accept an excuse at face value or repeat status checks that cannot resolve it. Respect real dependencies and permission limits; skepticism does not authorize bypassing them. Seek justified confidence, not certainty at any cost.
 
+User-authorized full-profile supervision: preserve normal Pi extensions and tools, including bash/edit/write and custom actions. Inspection-only is a role instruction, not a tool denylist or enforced sandbox. Repeat the division of work in the existing short opening: inspect and diagnose directly, delegate changes through SteerWorker, and do not take over implementation or alter shared state. Do not add per-tool reminders. Worker planning restrictions and approval checks are separate and unchanged. Validate the full profile in isolated parent-owned Herdr panes; automated tests do not prove role adherence or lifecycle recovery.
+
 Keep the prompt generic. Do not prescribe pueue, Modal, worktrees, or a particular research setup. Explain the job and what deserves attention; let the supervisor choose useful checks. Tool requirements belong in tool descriptions. Administrative approval must not replace the requested deliverable.
 
 Use `@monotykamary/pi-supervisor` as a behavioral reference, not an implementation to copy wholesale. Its outcome focus, autonomous continuation, and instruction not to repeat ineffective steering are useful. Judge our behavior in real sessions, not by test counts alone.
