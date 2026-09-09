@@ -3,7 +3,10 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "paths": { "pi-intercom": ["./src/intercom-package.d.ts"] },
+    "paths": {
+      "pi-intercom": ["./src/intercom-package.d.ts"],
+      "@sting8k/pi-vcc/src/core/summarize": ["./src/vcc-package.d.ts"]
+    },
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

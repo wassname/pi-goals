@@ -34,6 +34,7 @@ function setup(selectChoices: Array<string | undefined>, editorChoices: Array<st
 		hasUI: true,
 		isIdle: vi.fn(() => true),
 		getSystemPrompt: () => "base prompt",
+		getContextUsage: () => ({ percent: 25 }),
 		model: { provider: "test", id: "tiny" },
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 		sessionManager: {

@@ -260,6 +260,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		const view = workerView(entries, reason, reason !== "started" && ctx.isIdle(), {
 			sourceSession: ctx.sessionManager.getSessionFile()!, latestDirection: state.latestDirection,
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "not selected",
+			contextPercent: ctx.getContextUsage()?.percent,
 			since: intercom.acknowledgedEntry, background: background.description,
 			planReview: `Plan: ${planRel(ctx)}\n${planReview(plan)}`,
 		});

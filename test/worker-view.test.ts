@@ -35,3 +35,87 @@ it("bounds serialized Unicode and quoted logs while marking omissions", () => {
 	expect(view).toContain("[truncated; inspect source session]");
 	expect(view).toContain(context.sourceSession);
 });
+
+it("keeps two recent thinking tails beside their actions without mutating the branch", () => {
+	const entries = ["old", "middle", "new"].map(id => ({ id, type: "message", message: { role: "assistant", content: [
+		{ type: "thinking", thinking: `${id} discarded head ${"padding ".repeat(100)}${id} decisive tail` },
+		{ type: "toolCall", id, name: "bash", arguments: { command: `verify-${id}` } },
+	] } }));
+	const before = structuredClone(entries);
+	const view = workerView(entries, "turns", false, context);
+	expect(view).not.toContain("old decisive tail");
+	expect(view).not.toContain("discarded head");
+	expect(view).toContain("middle decisive tail");
+	expect(view).toContain("new decisive tail");
+	expect(view.indexOf("middle decisive tail")).toBeLessThan(view.indexOf("verify-middle"));
+	expect(view.indexOf("verify-middle")).toBeLessThan(view.indexOf("new decisive tail"));
+	expect(view.indexOf("new decisive tail")).toBeLessThan(view.indexOf("verify-new"));
+	expect(entries).toEqual(before);
+});
+
+it("extracts files and blockers, retaining tool arguments instead of verbose result bodies", () => {
+	const entries = [
+		entry("claim", "Cannot finish because the fixture is broken."),
+		{ id: "write", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call", name: "write", arguments: { path: "result.txt", content: "artifact" } }] } },
+		{ id: "result", type: "message", message: { role: "toolResult", toolName: "write", toolCallId: "call", content: "verbose-result-body".repeat(1000) } },
+	];
+	const view = workerView(entries, "settled", true, { ...context, contextPercent: 42, planReview: "goal: [/] -> [x], manual claim" });
+	expect(view).toContain("[Files And Changes]");
+	expect(view).toContain("Modified: result.txt");
+	expect(view).toContain("[Outstanding Context]");
+	expect(view).toContain("fixture is broken");
+	expect(view).toContain('write "result.txt"');
+	expect(view).toContain("tool calls with no result: none");
+	expect(view).toContain(context.background);
+	expect(view).toContain("context used: 42%");
+	expect(view).toContain("goal: [/] -> [x], manual claim");
+	expect(view).not.toContain("verbose-result-body");
+	expect(view).toContain("tool-result bodies omitted; inspect source for evidence");
+	expect(view).not.toContain("vcc_recall");
+});
+
+it("preserves unanswered partial calls across the acknowledged boundary", () => {
+	const entries = [{ id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "pending", name: "edit" }] } }];
+	expect(workerView(entries, "turns", false, context)).toContain("tool calls with no result: edit");
+	const view = workerView(entries, "turns", false, { ...context, since: "call" });
+	expect(view).toContain("tool calls with no result: edit");
+	expect(view).toContain("No new messages.");
+});
+
+it("restarts a rewound branch and keeps fresh headerless text after compaction", () => {
+	const view = workerView([
+		{ id: "compaction", type: "compaction", summary: "Prior worker account." }, entry("fresh", "Fresh decisive result."),
+	], "settled", true, { ...context, since: "entry-on-discarded-branch", contextPercent: null });
+	expect(view).toContain("initial or reset view");
+	expect(view).toContain("Prior worker account.");
+	expect(view).toContain("Fresh decisive result.");
+	expect(view).not.toContain("context used:");
+});
+
+it("protects VCC headers and newest actions when the compacted brief exceeds its budget", () => {
+	const entries = [
+		{ id: "write", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call", name: "write", arguments: { path: "important.txt", content: "artifact" } }] } },
+		...Array.from({ length: 150 }, (_, i) => entry(`entry-${i}`, `Action ${i}: ${"details ".repeat(80)}`)),
+		entry("last", "Newest decisive observation."),
+	];
+	const view = workerView(entries, "turns", false, context);
+	expect(view).toContain("[Files And Changes]");
+	expect(view).toContain("important.txt");
+	expect(view).toContain("Newest decisive observation.");
+	expect(view).toContain("[truncated; inspect source session]");
+	expect(Buffer.byteLength(JSON.stringify({ text: view }))).toBeLessThan(16_000);
+});
+
+it("distinguishes omitted result-only updates from no messages and extracts paired commit evidence", () => {
+	const result = (content: string) => [{ id: "result", type: "message", message: { role: "toolResult", toolName: "bash", toolCallId: "done", content } }];
+	const omitted = workerView(result("large diagnostic output"), "settled", true, context);
+	expect(omitted).toContain("No overview text retained from these messages.");
+	expect(omitted).not.toContain("No new messages.");
+	const commit = workerView([
+		{ id: "commit", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "done", name: "bash", arguments: { command: 'git commit -m "Save verified artifact"' } }] } },
+		...result("[main abc1234] Save verified artifact"),
+	], "settled", true, context);
+	expect(commit).toContain("[Commits]");
+	expect(commit).toContain("abc1234");
+	expect(commit).not.toContain("vcc_recall");
+});

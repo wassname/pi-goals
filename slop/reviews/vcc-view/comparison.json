@@ -1,0 +1,46 @@
+{
+  "baseline": "8953dce",
+  "workerPath": "/home/code/.pi/agent/sessions/--workspace-2026-mfv-manifold-steer--/2026-09-08T10-41-19-145Z_01a0809b-a528-7724-a514-59f3c61116a6.jsonl",
+  "supervisorPath": "/home/code/.pi/agent/sessions/--workspace-2026-mfv-manifold-steer--/2026-09-08T22-43-35-654Z_01a08330-e866-7004-9b7f-5efdceb2488e.jsonl",
+  "compiler": "@sting8k/pi-vcc@0.5.0",
+  "results": [
+    {
+      "name": "pilot-preparation",
+      "timestamp": "2026-09-08T22:59:31.347Z",
+      "through": "3cb9b26f",
+      "branchEntries": 597,
+      "branchSha256": "f0da668db6266780aa3ba803e5260d4009732c74ab3276f4db55910b8d74af5a",
+      "oldBytes": 4961,
+      "vccBytes": 5356,
+      "oldSerializedTextBytes": 5324,
+      "vccSerializedTextBytes": 5462,
+      "envelopeBytes": 5655
+    },
+    {
+      "name": "flow-implementation",
+      "timestamp": "2026-09-08T23:17:08.542Z",
+      "through": "69943231",
+      "since": "54648ab4",
+      "branchEntries": 715,
+      "branchSha256": "2293e2e7158c051c3571cd50befb14900cea39314640421a5735633775af427b",
+      "oldBytes": 4897,
+      "vccBytes": 2396,
+      "oldSerializedTextBytes": 5109,
+      "vccSerializedTextBytes": 2452,
+      "envelopeBytes": 2646
+    },
+    {
+      "name": "settled-checkpoint",
+      "timestamp": "2026-09-09T00:11:07.924Z",
+      "through": "e266d41e",
+      "since": "18c6af89",
+      "branchEntries": 981,
+      "branchSha256": "3460caf8d1a093309ad2639decbc181151f27871c42ffa62ca98803aae726ce7",
+      "oldBytes": 1676,
+      "vccBytes": 1840,
+      "oldSerializedTextBytes": 1721,
+      "vccSerializedTextBytes": 1882,
+      "envelopeBytes": 2078
+    }
+  ]
+}
