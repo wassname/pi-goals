@@ -1,0 +1,21 @@
+2026-09-09T17:02:05+08:00
+15dd7f02225d366ae920509bb23066be83956fb8 Recover supervisor identity and messages across lifecycle changes
+ M README.md
+ M slop/reviews/review-fixes-native/supervisor-events.jsonl
+ M slop/reviews/review-fixes-native/worker-events.jsonl
+ M src/index.ts
+ M src/intercom.ts
+ M src/prompts.ts
+ M src/supervisor-session.ts
+ M test/goals-flow.test.ts
+ M test/supervisor-session.test.ts
+?? docs/human_journal.md
+?? slop/reviews/solo-recovery/
+?? src/command-help.ts
+
+Pi command: /home/code/.local/bin/pi
+0.85.1
+
+Evidence files before final validation:
+a8f1facd16fd6ff2938195a7adbdc3b4b1e1dea61533e90a39e5eb18d201e190  slop/reviews/review-fixes-native/supervisor-events.jsonl
+de5bb7171e71508c40e19f3929303a63f1fa0f2ea7789a2bcc8728ea038310d2  slop/reviews/review-fixes-native/worker-events.jsonl

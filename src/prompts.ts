@@ -160,12 +160,11 @@ Ready.`;
  *     appendix included. Modelled on pi-goal-x's [POST-COMPACTION RESYNC] one-shot. This is the
  *     only place the below-the-fold sections are pushed; otherwise the agent reads them on demand.
  * ──────────────────────────────────────────────────────────────────────── */
-export function resync(plan: string, planRel: string, why: string): string {
+export function resync(plan: string, planRel: string, why: string, solo = false): string {
 	return `\
 <system-reminder>
 ${why} This is the whole plan file (${planRel}), appendix included. You are the implementation worker.
-Keep the high-level goal and human intent stable and do the work directly. A visible read-only Pi
-session supervises you through pi-intercom. The human's latest message outranks the plan: if it
+Keep the high-level goal and human intent stable and do the work directly. ${solo ? "You are UNSUPERVISED. Continue implementation and save evidence; supervisor sign-off is unavailable. Do not wait for steering or call CompleteGoal. /goals restart restores supervision." : "A visible read-only Pi session supervises you through pi-intercom."} The human's latest message outranks the plan: if it
 changes scope, amend the plan rather than preserving an obsolete decision.
 
 ${plan}

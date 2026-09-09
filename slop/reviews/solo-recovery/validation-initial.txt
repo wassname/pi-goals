@@ -1,0 +1,54 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+fatal: not a git repository (or any of the parent directories): .git
+ ❯ test/goals-flow.test.ts (40 tests | 1 failed) 1794ms
+     × restores sign-off markers but clears one when a goal is reopened 33ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/goals-flow.test.ts > /goals flow > restores sign-off markers but clears one when a goal is reopened
+AssertionError: expected last "vi.fn()" call to have been called with [ 'pi-goals', StringContaining{…} ]
+
+- Expected
++ Received
+
+  [
+    "pi-goals",
+-   StringContaining "0/2 goals · 1 claimed, awaiting review",
++   "◷ 0/2 goals · supervised worker · 1 claimed, awaiting review",
+  ]
+
+ ❯ test/goals-flow.test.ts:193:34
+    191|    await flow.hooks.get("agent_settled")({}, flow.ctx);
+    192|    await flow.hooks.get("turn_end")({}, flow.ctx);
+    193|    expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", …
+       |                                  ^
+    194|   } finally { await flow.hooks.get("session_shutdown")(); rmSync(flow.…
+    195|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 21 passed (22)
+      Tests  1 failed | 137 passed (138)
+   Start at  17:02:05
+   Duration  5.12s (transform 5.40s, setup 0ms, import 10.36s, tests 12.67s, environment 3ms)
+
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 42 files in 52ms. No fixes applied.
+
+> @wassname2/pi-goals@0.2.2 build
+> tsc
+

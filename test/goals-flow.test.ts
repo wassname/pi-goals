@@ -86,7 +86,7 @@ function approvedPlan(cwd: string): string {
 afterEach(async () => {
 	for (const shutdown of shutdowns.splice(0)) await shutdown();
 	vi.useRealTimers();
-	openSupervisorPane.mockClear();
+	openSupervisorPane.mockReset();
 	closeSupervisorPane.mockClear();
 });
 
@@ -117,7 +117,7 @@ describe("/goals flow", () => {
 			expect(views().at(-1)?.text).toContain("use SteerWorker to send the next useful instruction and resume work");
 			expect(views().at(-1)?.text).toContain("Manual checkbox edits are claims, not proof of completion");
 			expect(readFileSync(path, "utf8")).toContain("[x] goal:");
-			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/1 goals · 1 claimed, awaiting review"));
+			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/1 goals · supervised worker · 1 claimed, awaiting review"));
 			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", [expect.stringContaining("claimed complete; awaiting supervisor review")]);
 			const binding = (flow.entries.at(-1)?.data as any).approvalId;
 			flow.transport.receive({ binding, role: "supervisor", kind: "steer", id: "review-claim", text: "Reopen the goal; verify the missing output first." });
@@ -190,7 +190,7 @@ describe("/goals flow", () => {
 			writeFileSync(path, "1. [x] goal: first\n2. [ ] goal: second\n");
 			await flow.hooks.get("agent_settled")({}, flow.ctx);
 			await flow.hooks.get("turn_end")({}, flow.ctx);
-			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/2 goals · 1 claimed, awaiting review"));
+			expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("0/2 goals · supervised worker · 1 claimed, awaiting review"));
 		} finally { await flow.hooks.get("session_shutdown")(); rmSync(flow.cwd, { recursive: true, force: true }); }
 	});
 
@@ -396,14 +396,16 @@ it("shows a missing resumed supervisor, pauses writes, and automatically unpause
 		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "goals paused");
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(flow.notifications.some(text => text.includes("/goals restart"))).toBe(false);
-		await vi.advanceTimersByTimeAsync(240_000);
-		expect(flow.notifications.some(text => text.includes("/goals restart"))).toBe(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED"))).toBe(false);
 		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).terminate).toBe(true);
 		expect(await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status" } }, flow.ctx)).toBeUndefined();
 		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: true });
 		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised"));
 		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).toBeUndefined();
 		expect(openSupervisorPane).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
@@ -484,24 +486,24 @@ it.each(["launch", "model"])("rejects plan content changes during Ready %s witho
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
-it("allows five minutes for stale Ready retries, without replacing the pane automatically", async () => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-	const flow = setup(["Ready", "Ready"]);
+it("falls back loudly after explicit Ready launch failure, preserving its failed pane and approved content", async () => {
+	const flow = setup(["Ready"]);
 	try {
 		await flow.commands.get("goals").handler("make the file", flow.ctx);
-		approvedPlan(flow.cwd);
-		flow.transport.replyToHello(false);
+		const path = approvedPlan(flow.cwd);
+		const before = readFileSync(path, "utf8");
 		openSupervisorPane.mockImplementationOnce(async (_input: any, opened: any) => { opened("failed-pane"); throw new Error("pane run failed"); });
 		await flow.hooks.get("agent_settled")({}, flow.ctx);
-		expect(flow.notifications.at(-1)).toContain("failed-pane");
-		const retry = flow.hooks.get("agent_settled")({}, flow.ctx);
-		await vi.advanceTimersByTimeAsync(60_000);
-		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
-		await vi.advanceTimersByTimeAsync(240_000);
-		await retry;
-		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "solo", supervisorPaneId: "failed-pane", approvalId: null });
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(flow.notifications.at(-1)).toContain("pane run failed");
+		expect(flow.notifications.at(-1)).toContain("UNSUPERVISED WORKER");
+		expect(flow.notifications.at(-1)).toContain("same approved plan");
+		expect(flow.notifications.at(-1)).toContain("Supervisor sign-off is unavailable");
+		expect(flow.notifications.at(-1)).toContain("/goals restart");
+		expect(flow.messages.at(-1)?.content).toContain("Continue useful implementation");
 		expect(closeSupervisorPane).not.toHaveBeenCalled();
-		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning", supervisorPaneId: "failed-pane" });
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).toBeUndefined();
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
@@ -638,5 +640,171 @@ it("clear before the launcher resolves rejects late pane callbacks without resto
 		expect(flow.entries).toHaveLength(entryCount);
 		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null, approvalId: null });
 		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+
+it("explicit solo persists across reload/compaction, rejects sign-off and restores supervision only through restart", async () => {
+	const flow = setup([]);
+	try {
+		const path = restoredPlan(flow);
+		const before = readFileSync(path, "utf8");
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		const pendingSignoff = flow.tools.get("CompleteGoal").execute("pending", { goal: "make the file" }, undefined, undefined, flow.ctx);
+		await flow.commands.get("goals").handler("solo", flow.ctx);
+		expect((await pendingSignoff).isError).toBe(true);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "solo", approvalId: null, planVersion: 1 });
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("UNSUPERVISED"));
+		expect(closeSupervisorPane).not.toHaveBeenCalled();
+		const signoff = await flow.tools.get("CompleteGoal").execute("solo", { goal: "make the file" }, undefined, undefined, flow.ctx);
+		expect(signoff.isError).toBe(true);
+		expect(signoff.content[0].text).toContain("unavailable in solo mode");
+		const count = flow.transport.sent.length;
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		await flow.hooks.get("session_compact")({}, flow.ctx);
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(flow.transport.sent).toHaveLength(count);
+		expect((await flow.hooks.get("before_agent_start")({}, flow.ctx)).systemPrompt).toContain("UNSUPERVISED implementation worker");
+		expect((await flow.hooks.get("context")({ messages: [] }, flow.ctx)).messages[0].content[0].text).toContain("You are UNSUPERVISED");
+		await flow.commands.get("goals").handler("reconnect", flow.ctx);
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+		expect(flow.notifications.at(-1)).toContain("remaining UNSUPERVISED");
+		await flow.commands.get("goals").handler("restart", flow.ctx);
+		expect(closeSupervisorPane).toHaveBeenCalledExactlyOnceWith("owned-pane");
+		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "supervised", soloReason: null, planVersion: 1 });
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised worker"));
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it.each(["startup", "resume", "disconnect"])("allows the existing five-minute recovery window before loud %s timeout fallback", async stage => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	const flow = setup(["Ready"]);
+	try {
+		let waiting: Promise<void> | undefined;
+		if (stage === "startup") {
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			approvedPlan(flow.cwd);
+			flow.transport.replyToHello(false);
+			waiting = flow.hooks.get("agent_settled")({}, flow.ctx);
+		} else {
+			restoredPlan(flow);
+			if (stage === "resume") flow.transport.replyToHello(false);
+			await flow.hooks.get("session_start")({}, flow.ctx);
+			if (stage === "disconnect") {
+				flow.transport.replyToHello(false);
+				flow.transport.event({ type: "session_left", sessionId: "peer" });
+			}
+		}
+		await vi.advanceTimersByTimeAsync(299_999);
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
+		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).block).toBe(true);
+		await vi.advanceTimersByTimeAsync(1);
+		await waiting;
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "solo", approvalId: null });
+		expect(flow.notifications.at(-1)).toContain("Supervisor did not become ready through pi-intercom");
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).toBeUndefined();
+		const count = flow.messages.length;
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: true });
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(flow.messages).toHaveLength(count); // A late old peer never silently restores supervision.
+		expect(flow.entries.at(-1)?.data).toMatchObject({ mode: "solo" });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("falls back with the exact reported terminal peer failure without confusing it with worker model failure", async () => {
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		flow.transport.replyToHello(false);
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: false });
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: false, failure: "Supervisor model failed: quota exceeded (429)" });
+		await new Promise(resolve => setImmediate(resolve));
+		expect(flow.entries.at(-1)?.data).toMatchObject({ mode: "solo" });
+		expect(flow.notifications.at(-1)).toContain("quota exceeded (429)");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it.each(["solo", "peer failure"])("does not bypass an unavailable worker model on %s", async action => {
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		flow.pi.setModel.mockResolvedValue(false);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		if (action === "solo") await flow.commands.get("goals").handler("solo", flow.ctx);
+		else flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: false, failure: "Supervisor unavailable" });
+		await new Promise(resolve => setImmediate(resolve));
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
+		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).block).toBe(true);
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it.each(["changed", "noplan", "worker model", "repository"])("never uses initial supervisor failure to approve a %s Ready attempt", async cause => {
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		const path = approvedPlan(flow.cwd);
+		if (cause === "worker model") flow.pi.setModel.mockResolvedValue(false);
+		if (cause === "repository") rmSync(join(flow.cwd, ".git"), { recursive: true, force: true });
+		openSupervisorPane.mockImplementationOnce(async () => {
+			if (cause === "changed") writeFileSync(path, readFileSync(path, "utf8").replace("make the file", "spend money"));
+			if (cause === "noplan") await flow.commands.get("goals").handler("noplan", flow.ctx);
+			throw new Error("Supervisor launch failed");
+		});
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: cause === "noplan" ? null : "planning" });
+		await flow.commands.get("goals").handler("solo", flow.ctx);
+		expect(flow.notifications.at(-1)).toContain("already-approved plan");
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("stays loudly solo when replacement fails and never restores a cleared plan after a pending recovery", async () => {
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		await flow.commands.get("goals").handler("solo", flow.ctx);
+		openSupervisorPane.mockRejectedValueOnce(new Error("Herdr launch refused"));
+		await flow.commands.get("goals").handler("restart", flow.ctx);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ mode: "solo" });
+		expect(flow.notifications.at(-1)).toContain("Herdr launch refused");
+		let finish: (() => void) | undefined;
+		openSupervisorPane.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve("late-pane"); }));
+		const restarting = flow.commands.get("goals").handler("restart", flow.ctx);
+		await new Promise(resolve => setImmediate(resolve));
+		await flow.commands.get("goals").handler("clear", flow.ctx);
+		finish!();
+		await restarting;
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: null });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("offers per-verb autocomplete descriptions without treating an objective as a verb", () => {
+	const flow = setup([]);
+	try {
+		const complete = flow.commands.get("goals").getArgumentCompletions;
+		expect(complete("solo")).toEqual([{ value: "solo", label: "solo", description: expect.stringContaining("sign-off unavailable") }]);
+		expect(complete("re").map((item: any) => item.value)).toEqual(["reconnect", "restart"]);
+		expect(complete("write a report")).toBeNull();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+
+it("keeps worker runtime errors paused after Pi retries, rather than treating them as supervisor failures", async () => {
+	const flow = setup([]);
+	try {
+		restoredPlan(flow);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		await flow.hooks.get("agent_end")({ messages: [{ role: "assistant", stopReason: "error", errorMessage: "worker quota exceeded" }] }, flow.ctx);
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		flow.transport.receive({ binding: "restored-binding", role: "supervisor", kind: "hello", id: "hello", ready: false, failure: "supervisor unavailable too" });
+		await flow.commands.get("goals").handler("solo", flow.ctx);
+		expect(flow.notifications.at(-1)).toContain("worker quota exceeded");
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
+		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "result.txt" } }, flow.ctx)).block).toBe(true);
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });

@@ -34,7 +34,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 		getContextUsage: () => tokens === null ? undefined : ({ tokens }),
 		compact: vi.fn(onCompact),
 		sessionManager: { getEntries: () => entries, getBranch: () => [...entries, ...branch], getSessionId: () => "supervisor-session" },
-		ui: { notify: vi.fn() },
+		ui: { notify: vi.fn(), setStatus: vi.fn() },
 	};
 	const pi = {
 		events: transport.events,
@@ -337,5 +337,29 @@ it("warns once on unavailable usage but stays quiet for Pi's post-compaction nul
 		await runtime.hooks.get("agent_settled")({}, runtime.ctx);
 		expect(runtime.ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("custom 100k compaction trigger cannot be checked"), "warning");
 		expect(runtime.ctx.compact).not.toHaveBeenCalled();
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+
+it("shows the supervisor role, waits through Pi retries, then reports a settled model failure to its worker", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-status-"));
+	try {
+		const runtime = setup(cwd, join(cwd, "plan.md"));
+		await runtime.start();
+		expect(runtime.ctx.ui.setStatus).toHaveBeenCalledWith("pi-goals", "supervisor · starting/reconnecting");
+		expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "supervising");
+		const end = (stopReason: string, errorMessage?: string) => runtime.hooks.get("agent_end")({ messages: [{ role: "assistant", stopReason, errorMessage }] }, runtime.ctx);
+		await end("error", "transient 503");
+		expect(runtime.transport.sent.some(message => message.failure?.includes("transient 503"))).toBe(false);
+		await end("stop");
+		await runtime.hooks.get("agent_settled")({}, runtime.ctx);
+		expect(runtime.transport.sent.some(message => message.failure)).toBe(false);
+		await end("error", "quota exceeded (429)");
+		await runtime.hooks.get("agent_settled")({}, runtime.ctx);
+		expect(runtime.transport.sent.at(-1)).toMatchObject({ kind: "hello", ready: false, failure: "Supervisor model failed after Pi recovery: quota exceeded (429)" });
+		expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "supervisor · paused");
+		expect(runtime.commands.get("goals").getArgumentCompletions("super")).toEqual([{ value: "supervise", label: "supervise", description: expect.stringContaining("saved supervisor") }]);
+		await runtime.hooks.get("session_shutdown")();
+		expect(runtime.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", undefined);
 	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });

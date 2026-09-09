@@ -1,0 +1,28 @@
+Commands: env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR="$PWD/slop/reviews/solo-recovery/native" npm test; npm run typecheck; npm run lint; npm run build
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+fatal: not a git repository (or any of the parent directories): .git
+
+ Test Files  22 passed (22)
+      Tests  138 passed (138)
+   Start at  17:03:15
+   Duration  5.85s (transform 5.41s, setup 0ms, import 11.40s, tests 12.15s, environment 3ms)
+
+
+> @wassname2/pi-goals@0.2.2 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.2.2 lint
+> biome check src/ test/
+
+Checked 42 files in 88ms. No fixes applied.
+
+> @wassname2/pi-goals@0.2.2 build
+> tsc
+

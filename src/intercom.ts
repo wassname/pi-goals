@@ -131,6 +131,7 @@ export class GoalIntercom {
 		this.hello();
 		if (this.ctx) this.onConnectionChange(this.ctx);
 	}
+	get readinessFailure(): string | undefined { return this.failure; }
 	get ended(): boolean { return this.stopped; }
 	get bound(): boolean { return !this.stopped && Boolean(this.binding); }
 	get peerPresent(): boolean { return Boolean(this.bound && this.peer && this.channel?.snapshot().connected); }
@@ -239,7 +240,7 @@ export class GoalIntercom {
 		if (!message || message.binding !== this.binding || message.role !== (this.role === "worker" ? "supervisor" : "worker")) return;
 		if (message.kind === "hello") {
 			if (this.peer && this.peer !== event.fromSessionId) throw new Error("Two peers claim this supervision binding. Stop the duplicate session.");
-			const changed = !this.peer || this.peerReady !== Boolean(message.ready);
+			const changed = !this.peer || this.peerReady !== Boolean(message.ready) || this.peerFailure !== message.failure;
 			this.peer = event.fromSessionId;
 			this.peerReady = Boolean(message.ready);
 			this.peerFailure = message.failure;

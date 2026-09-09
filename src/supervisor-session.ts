@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
+import { goalCommandCompletions } from "./command-help.js";
 import { GoalIntercom } from "./intercom.js";
 import { planViews } from "./plan-view.js";
 import { approveGoalDescription, approveGoalParameters, goalApprovalRecorded, steerWorkerDescription, steerWorkerInstructionDescription, supervisorCompaction, supervisorOrientation, supervisorReviewContext, workerInstructionSent } from "./prompts.js";
@@ -93,7 +94,8 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 	let compacting = false;
 	let startupTimer: ReturnType<typeof setTimeout> | undefined;
 	let startupChecks = 0;
-	pi.on("session_shutdown", async () => { if (startupTimer) clearTimeout(startupTimer); });
+	let statusContext: ExtensionContext | undefined;
+	pi.on("session_shutdown", async () => { if (startupTimer) clearTimeout(startupTimer); statusContext?.ui.setStatus("pi-goals", undefined); });
 	let repeatFullPrompt = true;
 	pi.on("session_compact", async () => { repeatFullPrompt = true; });
 	let bootstrapping = false;
@@ -101,6 +103,16 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 	let modelError: string | null = null;
 	const intercom = new GoalIntercom(pi);
 	const models = new RoleModels(pi);
+	const updateStatus = (ctx: ExtensionContext) => {
+		const label = modelError || intercom.readinessFailure ? "supervisor · paused" : intercom.connected ? "supervising" : "supervisor · starting/reconnecting";
+		ctx.ui.setStatus("pi-goals", label);
+	};
+	intercom.onConnectionChange = updateStatus;
+	let lastAssistantError: string | undefined;
+	pi.on("agent_end", async event => {
+		const last = event.messages.filter(message => message.role === "assistant").at(-1);
+		lastAssistantError = last?.stopReason === "error" ? last.errorMessage ?? "Supervisor model returned an error without a reason." : undefined;
+	});
 	intercom.onView = (view) => pi.sendUserMessage(view.text, { deliverAs: "followUp" });
 	pi.on("session_compact_failed", async event => {
 		if (!startupTimer) return;
@@ -159,15 +171,19 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 	};
 
 	const start = async (ctx: ExtensionContext): Promise<void> => {
+		statusContext = ctx;
+		lastAssistantError = undefined;
 		if (startupTimer) clearTimeout(startupTimer);
 		startupTimer = undefined;
 		startupChecks = 0;
 		modelError = "Supervisor model restoration is pending.";
+		updateStatus(ctx);
 		if (!ctx.sessionManager.getEntries().some(entry => entry.type === "custom" && entry.customType === ROLE_STATE)) pi.appendEntry(ROLE_STATE, settings);
 		intercom.configure(settings.approvalId, "supervisor", ctx);
 		try {
 			await models.enter("supervisor", ctx, process.env.PI_GOALS_MODEL_EXPLICIT === "1");
 			modelError = null;
+			updateStatus(ctx);
 			setImmediate(() => { if (!intercom.ended) bootstrapAfterInitialCompaction(ctx); });
 		} catch (error) {
 			modelError = String(error);
@@ -180,6 +196,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 	pi.on("session_start", async (_event, ctx) => start(ctx));
 	pi.registerCommand("goals", {
 		description: "Reconnect this saved supervisor role and pairing: /goals supervise (or reconnect)",
+		getArgumentCompletions: prefix => goalCommandCompletions(prefix, "supervisor"),
 		handler: async (args, ctx) => {
 			if (!["reconnect", "supervise"].includes(args.trim())) { ctx.ui.notify("This is the supervisor session. Use /goals supervise here; /goals work and /goals noplan belong to the worker. No role or plan was changed.", "info"); return; }
 			if (!ctx.isIdle() || compacting) { ctx.ui.notify("Wait for the supervisor to settle before reconnecting.", "warning"); return; }
@@ -196,6 +213,12 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 		};
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
+		// Settled is after Pi's automatic retries/compaction, unlike agent_end.
+		if (lastAssistantError) {
+			intercom.failReady(`Supervisor model failed after Pi recovery: ${lastAssistantError}`);
+			lastAssistantError = undefined;
+			return;
+		}
 		if (compacting) return;
 		const usage = ctx.getContextUsage();
 		if (!usage && !warnedUnknownUsage) {
