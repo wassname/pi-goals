@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 import { approvalPath, readApproval } from "../src/approval.js";
-import goals from "../src/index.js";
+import { registerWorker as goals } from "../src/index.js";
 import { registerVisibleSupervisor } from "../src/supervisor-session.js";
 import { pairedIntercomFixture } from "./paired-intercom-fixture.js";
 
@@ -35,7 +35,7 @@ async function setup() {
 			cwd, hasUI: true, isIdle: vi.fn(() => true), model: { provider: "test", id: "model" },
 			modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 			getSystemPrompt: () => "base", getContextUsage: () => ({ tokens: 10 }),
-			sessionManager: { getSessionId: () => role, getSessionFile: () => join(cwd, `${role}.jsonl`), getEntries: () => entries, getBranch: () => branch },
+			sessionManager: { getSessionId: () => role, getSessionFile: () => join(cwd, `${role}.jsonl`), getEntries: () => entries, getBranch: () => [...entries, ...branch] },
 			ui: { notify: vi.fn(), setWidget: vi.fn(), setStatus: vi.fn(), theme: { fg: (_kind: string, text: string) => text } },
 		};
 		const pi = {
@@ -43,7 +43,11 @@ async function setup() {
 			on: (name: string, fn: any) => { const prior = hooks.get(name); hooks.set(name, async (...args: any[]) => { await prior?.(...args); return fn(...args); }); },
 			registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: () => {}, setModel: async () => true,
 			appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-			sendUserMessage: (text: string) => branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text }] } }),
+			sendUserMessage: (text: string) => {
+				const message = { role: "user", content: [{ type: "text", text }] };
+				branch.push({ type: "message", message });
+				void hooks.get("message_start")?.({ message });
+			},
 		};
 		(role === "worker" ? goals : registerVisibleSupervisor)(pi as unknown as ExtensionAPI);
 		return { pi, ctx, hooks, branch, tools };

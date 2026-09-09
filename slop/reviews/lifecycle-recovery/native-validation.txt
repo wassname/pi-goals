@@ -1,0 +1,33 @@
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+stdout | test/native-compaction-delivery.test.ts > real Pi preserves worker delivery through compaction success, failure and cancellation
+real Pi worker/success: retained message presented once and saved, no extension errors
+
+stdout | test/native-compaction-delivery.test.ts > real Pi preserves worker delivery through compaction success, failure and cancellation
+real Pi worker/failure: retained message presented once and saved, no extension errors
+
+stdout | test/native-intercom.test.ts > runs a forked Pi supervisor and receives its exact instruction in another Pi session
+Native Pi pair: fork retained planning context; SteerWorker delivered exactly: Read the real outputs before declaring completion.
+
+ ✓ test/native-intercom.test.ts > runs a forked Pi supervisor and receives its exact instruction in another Pi session 2071ms
+stdout | test/native-compaction-delivery.test.ts > real Pi preserves worker delivery through compaction success, failure and cancellation
+real Pi worker/cancel: retained message presented once and saved, no extension errors
+
+ ✓ test/native-compaction-delivery.test.ts > real Pi preserves worker delivery through compaction success, failure and cancellation 2239ms
+stdout | test/native-compaction-delivery.test.ts > real Pi preserves supervisor delivery through compaction success, failure and cancellation
+real Pi supervisor/success: retained message presented once and saved, no extension errors
+
+stdout | test/native-compaction-delivery.test.ts > real Pi preserves supervisor delivery through compaction success, failure and cancellation
+real Pi supervisor/failure: retained message presented once and saved, no extension errors
+
+stdout | test/native-compaction-delivery.test.ts > real Pi preserves supervisor delivery through compaction success, failure and cancellation
+real Pi supervisor/cancel: retained message presented once and saved, no extension errors
+
+ ✓ test/native-compaction-delivery.test.ts > real Pi preserves supervisor delivery through compaction success, failure and cancellation 2176ms
+
+ Test Files  2 passed (2)
+      Tests  3 passed (3)
+   Start at  12:59:23
+   Duration  4.60s (transform 52ms, setup 0ms, import 133ms, tests 6.49s, environment 0ms)
+

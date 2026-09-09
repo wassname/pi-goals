@@ -13,7 +13,7 @@ const openSupervisorPane = vi.fn(async () => "pane-2");
 const closeSupervisorPane = vi.fn(async () => undefined);
 const shutdowns: Array<() => Promise<void>> = [];
 vi.mock("../src/herdr.js", () => ({ openSupervisorPane, closeSupervisorPane }));
-const { default: piGoalsExtension, isMainSession } = await import("../src/index.js");
+const { registerWorker: piGoalsExtension, isMainSession } = await import("../src/index.js");
 
 function setup(selectChoices: Array<string | undefined>, editorChoices: Array<string | undefined> = [], events?: ExtensionAPI["events"]) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-flow-"));
@@ -328,6 +328,10 @@ describe("/goals flow", () => {
 			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
 			await flow.hooks.get("session_start")({}, flow.ctx);
 			expect(flow.ctx.ui.setWidget).toHaveBeenLastCalledWith("pi-goals-widget", ["✔ complete"]);
+			const completedViews = flow.transport.sent.filter(message => message.kind === "view").length;
+			flow.transport.receive({ binding: approvalId, role: "supervisor", kind: "hello", id: "hello", ready: true });
+			await new Promise(resolve => setImmediate(resolve));
+			expect(flow.transport.sent.filter(message => message.kind === "view")).toHaveLength(completedViews);
 		} finally {
 			rmSync(flow.cwd, { recursive: true, force: true });
 		}
@@ -390,7 +394,9 @@ it("shows a missing resumed supervisor, pauses writes, and automatically unpause
 		flow.transport.replyToHello(false);
 		await flow.hooks.get("session_start")({}, flow.ctx);
 		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", "goals paused");
-		await vi.advanceTimersByTimeAsync(5000);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(flow.notifications.some(text => text.includes("/goals restart"))).toBe(false);
+		await vi.advanceTimersByTimeAsync(240_000);
 		expect(flow.notifications.some(text => text.includes("/goals restart"))).toBe(true);
 		expect((await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).terminate).toBe(true);
 		expect(await flow.hooks.get("tool_call")({ toolName: "bash", input: { command: "git status" } }, flow.ctx)).toBeUndefined();
@@ -398,6 +404,65 @@ it("shows a missing resumed supervisor, pauses writes, and automatically unpause
 		expect(flow.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-goals", expect.stringContaining("supervised"));
 		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "code.ts" } }, flow.ctx)).toBeUndefined();
 		expect(openSupervisorPane).not.toHaveBeenCalled();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("exits planning without deleting the draft or approving implementation", async () => {
+	const flow = setup([]);
+	try {
+		await flow.commands.get("goals").handler("draft", flow.ctx);
+		const path = approvedPlan(flow.cwd);
+		const before = readFileSync(path, "utf8");
+		await flow.commands.get("goals").handler("noplan", flow.ctx);
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: null, planVersion: 1 });
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+		expect(flow.messages.some(message => message.content.includes("Begin implementation"))).toBe(false);
+		expect(await flow.hooks.get("tool_call")({ toolName: "write", input: { path: "arbitrary.txt" } }, flow.ctx)).toBeUndefined();
+		await flow.commands.get("goals").handler("work", flow.ctx);
+		expect(flow.notifications.at(-1)).toContain("No approved worker pairing");
+		await flow.commands.get("goals").handler("supervise", flow.ctx);
+		expect(flow.notifications.at(-1)).toContain("worker session");
+		expect(openSupervisorPane).not.toHaveBeenCalled();
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("publishes one fresh view after an accepted-view peer reload, but never after clear", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("draft", flow.ctx);
+		const path = approvedPlan(flow.cwd);
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		const views = () => flow.transport.sent.filter(message => message.kind === "view");
+		const original = views().at(-1)!;
+		flow.transport.receive({ binding: original.binding, role: "supervisor", kind: "received", id: original.id });
+		flow.transport.event({ type: "session_left", sessionId: "peer" });
+		writeFileSync(path, readFileSync(path, "utf8").replace("output exists", "current result must exist"));
+		const previousIds = new Set(views().map(view => view.id));
+		flow.transport.receive({ binding: original.binding, role: "supervisor", kind: "hello", id: "hello", ready: true, reply: true });
+		await new Promise(resolve => setImmediate(resolve));
+		expect(views().filter(view => !previousIds.has(view.id))).toHaveLength(1);
+		expect(views().at(-1)!.id).not.toBe(original.id);
+		expect(views().at(-1)!.text).toContain("The worker stopped.");
+		expect(views().at(-1)!.text).toContain("current result must exist");
+		await flow.commands.get("goals").handler("clear", flow.ctx);
+		const afterClear = views().length;
+		flow.transport.receive({ binding: original.binding, role: "supervisor", kind: "hello", id: "hello", ready: true });
+		await new Promise(resolve => setImmediate(resolve));
+		expect(views()).toHaveLength(afterClear);
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("reconnects an approved worker with work without making a new pairing", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("draft", flow.ctx);
+		approvedPlan(flow.cwd);
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		const state = flow.entries.at(-1)?.data as any;
+		await flow.commands.get("goals").handler("work", flow.ctx);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ approvalId: state.approvalId, phase: "working" });
+		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
@@ -419,7 +484,7 @@ it.each(["launch", "model"])("rejects plan content changes during Ready %s witho
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
-it("times out stale Ready retries in five seconds, without replacing the pane automatically", async () => {
+it("allows five minutes for stale Ready retries, without replacing the pane automatically", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
 	const flow = setup(["Ready", "Ready"]);
 	try {
@@ -430,7 +495,9 @@ it("times out stale Ready retries in five seconds, without replacing the pane au
 		await flow.hooks.get("agent_settled")({}, flow.ctx);
 		expect(flow.notifications.at(-1)).toContain("failed-pane");
 		const retry = flow.hooks.get("agent_settled")({}, flow.ctx);
-		await vi.advanceTimersByTimeAsync(5000);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
+		await vi.advanceTimersByTimeAsync(240_000);
 		await retry;
 		expect(openSupervisorPane).toHaveBeenCalledTimes(1);
 		expect(closeSupervisorPane).not.toHaveBeenCalled();

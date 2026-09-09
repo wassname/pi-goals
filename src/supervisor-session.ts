@@ -12,7 +12,9 @@ import { RoleModels } from "./role-models.js";
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
 const COMPACT_AT_TOKENS = 100_000;
 
-interface SupervisorConfig {
+const ROLE_STATE = "pi-goals-supervisor-binding";
+
+export interface SupervisorConfig {
 	workerSessionId: string;
 	ownerSessionId: string;
 	planPath: string;
@@ -71,9 +73,27 @@ export function isVisibleSupervisor(): boolean {
 	return process.env.PI_GOALS_ROLE === "supervisor";
 }
 
-export function registerVisibleSupervisor(pi: ExtensionAPI): void {
-	const settings = config();
+export function restoredSupervisor(entries: readonly { type: string; customType?: string; data?: unknown }[]): SupervisorConfig | undefined {
+	const savedEntry = entries.filter(entry => entry.type === "custom" && entry.customType === ROLE_STATE).at(-1);
+	if (savedEntry) {
+		const saved = savedEntry.data as SupervisorConfig | undefined;
+		if (!saved || ![saved.workerSessionId, saved.ownerSessionId, saved.planPath, saved.approvalId].every(value => typeof value === "string" && value.trim())) throw new Error("Saved supervisor binding is incomplete. Restore its original session metadata before resuming; worker mode was not enabled.");
+		return saved;
+	}
+	const legacyEntry = entries.filter(entry => entry.type === "custom" && entry.customType === BOOTSTRAPPED).at(-1);
+	if (!legacyEntry) return;
+	const legacy = legacyEntry.data as Partial<SupervisorConfig> | undefined;
+	const binding = entries.filter(entry => entry.type === "custom" && entry.customType === "pi-goals-state").map(entry => entry.data as { approvalId?: string }).filter(state => state?.approvalId).at(-1)?.approvalId;
+	if (!legacy || ![legacy.workerSessionId, legacy.planPath, binding].every(value => typeof value === "string" && value.trim())) throw new Error("Saved supervisor role has no complete binding. Restore its original session metadata before resuming. Worker mode was not enabled.");
+	return { workerSessionId: legacy.workerSessionId!, ownerSessionId: legacy.workerSessionId!, planPath: legacy.planPath!, approvalId: binding! };
+}
+
+export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: SupervisorConfig): void {
+	const settings = restored ?? config();
 	let compacting = false;
+	let startupTimer: ReturnType<typeof setTimeout> | undefined;
+	let startupChecks = 0;
+	pi.on("session_shutdown", async () => { if (startupTimer) clearTimeout(startupTimer); });
 	let repeatFullPrompt = true;
 	pi.on("session_compact", async () => { repeatFullPrompt = true; });
 	let bootstrapping = false;
@@ -82,6 +102,12 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const intercom = new GoalIntercom(pi);
 	const models = new RoleModels(pi);
 	intercom.onView = (view) => pi.sendUserMessage(view.text, { deliverAs: "followUp" });
+	pi.on("session_compact_failed", async event => {
+		if (!startupTimer) return;
+		clearTimeout(startupTimer);
+		startupTimer = undefined;
+		intercom.failReady(`${event.aborted ? "Supervisor compaction was cancelled" : event.errorMessage ?? "Supervisor compaction failed"}. Use /goals supervise in its session to retry.`);
+	});
 
 	const bootstrap = async (ctx: ExtensionContext): Promise<void> => {
 		if (bootstrapping || intercom.ended) return;
@@ -98,9 +124,18 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	};
 
 	const bootstrapAfterInitialCompaction = (ctx: ExtensionContext): void => {
+		if (intercom.ended) return;
+		// A reload does not terminate Pi's in-flight compaction. Never start a competing one.
+		if (!ctx.isIdle()) {
+			if (++startupChecks > 300) { intercom.failReady("Supervisor startup is still busy. Inspect its session, then use /goals supervise to retry."); return; }
+			startupTimer = setTimeout(() => bootstrapAfterInitialCompaction(ctx), 1000);
+			return;
+		}
+		startupTimer = undefined;
 		const tokens = ctx.getContextUsage()?.tokens;
 		const resumed = ctx.sessionManager.getEntries().some((entry: { type?: string; customType?: string }) => entry.type === "custom" && entry.customType === BOOTSTRAPPED);
-		if (resumed || (typeof tokens === "number" && tokens < COMPACT_AT_TOKENS)) {
+		const latestContext = ctx.sessionManager.getEntries().filter(entry => entry.type === "message" || entry.type === "compaction").at(-1);
+		if (resumed || latestContext?.type === "compaction" || (typeof tokens === "number" && tokens < COMPACT_AT_TOKENS)) {
 			void bootstrap(ctx);
 			return;
 		}
@@ -116,13 +151,19 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			onError: (error) => {
 				compacting = false;
 				if (intercom.ended) return;
+				if (/^(Already compacted|Nothing to compact)/.test(error.message)) { void bootstrap(ctx); return; }
+				intercom.failReady(`Supervisor startup compaction failed: ${error.message}. Use /goals reconnect in the supervisor pane.`);
 				ctx.ui.notify(`Supervisor startup compaction failed: ${error.message}`, "error");
 			},
 		});
 	};
 
 	const start = async (ctx: ExtensionContext): Promise<void> => {
+		if (startupTimer) clearTimeout(startupTimer);
+		startupTimer = undefined;
+		startupChecks = 0;
 		modelError = "Supervisor model restoration is pending.";
+		if (!ctx.sessionManager.getEntries().some(entry => entry.type === "custom" && entry.customType === ROLE_STATE)) pi.appendEntry(ROLE_STATE, settings);
 		intercom.configure(settings.approvalId, "supervisor", ctx);
 		try {
 			await models.enter("supervisor", ctx, process.env.PI_GOALS_MODEL_EXPLICIT === "1");
@@ -130,14 +171,17 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			setImmediate(() => { if (!intercom.ended) bootstrapAfterInitialCompaction(ctx); });
 		} catch (error) {
 			modelError = String(error);
-			if (!intercom.ended) ctx.ui.notify(`Supervisor paused: ${modelError} Select /model, then /goals reconnect.`, "error");
+			if (!intercom.ended) {
+				intercom.failReady(`Supervisor paused: ${modelError}. Select /model in its session, then /goals supervise.`);
+				ctx.ui.notify(`Supervisor paused: ${modelError} Select /model, then /goals reconnect.`, "error");
+			}
 		}
 	};
 	pi.on("session_start", async (_event, ctx) => start(ctx));
 	pi.registerCommand("goals", {
-		description: "Retry supervisor model restoration and readiness: /goals reconnect",
+		description: "Reconnect this saved supervisor role and pairing: /goals supervise (or reconnect)",
 		handler: async (args, ctx) => {
-			if (args.trim() !== "reconnect") { ctx.ui.notify("Use /goals reconnect here; manage the plan or restart the pane from the worker session.", "info"); return; }
+			if (!["reconnect", "supervise"].includes(args.trim())) { ctx.ui.notify("This is the supervisor session. Use /goals supervise here; /goals work and /goals noplan belong to the worker. No role or plan was changed.", "info"); return; }
 			if (!ctx.isIdle() || compacting) { ctx.ui.notify("Wait for the supervisor to settle before reconnecting.", "warning"); return; }
 			await start(ctx);
 		},
@@ -214,6 +258,7 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 			const newest = intercom.latestView;
 			if (!intercom.connected) return result("Cannot approve: worker supervision is disconnected or not ready. Restore the existing connection before review.", true);
 			if (!newest) return result("Cannot approve: no worker view has arrived.", true);
+			if (newest.reason === "started") return result("Cannot approve while the worker is starting or running. Wait for its stopped-worker view.", true);
 			if (view !== newest.text) return result("Cannot approve this older worker view. A newer view is queued for you; finish this response to receive it. Do not ask the worker to generate another handoff merely to refresh this review.", true);
 			if (!view?.startsWith("The worker stopped.")) return result("Cannot approve without a current stopped-worker view.", true);
 			if (!newest.backgroundQuiet) return result("Cannot approve while tracked background work is active or unknown.", true);

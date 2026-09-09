@@ -6,8 +6,9 @@ import { pairedIntercomFixture } from "./paired-intercom-fixture.js";
 function endpoint(transport: ReturnType<typeof pairedIntercomFixture>["worker"]) {
 	const entries: any[] = [];
 	const ctx = { sessionManager: { getEntries: () => entries }, ui: { notify: vi.fn() } };
-	const link = new GoalIntercom({ events: transport.events, on: () => {}, appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) } as unknown as ExtensionAPI);
-	return { link, ctx, entries };
+	const hooks = new Map<string, any>();
+	const link = new GoalIntercom({ events: transport.events, on: (name: string, hook: any) => hooks.set(name, hook), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) } as unknown as ExtensionAPI);
+	return { link, ctx, entries, accept: (text: string) => hooks.get("message_start")({ message: { role: "user", content: text } }) };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -56,12 +57,14 @@ it("replays pending advice and views across either role's own readiness transiti
 	expect(worker.link.connected).toBe(false);
 	supervisor.link.markReady(); await settle();
 	expect(deliver).toHaveBeenCalledExactlyOnceWith("Pending advice.");
+	await worker.accept("[supervisor] Pending advice.");
 	worker.link.markNotReady(); await settle();
 	const onView = vi.fn(); supervisor.link.onView = onView;
 	worker.link.view("Fresh view.", "settled");
 	expect(onView).not.toHaveBeenCalled();
 	worker.link.markReady(); await settle();
 	expect(onView).toHaveBeenCalledTimes(1);
+	await supervisor.accept(onView.mock.calls[0][0].text);
 	expect(worker.link.connected && supervisor.link.connected).toBe(true);
 	wire.worker.connect(false); wire.worker.connect(true); await settle();
 	expect(worker.link.connected && supervisor.link.connected).toBe(true);

@@ -33,7 +33,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 		getContextUsage: () => tokens === null ? undefined : ({ tokens }),
 		compact: vi.fn(onCompact),
-		sessionManager: { getEntries: () => entries, getBranch: () => branch, getSessionId: () => "supervisor-session" },
+		sessionManager: { getEntries: () => entries, getBranch: () => [...entries, ...branch], getSessionId: () => "supervisor-session" },
 		ui: { notify: vi.fn() },
 	};
 	const pi = {
@@ -45,7 +45,7 @@ function setup(cwd: string, planPath: string, tokens: number | null = 10, onComp
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-		sendUserMessage: (message: string) => messages.push(message),
+		sendUserMessage: (text: string) => { messages.push(text); void hooks.get("message_start")?.({ message: { role: "user", content: [{ type: "text", text }] } }); },
 		getActiveTools: () => activeTools,
 		setModel: vi.fn(async () => true),
 		setActiveTools: (next: string[]) => { activeTools = next; },
@@ -185,6 +185,24 @@ describe("visible supervisor session", () => {
 		} finally { rmSync(cwd, { recursive: true, force: true }); }
 	});
 
+	it("waits for an inherited 60-second compaction without starting a competing compaction", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-reload-"));
+		try {
+			const runtime = setup(cwd, join(cwd, "plan.md"), null);
+			runtime.ctx.isIdle = () => false;
+			await runtime.start();
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(runtime.ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.ready()).toBe(false);
+			runtime.entries.push({ type: "compaction", summary: "inherited compaction finished" });
+			runtime.ctx.isIdle = () => true;
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(runtime.ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.ready()).toBe(true);
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
 	it("compacts a large planning fork before writing readiness", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-supervisor-"));
 		try {
@@ -257,7 +275,7 @@ describe("visible supervisor session", () => {
 			runtime.view("second", "The worker is still working.", "started");
 			const stale = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
 			expect(stale.isError).toBe(true);
-			expect(stale.content[0].text).toContain("A newer view is queued for you");
+			expect(stale.content[0].text).toContain("worker is starting or running");
 			const unknown = runtime.view("third", "The worker stopped.\ntracked background work: unknown", "settled", false);
 			runtime.branch([{ type: "message", message: { role: "user", content: [{ type: "text", text: unknown.text }] } }]);
 			const blocked = await runtime.tools.get("ApproveGoal").execute("id", { goal: "make the file", verifyOutputPath: "verify.txt" }, undefined, undefined, runtime.ctx);
@@ -275,8 +293,12 @@ it("does not enforce a supervisor tool-call denylist or reset extension tool sel
 		expect(runtime.activeTools()).toContain("intercom");
 		const selection = ["intercom", "SteerWorker", "bash", "write", "edit", "custom_action"];
 		runtime.pi.setActiveTools(selection);
-		await runtime.commands.get("goals").handler("reconnect", runtime.ctx);
+		await runtime.commands.get("goals").handler("supervise", runtime.ctx);
 		expect(runtime.activeTools()).toEqual(selection);
+		const restorations = runtime.pi.setModel.mock.calls.length;
+		await runtime.commands.get("goals").handler("work", runtime.ctx);
+		expect(runtime.pi.setModel).toHaveBeenCalledTimes(restorations);
+		expect(runtime.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("supervisor session"), "info");
 		expect(runtime.hooks.has("tool_call")).toBe(false);
 	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });

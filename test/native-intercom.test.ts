@@ -50,10 +50,12 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 	let supervisorFile: string | undefined;
 	let supervisorTools: string[] = [];
 	let supervisorRequest: any;
+	let latestRequest: any;
 	const server = createServer(async (request, response) => {
 		let body = "";
 		for await (const chunk of request) body += chunk;
 		const input = JSON.parse(body);
+		latestRequest = input;
 		const latest = input.messages.filter((message: any) => !JSON.stringify(message.content).includes("Full active plan:")).at(-1);
 		const steer = latest.role === "user" && JSON.stringify(latest.content).includes("The worker stopped.");
 		if (steer) {
@@ -117,6 +119,21 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 		supervisorFile = supervisorState.data.sessionFile;
 		expect(supervisorFile).not.toBe(workerFile);
 		expect(readFileSync(supervisorFile!, "utf8")).toContain("Retain this planning context");
+		await supervisor.wait(message => message.type === "agent_settled");
+		supervisorProcess.kill("SIGTERM");
+		await once(supervisorProcess, "exit");
+		const freshEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^PI_GOALS_(ROLE|WORKER_ID|OWNER_SESSION_ID|PLAN_PATH|APPROVAL_ID|MODEL_EXPLICIT)$/.test(name)));
+		const resumedProcess = spawn(resolve("node_modules/.bin/pi"), [...common.filter(arg => arg !== "--no-extensions"), "-e", resolve("src/index.ts"), "--session", supervisorFile!], { cwd, env: freshEnv });
+		children.push(resumedProcess);
+		supervisor = new Driver(resumedProcess);
+		supervisor.send({ type: "prompt", id: "resumed-review", message: "Confirm resumed identity without sending another instruction." });
+		await supervisor.wait(message => message.type === "agent_settled");
+		const resumedTools = latestRequest.tools.map((tool: any) => tool.function.name);
+		expect(resumedTools).toContain("ApproveGoal");
+		expect(resumedTools).toContain("SteerWorker");
+		expect(resumedTools).toContain("profile_inspection");
+		expect(resumedTools).not.toContain("CompleteGoal");
+		expect(JSON.stringify(latestRequest.messages)).toContain("autonomously extending the user's agency");
 		console.log(`Native Pi pair: fork retained planning context; SteerWorker delivered exactly: ${advice}`);
 	} finally {
 		if (process.env.PI_GOALS_EVIDENCE_DIR) {

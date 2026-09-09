@@ -6,7 +6,7 @@ import { intercomFixture } from "./intercom-fixture.js";
 function setup(role: "worker" | "supervisor", entries: any[] = []) {
 	const fixture = intercomFixture();
 	const hooks = new Map<string, any>();
-	const ctx = { sessionManager: { getEntries: () => entries }, ui: { notify: vi.fn() } };
+	const ctx = { isIdle: vi.fn(() => true), hasPendingMessages: vi.fn(() => false), sessionManager: { getEntries: () => entries }, ui: { notify: vi.fn() } };
 	const api = { events: fixture.events, on: (name: string, hook: any) => hooks.set(name, hook), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) };
 	const link = new GoalIntercom(api as unknown as ExtensionAPI);
 	link.configure("binding", role, ctx as any);
@@ -25,6 +25,8 @@ describe("pi-intercom transport", () => {
 		runtime.fixture.receive(message, "wrong-peer");
 		expect(delivered).not.toHaveBeenCalled();
 		runtime.fixture.receive(message);
+		expect(runtime.fixture.sent.filter(message => message.kind === "received")).toHaveLength(0);
+		await runtime.hooks.get("message_start")({ message: { role: "user", content: `[supervisor] ${instruction}` } });
 		runtime.fixture.receive(message);
 		expect(delivered).toHaveBeenCalledExactlyOnceWith(instruction);
 		expect(runtime.fixture.sent.filter(message => message.kind === "received")).toHaveLength(2);
@@ -77,6 +79,7 @@ describe("pi-intercom transport", () => {
 });
 
 it("does not acknowledge a synchronous handoff failure, and retries the instruction", async () => {
+	vi.useFakeTimers();
 	const runtime = setup("worker");
 	await runtime.link.waitReady();
 	const delivery = vi.fn().mockImplementationOnce(() => { throw new Error("Delivery unavailable"); });
@@ -85,9 +88,24 @@ it("does not acknowledge a synchronous handoff failure, and retries the instruct
 	runtime.fixture.receive(message);
 	expect(runtime.fixture.sent.filter(m => m.kind === "received")).toHaveLength(0);
 	expect(runtime.entries.filter(e => e.data.direction === "in")).toHaveLength(0);
-	runtime.fixture.receive(message);
+	runtime.link.resumeDelivery();
+	await vi.advanceTimersByTimeAsync(0);
 	expect(delivery).toHaveBeenCalledTimes(2);
+	await runtime.hooks.get("message_start")({ message: { role: "user", content: "[supervisor] Inspect evidence." } });
 	expect(runtime.fixture.sent.filter(m => m.kind === "received")).toHaveLength(1);
+	await runtime.hooks.get("session_shutdown")();
+	vi.useRealTimers();
+});
+
+it("reports a peer startup failure immediately and recovers on its next ready hello", async () => {
+	const runtime = setup("worker");
+	await runtime.link.waitReady();
+	runtime.fixture.receive({ binding: "binding", role: "supervisor", kind: "hello", id: "hello", reply: true, ready: false, failure: "Compaction cancelled; use /goals supervise." });
+	await expect(runtime.link.waitReady()).rejects.toThrow("Compaction cancelled");
+	runtime.fixture.receive({ binding: "binding", role: "supervisor", kind: "hello", id: "hello", reply: true, ready: true });
+	await runtime.link.waitReady();
+	expect(runtime.link.connected).toBe(true);
+	await runtime.hooks.get("session_shutdown")();
 });
 
 it("detaches a completed binding and ignores its late advice without replay errors or false acceptance", async () => {

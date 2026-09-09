@@ -27,7 +27,7 @@ import { GoalIntercom } from "./intercom.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE } from "./plan.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync, supervisorPlanReview } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
-import { isVisibleSupervisor, registerVisibleSupervisor } from "./supervisor-session.js";
+import { isVisibleSupervisor, registerVisibleSupervisor, restoredSupervisor } from "./supervisor-session.js";
 import { workerView } from "./worker-view.js";
 
 export { foldPlan } from "./plan.js";
@@ -99,11 +99,18 @@ interface PlanState {
 }
 
 export default function piGoalsExtension(pi: ExtensionAPI): void {
-	if (isVisibleSupervisor()) {
-		registerVisibleSupervisor(pi);
-		return;
-	}
-	if (!isMainSession()) return;
+	let initialized = false;
+	pi.on("session_start", async (_event, ctx) => {
+		if (initialized) return;
+		initialized = true;
+		const saved = restoredSupervisor(ctx.sessionManager.getEntries());
+		if (saved || isVisibleSupervisor()) registerVisibleSupervisor(pi, saved);
+		else if (isMainSession()) registerWorker(pi);
+		// Pi's dispatcher iterates its live handler list, including those just registered.
+	});
+}
+
+export function registerWorker(pi: ExtensionAPI): void {
 	const intercom = new GoalIntercom(pi);
 	const models = new RoleModels(pi);
 	intercom.onSteer = (instruction) => {
@@ -122,7 +129,17 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	};
 	let modelError: string | null = null;
 	let readyAttempt: object | undefined;
-	intercom.onConnectionChange = (ctx) => updateWidget(ctx);
+	let wasConnected = false;
+	intercom.onConnectionChange = (ctx) => {
+		const connected = intercom.connected;
+		const rejoined = connected && !wasConnected;
+		wasConnected = connected;
+		updateWidget(ctx);
+		// Ready publishes its own first view. Subsequent rejoins need a new ID even if the old view was accepted.
+		if (rejoined && !readyAttempt && state.phase === "working" && !modelError) {
+			void publishWorkerView(ctx, "settled").catch(error => { if (!intercom.ended) ctx.ui.notify(`Recovery view failed: ${String(error)}`, "error"); });
+		}
+	};
 	let planningContextPending = false;
 	let resyncReason: string | null = "New session.";
 
@@ -210,7 +227,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (!sourceSessionFile) throw new Error("The current session is not persisted, so it cannot be forked.");
 		if (state.supervisorPaneId && state.approvalId) {
 			intercom.configure(state.approvalId, "worker", ctx, false);
-			await intercom.waitReady(5000, { peerOnly: true });
+			await intercom.waitReady(undefined, { peerOnly: true });
 			return;
 		}
 		beginReview(ctx);
@@ -372,9 +389,28 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 	// --- /goals: enter plan mode or configure supervision -- Pi/Codex -----------------------------
 
 	pi.registerCommand("goals", {
-		description: `Plan goals, then open a visible supervisor session. /goals <objective> | reconnect | restart | clear | model <supervisor>`,
+		description: `Plan goals, then open a visible supervisor session. /goals <objective> | work | supervise | noplan | reconnect | restart | clear | model <supervisor>`,
 		handler: async (args, ctx) => {
-			const arg = args.trim();
+			let arg = args.trim();
+			if (arg === "supervise") { ctx.ui.notify("This is the worker session. Run /goals supervise in the saved supervisor session; no new pairing was created.", "warning"); return; }
+			if (arg === "work") {
+				if (state.phase !== "working" || !state.approvalId || !state.supervisorPaneId) { ctx.ui.notify("No approved worker pairing to reconnect. A retained draft still needs Ready.", "warning"); return; }
+				arg = "reconnect";
+			}
+			if (arg === "noplan") {
+				if (state.phase !== "planning") { ctx.ui.notify("Not in planning mode; the current plan is unchanged.", "info"); return; }
+				readyAttempt = undefined;
+				planningContextPending = false;
+				resyncReason = null;
+				stopWorkerTimers();
+				intercom.detach();
+				models.leave();
+				state = { ...state, phase: null };
+				persist();
+				updateWidget(ctx);
+				ctx.ui.notify(`Planning exited. Draft preserved at ${planRel(ctx)}; no implementation was approved or started.`, "info");
+				return;
+			}
 			if (arg === "reconnect" || arg === "restart") {
 				if (!state.phase) { ctx.ui.notify("No active plan to recover.", "info"); return; }
 				if (!ctx.isIdle()) { ctx.ui.notify("Stop the current turn before recovering goal supervision.", "warning"); return; }
@@ -390,14 +426,13 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 						if (arg === "reconnect") {
 							if (!state.approvalId) throw new Error("No saved supervision binding. Use /goals restart.");
 							intercom.configure(state.approvalId, "worker", ctx, false);
-							await intercom.waitReady(5000, { peerOnly: true });
+							await intercom.waitReady(undefined, { peerOnly: true });
 						} else await startSupervisor(ctx);
 					}
 					if (intercom.ended) return;
 					if (state.phase === "working") {
 						intercom.markReady();
 						startWorkerTimers(ctx);
-						await publishWorkerView(ctx, "settled");
 					}
 					ctx.ui.notify(state.phase === "planning" ? "Planning model restored. Choose Ready when the plan is agreed." : "Goal supervision reconnected; the current plan is unchanged.", "info");
 				} catch (error) {
@@ -620,6 +655,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 				updateWidget(ctx);
 				ctx.ui.notify(`Visible supervisor opened in Herdr pane ${state.supervisorPaneId}.`, "info");
 				pi.sendUserMessage("The plan is approved. Begin implementation as the worker.");
+				readyAttempt = undefined;
 			} catch (error) {
 				if (!current()) return;
 				intercom.markNotReady();
@@ -663,7 +699,7 @@ export default function piGoalsExtension(pi: ExtensionAPI): void {
 		if (intercom.ended) return;
 		if (state.phase === "working" && state.approvalId && !modelError) {
 			intercom.markReady();
-			void intercom.waitReady(5000).then(() => publishWorkerView(ctx, "settled")).catch(error => {
+			void intercom.waitReady().catch(error => {
 				if (!intercom.ended && state.phase === "working") ctx.ui.notify(`Goal work paused: ${String(error)} Use /goals reconnect or /goals restart.`, "warning");
 			});
 		}
