@@ -11,7 +11,8 @@ import { approveGoalDescription, approveGoalParameters, goalApprovalRecorded, st
 import { RoleModels } from "./role-models.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
-const COMPACT_AT_TOKENS = 100_000;
+/** Context size at which paired sessions compact before or during supervision. */
+export const COMPACT_AT_TOKENS = 100_000;
 
 const ROLE_STATE = "pi-goals-supervisor-binding";
 

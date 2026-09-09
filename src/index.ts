@@ -28,7 +28,7 @@ import { GoalIntercom } from "./intercom.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE } from "./plan.js";
 import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync, supervisorPlanReview, workerCompaction } from "./prompts.js";
 import { RoleModels } from "./role-models.js";
-import { isVisibleSupervisor, registerVisibleSupervisor, restoredSupervisor } from "./supervisor-session.js";
+import { COMPACT_AT_TOKENS, isVisibleSupervisor, registerVisibleSupervisor, restoredSupervisor } from "./supervisor-session.js";
 import { workerView } from "./worker-view.js";
 
 export { foldPlan } from "./plan.js";
@@ -257,6 +257,8 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	/** Compact the agreed planning conversation once, before the supervisor forks it. */
 	function compactApprovedWorker(ctx: ExtensionContext): Promise<void> {
+		const tokens = ctx.getContextUsage()?.tokens;
+		if (typeof tokens === "number" && tokens < COMPACT_AT_TOKENS) return Promise.resolve();
 		return new Promise((resolve, reject) => {
 			ctx.compact({
 				customInstructions: workerCompaction(planPath(ctx)),
@@ -680,7 +682,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 	pi.on("context", async (event, ctx) => {
 		const messages = state.phase === "planning" ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
 		const removedPlanningContext = messages.length !== event.messages.length;
-		// Ready compacts the worker before changing phase. Its custom instructions already preserve
+		// Ready may compact the worker before changing phase. Its custom instructions already preserve
 		// the approved plan, so never append an extension message to that compaction transaction.
 		if (state.phase === "planning" && planningContextPending && !readyAttempt) {
 			planningContextPending = false;

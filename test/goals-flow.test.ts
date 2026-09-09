@@ -215,6 +215,19 @@ describe("/goals flow", () => {
 		}
 	});
 
+	it("skips small-context worker compaction and still starts the visible supervisor", async () => {
+		const flow = setup(["Ready"]);
+		try {
+			flow.ctx.getContextUsage = () => ({ percent: 25, tokens: 57_000 });
+			await flow.commands.get("goals").handler("make the file", flow.ctx);
+			approvedPlan(flow.cwd);
+			await flow.hooks.get("agent_settled")({}, flow.ctx);
+			expect(flow.ctx.compact).not.toHaveBeenCalled();
+			expect(openSupervisorPane).toHaveBeenCalledOnce();
+			expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", supervisorPaneId: "pane-2" });
+		} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+	});
+
 	it("forks a visible supervisor on Ready and keeps the main session as worker", async () => {
 		const flow = setup(["Ready"]);
 		try {
@@ -528,9 +541,10 @@ it.each(["launch", "model"])("rejects plan content changes during Ready %s witho
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
-it("compacts the approved worker before forking the supervisor without injecting planning context", async () => {
+it("compacts the approved worker at the shared threshold before forking without injecting planning context", async () => {
 	const flow = setup(["Ready"]);
 	try {
+		flow.ctx.getContextUsage = () => ({ percent: 25, tokens: 100_000 });
 		let complete: (() => void) | undefined;
 		flow.ctx.compact.mockImplementationOnce((options: any) => { complete = options.onComplete; });
 		await flow.commands.get("goals").handler("make the file", flow.ctx);
