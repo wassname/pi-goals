@@ -198,6 +198,11 @@ export function registerWorker(pi: ExtensionAPI): void {
 		return supervisorPlanReview(claims.map(goal => goal.subject), changes, planDiff(state.previousPlan ?? "", plan));
 	}
 
+	function planIsComplete(ctx: ExtensionContext): boolean {
+		const goals = scanGoals(readPlan(ctx));
+		return goals.length > 0 && goals.every(goal => goal.status === "cancelled" || (goal.status === "done" && state.signedOffGoals.includes(goalKey(goal.subject))));
+	}
+
 	function enterSolo(ctx: ExtensionContext, reason: string): void {
 		if (state.phase !== "working" || modelError || intercom.ended) return;
 		recoveryAttempt = undefined;
@@ -214,7 +219,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	// Reuse the existing five-minute readiness window; an explicit peer failure ends it early.
 	function recoverSupervisor(ctx: ExtensionContext): void {
-		if (recoveryAttempt || recoveryCommand || readyAttempt || state.phase !== "working" || state.mode !== "supervised" || modelError || !intercom.bound || intercom.connected) return;
+		if (recoveryAttempt || recoveryCommand || readyAttempt || state.phase !== "working" || state.mode !== "supervised" || planIsComplete(ctx) || modelError || !intercom.bound || intercom.connected) return;
 		const attempt = {};
 		recoveryAttempt = attempt;
 		const binding = state.approvalId;
@@ -228,10 +233,10 @@ export function registerWorker(pi: ExtensionAPI): void {
 		});
 	}
 
-	function pauseReason(): string | null {
+	function pauseReason(ctx: ExtensionContext): string | null {
 		if (!state.phase) return null;
 		if (modelError) return `${modelError} Select /model, then run /goals reconnect.`;
-		if (state.phase === "working" && state.mode === "supervised" && !intercom.connected) return intercom.peerPresent
+		if (state.phase === "working" && state.mode === "supervised" && !planIsComplete(ctx) && !intercom.connected) return intercom.peerPresent
 			? "Supervisor is present but not ready. Inspect its pane for startup/compaction or model errors; recover with /model then /goals reconnect in the supervisor pane if needed."
 			: "Supervisor disconnected. Run /goals reconnect, or /goals restart to replace its tracked pane without discarding the plan.";
 		return null;
@@ -408,7 +413,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	function updateWidget(ctx: ExtensionContext): void {
 		refreshSignoffs(ctx);
-		const paused = pauseReason();
+		const paused = pauseReason(ctx);
 		if (paused) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "goals paused"));
 			ctx.ui.setWidget(WIDGET_KEY, [`pi-goals paused: ${paused}`]);
@@ -495,7 +500,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 			}
 			if (!explicitPlan && arg === "solo") {
 				if (state.phase !== "working") { ctx.ui.notify("Solo requires an already-approved plan. A draft still needs Ready.", "warning"); return; }
-				if (modelError) { ctx.ui.notify(`Cannot enter solo: ${pauseReason()}`, "warning"); return; }
+				if (modelError) { ctx.ui.notify(`Cannot enter solo: ${pauseReason(ctx)}`, "warning"); return; }
 				if (state.mode === "solo") { ctx.ui.notify("Already UNSUPERVISED; plan preserved, supervisor sign-off unavailable. /goals restart restores supervision.", "warning"); return; }
 				commandAttempt = command;
 				readyAttempt = undefined;
@@ -649,7 +654,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 
 	// The phase snapshot enters context only when planning starts or context was lost.
 	pi.on("before_agent_start", async (_event, ctx) => {
-		const paused = pauseReason();
+		const paused = pauseReason(ctx);
 		if (paused) return { systemPrompt: `${ctx.getSystemPrompt()}\n\nGoal work is paused: ${paused} Do not implement or sign off goals. Human input and read-only diagnosis remain available; wait for recovery before resuming autonomous work.` };
 		if (state.phase === "working" && state.mode === "solo") return { systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the UNSUPERVISED implementation worker for ${planRel(ctx)}. Reason: ${state.soloReason} Continue the approved plan, preserve its goals and save evidence and verification results. There is no supervisor; do not wait for steering, call CompleteGoal, or claim supervised sign-off. Report completion as unreviewed. Use /goals restart to restore supervision.` };
 		if (state.phase === "working") {
@@ -700,7 +705,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		const paused = pauseReason();
+		const paused = pauseReason(ctx);
 		if (paused && !(["read", "grep", "find", "ls"].includes(event.toolName) || (event.toolName === "bash" && isPlanningReadOnlyCommand(String((event.input as { command?: string }).command))))) {
 			return { block: true, terminate: true, reason: `Goal work is paused: ${paused} Only read-only diagnosis is available.` };
 		}
@@ -735,7 +740,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 			modelError = `Worker model failed after Pi recovery: ${lastAssistantError}`;
 			lastAssistantError = undefined;
 			intercom.markNotReady();
-			ctx.ui.notify(`Goal work paused: ${pauseReason()} No mode or model substitution was made.`, "error");
+			ctx.ui.notify(`Goal work paused: ${pauseReason(ctx)} No mode or model substitution was made.`, "error");
 			updateWidget(ctx);
 			return;
 		}
@@ -826,6 +831,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				readyAttempt = undefined;
 			} catch (error) {
 				if (!current()) return;
+				readyAttempt = undefined;
 				intercom.markNotReady();
 				stopWorkerTimers();
 				ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)} Use /goals reconnect to retry, or /goals restart to replace the tracked pane.`, "warning");
@@ -891,11 +897,11 @@ export function registerWorker(pi: ExtensionAPI): void {
 			const version = state.planVersion;
 			if (state.phase !== "working") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
 			if (state.mode === "solo") return result("Supervisor sign-off is unavailable in solo mode. Save evidence and use /goals restart for review; no completion recorded.", true);
-			if (pauseReason()) return result(`Goal sign-off blocked: ${pauseReason()}`, true);
+			if (pauseReason(ctx)) return result(`Goal sign-off blocked: ${pauseReason(ctx)}`, true);
 			if (!state.approvalId) return result("Goal sign-off blocked: no current supervisor review.", true);
 			const background = await backgroundState(pi);
 			if (signal?.aborted || intercom.ended || state.approvalId !== binding || state.planVersion !== version || state.phase !== "working") return result("Goal sign-off cancelled or superseded; no completion recorded.", true);
-			if (intercom.ended || !background.quiet || pauseReason()) return result(`Goal sign-off blocked: ${pauseReason() ?? background.description}`, true);
+			if (intercom.ended || !background.quiet || pauseReason(ctx)) return result(`Goal sign-off blocked: ${pauseReason(ctx) ?? background.description}`, true);
 			const plan = readPlan(ctx);
 			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
 			const block = goalBlock(plan, params.goal);

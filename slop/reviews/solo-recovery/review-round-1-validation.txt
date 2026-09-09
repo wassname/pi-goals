@@ -1,0 +1,23 @@
+Review round 1 validation (fresh isolated evidence)
+
+Environment for every command:
+  env -u PI_SUBAGENT_CHILD -u PI_GOALS_ROLE PI_GOALS_EVIDENCE_DIR=/tmp/pi-goals-review-round-1-evidence
+
+npx vitest run test/goals-flow.test.ts test/intercom.test.ts test/supervisor-session.test.ts
+  PASS: 3 files, 81 tests.
+
+npm run typecheck
+  PASS: tsc --noEmit.
+
+npm run lint
+  PASS: biome check src/ test/ (42 files; no fixes).
+
+npm run build
+  PASS: tsc.
+
+npm test
+  PASS: 22 files, 159 tests.
+  Note: `fatal: not a git repository` is expected stderr from a negative preflight regression.
+
+git diff --check
+  PASS.

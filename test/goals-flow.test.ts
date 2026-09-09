@@ -406,6 +406,36 @@ it("shows a missing resumed supervisor, pauses writes, and automatically unpause
 	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
 });
 
+it("restores planning context after a Ready compaction failure", async () => {
+	const flow = setup(["Ready"]);
+	try {
+		await flow.commands.get("goals").handler("make the file", flow.ctx);
+		approvedPlan(flow.cwd);
+		await flow.hooks.get("before_agent_start")({}, flow.ctx);
+		flow.ctx.compact.mockImplementationOnce((options: { onError?: (error: Error) => void }) => options.onError?.(new Error("Compaction cancelled")));
+		await flow.hooks.get("agent_settled")({}, flow.ctx);
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "planning" });
+		await flow.hooks.get("session_compact")({}, flow.ctx);
+		expect(await flow.hooks.get("before_agent_start")({}, flow.ctx)).toMatchObject({ message: expect.objectContaining({ customType: "pi-goals-planning-context" }) });
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
+it("does not enter solo when a completed pairing resumes without its supervisor", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	const flow = setup([]);
+	try {
+		const path = writePlan(flow.cwd, "# Plan\n\n## Goals\n\n1. [x] goal: make the file\n\n## Log\n");
+		flow.entries.push({ type: "custom", customType: "pi-goals-state", data: { phase: "working", mode: "supervised", approvalId: "restored-binding", supervisorPaneId: "owned-pane", planVersion: 1, signedOffGoals: ["make the file"] } });
+		flow.transport.replyToHello(false);
+		await flow.hooks.get("session_start")({}, flow.ctx);
+		await vi.advanceTimersByTimeAsync(310_000);
+		expect(readFileSync(path, "utf8")).toContain("[x] goal: make the file");
+		expect(flow.entries.at(-1)?.data).toMatchObject({ phase: "working", mode: "supervised", approvalId: "restored-binding" });
+		expect(flow.notifications.some(text => text.includes("UNSUPERVISED WORKER"))).toBe(false);
+		expect(flow.messages.some(message => message.content.startsWith("UNSUPERVISED WORKER"))).toBe(false);
+	} finally { rmSync(flow.cwd, { recursive: true, force: true }); }
+});
+
 it("exits planning without deleting the draft or approving implementation", async () => {
 	const flow = setup([]);
 	try {

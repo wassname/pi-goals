@@ -99,6 +99,7 @@ export class GoalIntercom {
 			const message = record.message;
 			if (message.binding !== binding) continue;
 			if (record.direction === "out" && message.kind === "steer") this.pending.set(message.id, message);
+			if (record.direction === "superseded") this.pending.delete(message.id);
 			if (record.direction === "ack") {
 				this.pending.delete(message.id);
 				if (message.through) this.acknowledgedEntry = message.through;
@@ -182,6 +183,8 @@ export class GoalIntercom {
 		if (!this.connected) {
 			const retained = [...this.pending.values()].find(message => message.text === text);
 			if (retained) return { id: retained.id, queued: true };
+			for (const pending of this.pending.values()) this.record("superseded", pending);
+			this.pending.clear();
 		}
 		const message: Message = { binding: this.binding, role: this.role, kind: "steer", id: randomUUID(), text };
 		this.record("out", message);
@@ -322,7 +325,7 @@ export class GoalIntercom {
 		if (this.stopped || this.registered) return;
 		this.pi.events.emit("intercom:extension-register", {
 			namespace: "pi-goals", ownerEligible: false,
-			onReady: (channel: IntercomExtensionChannel) => { if (this.stopped) return; this.registered = true; this.channel = channel; this.hello(); },
+			onReady: (channel: IntercomExtensionChannel) => { if (this.stopped) return; this.registered = true; this.channel = channel; this.hello(); this.schedulePeerRetry(); },
 			onEvent: (event: IntercomExtensionEvent) => {
 				try { this.receive(event); }
 				catch (error) { if (!this.stopped) this.ctx?.ui.notify(`Goal Intercom error: ${String(error)}`, "error"); }

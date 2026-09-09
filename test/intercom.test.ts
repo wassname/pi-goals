@@ -3,13 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { GoalIntercom } from "../src/intercom.js";
 import { intercomFixture } from "./intercom-fixture.js";
 
-function setup(role: "worker" | "supervisor", entries: any[] = [], autoHello = true) {
-	const fixture = intercomFixture(autoHello);
+function setup(role: "worker" | "supervisor", entries: any[] = [], autoHello = true, deferReady = false) {
+	const fixture = intercomFixture(autoHello, deferReady);
 	const hooks = new Map<string, any>();
 	const ctx = { isIdle: vi.fn(() => true), hasPendingMessages: vi.fn(() => false), sessionManager: { getEntries: () => entries }, ui: { notify: vi.fn() } };
 	const api = { events: fixture.events, on: (name: string, hook: any) => hooks.set(name, hook), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) };
 	const link = new GoalIntercom(api as unknown as ExtensionAPI);
 	link.configure("binding", role, ctx as any);
+	if (deferReady) fixture.ready();
 	return { link, fixture, entries, ctx, hooks };
 }
 
@@ -79,9 +80,9 @@ describe("pi-intercom transport", () => {
 	});
 });
 
-it("retries an unanswered active-binding hello twice, then leaves normal readiness recovery paused", async () => {
+it("retries an unanswered active-binding hello twice after delayed channel registration", async () => {
 	vi.useFakeTimers();
-	const runtime = setup("worker", [], false);
+	const runtime = setup("worker", [], false, true);
 	await vi.advanceTimersByTimeAsync(6_000);
 	expect(runtime.fixture.sent.filter(message => message.kind === "hello" && !message.reply)).toHaveLength(3);
 	await vi.advanceTimersByTimeAsync(60_000);
@@ -89,6 +90,23 @@ it("retries an unanswered active-binding hello twice, then leaves normal readine
 	expect(runtime.link.connected).toBe(false);
 	await runtime.hooks.get("session_shutdown")();
 	vi.useRealTimers();
+});
+
+it("retains only the newest disconnected steer across a supervisor reload", async () => {
+	const first = setup("supervisor");
+	first.link.markReady();
+	await first.link.waitReady();
+	first.fixture.connect(false);
+	const old = first.link.steer("Inspect the old output.");
+	const latest = first.link.steer("Inspect the replacement output.");
+	await first.hooks.get("session_shutdown")();
+	const resumed = setup("supervisor", [...first.entries]);
+	resumed.link.markReady();
+	await resumed.link.waitReady();
+	const replayed = resumed.fixture.sent.filter(message => message.kind === "steer");
+	expect(replayed.length).toBeGreaterThan(0);
+	for (const message of replayed) expect(message).toMatchObject({ id: latest.id, text: "Inspect the replacement output." });
+	expect(replayed).not.toContainEqual(expect.objectContaining({ id: old.id }));
 });
 
 it("does not acknowledge a synchronous handoff failure, and retries the instruction", async () => {
