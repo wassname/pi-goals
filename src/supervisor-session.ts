@@ -5,6 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { approvalPath, goalBlock, hashGoalBlock, repositoryState, verifyOutputPath, writeApproval } from "./approval.js";
 import { GoalIntercom } from "./intercom.js";
+import { planViews } from "./plan-view.js";
 import { RoleModels } from "./role-models.js";
 
 const BOOTSTRAPPED = "pi-goals-visible-supervisor-v2";
@@ -66,8 +67,21 @@ function latestWorkerView(ctx: ExtensionContext): string | null {
 	return null;
 }
 
+function supervisorOpening(settings: SupervisorConfig): string {
+	return `Your job is to be a diligent supervisor, autonomously extending the user's agency by correctly understanding their goals and preferences. Supervise the worker according to ${settings.planPath}, which the user helped write.`;
+}
+
+// Pi/OpenAI: User intent/autonomy adapted from https://www.anthropic.com/constitution; outcome focus from @monotykamary/pi-supervisor.
 function supervisorPrompt(settings: SupervisorConfig): string {
-	return `You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
+	return `${supervisorOpening(settings)}
+
+At startup and after compaction, read the applicable AGENTS.md instructions and relevant skills to understand the user's goals, preferences, and working standards. Do not assume a particular project or workflow. Read the plan's appendices when needed.
+
+Understand the user's immediate request without interpreting it too literally or too liberally. Consider their final goals and the background standards and preferences the work should meet. Use good planning, taste, context, and high-level perspective. Infer ordinary implementation details, but do not silently replace the agreed outcome or invent restrictions.
+
+Protect the user's epistemic autonomy and rational agency. Make consequential uncertainty and disagreement visible. Respect their authorized decisions without requiring them to justify reasonable preferences; voice concerns without substituting your preferences for theirs.
+
+You are the visible pi-goals supervisor for ${settings.planPath}. You are a stronger, read-only reviewer. The other Pi session is the implementation worker and keeps the full conversation. You keep the high-level intent from the compacted planning conversation and worker views. The complete plan at ${settings.planPath} is the source of truth; read it directly after every compaction.
 
 Your job is to supervise the worker autonomously until the agreed goal is achieved. Use judgment: identify the missing user-visible result, decide the next useful action, and supervise it through to delivery. Approval records support this work; they are not the outcome. Seek justified confidence, not certainty at any cost. Investigate uncertainty with the cheapest useful check, then decide. Never repeat a steer that had no effect: inspect what happened and change the approach. When the worker is idle and the goal is unfinished, steer a concrete next action unless a verified dependency or required human decision prevents progress. Do not prolong completed work for optional polish.
 
@@ -91,12 +105,8 @@ export function isVisibleSupervisor(): boolean {
 export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 	const settings = config();
 	let compacting = false;
-	const reminderEvery = Number(process.env.PI_GOALS_SUPERVISOR_REMINDER_TURNS ?? 5);
-	if (!Number.isInteger(reminderEvery) || reminderEvery < 1) throw new Error("PI_GOALS_SUPERVISOR_REMINDER_TURNS must be a positive integer.");
-	let turnsSinceReminder = reminderEvery;
-	let previousPlan = "";
-	pi.on("turn_end", async () => { turnsSinceReminder++; });
-	pi.on("session_compact", async () => { turnsSinceReminder = reminderEvery; });
+	let repeatFullPrompt = true;
+	pi.on("session_compact", async () => { repeatFullPrompt = true; });
 	let bootstrapping = false;
 	let warnedUnknownUsage = false;
 	let modelError: string | null = null;
@@ -172,12 +182,13 @@ export function registerVisibleSupervisor(pi: ExtensionAPI): void {
 		if (BLOCKED_TOOLS.has(event.toolName.toLowerCase())) return { block: true, terminate: true, reason: "Supervisor is read-only; use SteerWorker for the bound worker, not the general intercom tool." };
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
-		const plan = readFileSync(settings.planPath, "utf8").split(/^## Log\s*$/m)[0].trim();
-		const remind = plan !== previousPlan || turnsSinceReminder >= reminderEvery;
-		previousPlan = plan;
-		if (remind) turnsSinceReminder = 0;
-		const reminder = remind ? "\n\nSupervisor role reminder: Supervise autonomously toward the agreed outcome. Use judgment, investigate blockers, keep useful work moving, and inspect the result before accepting completion. A checkbox change is a claim to review, not proof." : "";
-		return { systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorPrompt(settings)}\n\nCurrent agreed plan (reread for every review):\n${plan}\n\nJudge progress against this outcome and its discriminators. A completed artifact or task is not completion unless it satisfies the agreed goal.${reminder}` };
+		const plan = planViews(readFileSync(settings.planPath, "utf8"));
+		const message = repeatFullPrompt ? { customType: "pi-goals-supervisor-role", content: `${supervisorPrompt(settings)}\n\nFull active plan:\n${plan.long}`, display: true } : undefined;
+		repeatFullPrompt = false;
+		return {
+			systemPrompt: `${ctx.getSystemPrompt()}\n\n${supervisorOpening(settings)}\n\nCurrent agreed plan (reread for every review):\n${plan.short}\n\nJudge progress against this outcome and its discriminators. A completed artifact or task is not completion unless it satisfies the agreed goal.`,
+			...(message ? { message } : {}),
+		};
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (compacting) return;

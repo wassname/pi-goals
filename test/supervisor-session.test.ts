@@ -133,19 +133,20 @@ describe("visible supervisor session", () => {
 		try {
 			writeFileSync(join(cwd, "plan.md"), "# Outcome\nBeat random\n1. [ ] goal: repair\n  - discriminator: beats random\n## Log\nold history");
 			const runtime = setup(cwd, join(cwd, "plan.md"));
-			const { systemPrompt } = await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
+			const first = await runtime.hooks.get("before_agent_start")({}, runtime.ctx);
+			const systemPrompt = `${first.systemPrompt}\n${first.message.content}`;
 			expect(systemPrompt).toContain("brief visible recap");
 			expect(systemPrompt).toContain("discriminator: beats random");
 			expect(systemPrompt).not.toContain("old history");
-			expect(systemPrompt).toContain("Supervisor role reminder:");
-			const review = async () => (await runtime.hooks.get("before_agent_start")({}, runtime.ctx)).systemPrompt;
-			expect(await review()).not.toContain("Supervisor role reminder:");
-			for (let i = 0; i < 5; i++) await runtime.hooks.get("turn_end")({}, runtime.ctx);
-			expect(await review()).toContain("Supervisor role reminder:");
+			expect(first.message.customType).toBe("pi-goals-supervisor-role");
+			const review = async () => runtime.hooks.get("before_agent_start")({}, runtime.ctx);
+			const next = await review();
+			expect(next.message).toBeUndefined();
+			expect(next.systemPrompt).toContain("autonomously extending the user's agency");
 			await runtime.hooks.get("session_compact")({}, runtime.ctx);
-			expect(await review()).toContain("Supervisor role reminder:");
+			expect((await review()).message.content).toContain("Protect the user's epistemic autonomy");
 			writeFileSync(join(cwd, "plan.md"), "# Outcome\nBeat random\n1. [x] goal: repair\n  - discriminator: beats random\n");
-			expect(await review()).toContain("Supervisor role reminder:");
+			expect((await review()).systemPrompt).toContain("[x] goal: repair");
 			expect(systemPrompt).toContain("your judgment");
 			expect(systemPrompt).toContain("justified confidence, not certainty at any cost");
 			expect(systemPrompt).toContain('Treat "blocked", "waiting", "impossible", and "already done" as claims to investigate');

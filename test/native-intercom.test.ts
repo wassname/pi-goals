@@ -52,7 +52,7 @@ it("runs a forked Pi supervisor and receives its exact instruction in another Pi
 		let body = "";
 		for await (const chunk of request) body += chunk;
 		const input = JSON.parse(body);
-		const latest = input.messages.at(-1);
+		const latest = input.messages.filter((message: any) => !JSON.stringify(message.content).includes("Full active plan:")).at(-1);
 		const steer = latest.role === "user" && JSON.stringify(latest.content).includes("The worker stopped.");
 		if (steer) supervisorTools = input.tools.map((tool: any) => tool.function.name);
 		response.writeHead(200, { "content-type": "text/event-stream" });
