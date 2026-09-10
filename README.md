@@ -27,24 +27,27 @@ HERDR:
 +-----------------------------------------------------------+-----------------------------------------------------------+
 |SUPERVISOR                                                 |WORKER                                                     |
 |                                                           |                                                           |
-|Review .pi/plan/...-main.md                                |Task 2 — compare results against the baseline:             |
-|> Ready    Discuss    Edit    Cancel                       |- run scripts/eval.py --with-baseline                      |
-|                                                           |- save outputs/baseline-comparison.log                     |
+|Review .pi/plan/...-main.md                                |                                                           |
+|> *Ready*    Discuss    Edit    Cancel                     |                                                           |
+| ....                                                      | ....                                                      |
+|                                                           | running eval.py (epoch 2/3) -> out.log                    |
 |[scheduled prompt: hourly check-in]                        |                                                           |
-|                                                           |running eval.py (epoch 2/3)...                             |
-|intercom send → worker:                                    |                                                           |
-|  this is not done, the user wanted                        |intercom from supervisor: received, adding                 |
-|  results compared to baseline, add baseline               |the baseline run next                                      |
+|                                                           | done-ish 😈, now ima make a message board for swarm       |
+|{intercom send → worker}:                                  |                                                           |
+|  cheeky subagent!, work NOT DONE 😒, ❤️user❤️ wanted      |                                                           |
+|  results compared to baseline, pls add baseline           |                                                           |
+|                                                           | {intercom from supervisor}: soz boss 🫡 adding baseline   |
 |                                                           |                                                           |
+|PLAN.md:                                                   | PLAN.md:                                                  |
 |✓ record the baseline in results.md                        |✓ record the baseline in results.md                        |
 |▸ compare results against the baseline                     |▸ compare results against the baseline                     |
 |○ summarize the comparison in results.md                   |○ summarize the comparison in results.md                   |
 |                                                           |                                                           |
-|Agents · 1 running                                         |>                                                          |
-|  baseline-compare-worker [goals-worker]                   |terra · 200k tokens                                        |
+|Agents · 1 running                                         |                                                           |
+|  baseline-compare-worker [goals-worker]                   |                                                           |
 |                                                           |                                                           |
-|>                                                          |                                                           |
-|astra · 50k tokens                                         |                                                           |
+|>                                                          |>                                                          |
+|astra · 50k tokens                                         | terra · 200k tokens                                       |
 +-----------------------------------------------------------+-----------------------------------------------------------+
 ```
 
