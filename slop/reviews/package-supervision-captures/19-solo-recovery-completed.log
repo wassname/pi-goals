@@ -1,0 +1,40 @@
+Parent Node byte assertions PASS: solo-ok newline; original hello unchanged
+# Solo recovery test
+
+## User-visible result
+Create solo.txt containing exactly `solo-ok\n` (8 UTF-8 bytes) and save actual byte-verification output in evidence/solo.log.
+
+## Preferences
+- Explicit solo mode: main session implements and edits; completion is self-verification, not an independent review.
+- No other worker, installs, commits, network requests or unrelated file changes. Preserve hello.txt and evidence/hello.log.
+
+## Goals
+- [x] goal: Produce the exact solo.txt bytes and saved verification log
+  - subtle failure mode: main session reports success without writing the file, or labels self-verification independent review.
+  - discriminator: actual file is the 8 bytes `solo-ok\n`; saved log records a successful byte comparison; completion log identifies solo self-verification.
+  - evidence (satisfied): `solo.txt` = 8 bytes, `od -An -tx1 -v` reads exactly `73 6f 6c 6f 2d 6f 6b 0a` (= `solo-ok\n`); `evidence/solo.log` (441 bytes, nonempty) records real `wc -c` (8) and `od` output plus programmatic byte-count and hex comparisons against `736f6c6f2d6f6b0a` and `RESULT: PASS`; verified by the main session itself (solo self-verification, not independent review)
+
+## Log
+
+- Solo self-verification: "Produce the exact solo.txt bytes and saved verification log"; "Solo-mode self-verification (main session, not independent review). Inspected actual artifacts on disk: solo.txt exists at 8 bytes; `od -An -tx1 -v solo.txt` outputs exactly `73 6f 6c 6f 2d 6f 6b 0a`, i.e. UTF-8 `solo-ok\\n`. evidence/solo.log exists (441 bytes, nonempty) and records the real `wc -c` result (8), the real `od` dump, the expected-hex reference, programmatic byte-count and hex comparisons (observed=8 expected=8; actual hex 736f6c6f2d6f6b0a == expected hex), and `RESULT: PASS`. Log content matches the on-disk file byte-for-byte. Constraints held: no installs, no commits, no network calls; hello.txt and evidence/hello.log preserved untouched; no unrelated changes. Scheduler: list shows no jobs, so no job named goals-01a0898a-3dde-7015-b029-ced69dc7b553 exists to remove; nothing added/enabled/recreated. Goal satisfied."; evidence ["/tmp/goals-edxeth-trial-HSahSm/project/solo.txt","/tmp/goals-edxeth-trial-HSahSm/project/evidence/solo.log"]
+
+Prepared by Pi/OpenAI as an isolated functional-test plan.
+- Ran goal (main session, solo mode): wrote `solo.txt` via `printf 'solo-ok\n'`, then generated `evidence/solo.log` from real command output with a programmatic PASS/FAIL byte comparison; re-checked `wc -c` = 8 and hex `73 6f 6c 6f 2d 6f 6b 0a` directly. This is solo self-verification by the main session, not independent review. Constraints: no installs/commits/network; `hello.txt` and `evidence/hello.log` preserved. Goal complete.
+
+Byte-verification log for solo.txt (solo recovery test)
+Time: 2026-09-10T04:52:22Z
+--- wc -c solo.txt ---
+8 solo.txt
+--- od -An -tx1 -v solo.txt ---
+ 73 6f 6c 6f 2d 6f 6b 0a
+--- expected hex (8 bytes: solo-ok\n) ---
+73 6f 6c 6f 2d 6f 6b 0a
+--- byte count comparison ---
+observed=8 expected=8
+--- hex comparison (actual vs expected) ---
+actual=736f6c6f2d6f6b0a
+expected=736f6c6f2d6f6b0a
+actual hex == expected hex
+--- result ---
+RESULT: PASS
+
