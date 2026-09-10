@@ -52,7 +52,7 @@ HERDR:
 +------------------------------------------------------+----------------------------------------------------------+
 ```
 
-Real screenshot:
+Screenshot:
 <img width="2513" height="1259" alt="2026-09-10_15-30-pi-goals" src="https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f" />
 
 
@@ -104,7 +104,7 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. Disable separately loaded copies to avoid duplicate commands.
+Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. 
 
 ```bash
 pi install git:github.com/wassname/pi-goals@experiment/main-supervisor-edxeth
@@ -126,25 +126,7 @@ pi -e ./src/index.ts
 /goals
 ```
 
-`/goals` opens the action menu. New plan enters plan mode and starts a conversation; the objective is an optional seed. From there:
-
-1. Plan. The agent explores read-only and drafts the plan.
-2. Review. After Pi settles, the full plan is printed in the transcript. Check that User-visible
-   result names the final artifact or behavior you expect. The menu offers Ready, Discuss, Edit, or
-   Cancel. Discuss continues the conversation. Edit opens the full plan in Pi's editor.
-3. Work. Ready is the only review action that starts work. It opens the worker in a Herdr pane. The
-   worker ticks subtasks, appends to `## Log` and `## Learnings`, and fills `evidence:`. The supervisor
-   inspects the actual results and calls `CompleteGoal` when a discriminator is satisfied. They
-   communicate through pi-intercom. After eight turns without a change above `## Log`, the agent gets
-   an upkeep reminder. The supervisor also sets an hourly check-in through pi-schedule-prompt.
-
-Other commands: `/goals stop` pauses work; `/goals resume` continues it; `/goals exit` leaves goal
-mode, preserving the plan. `/goals attach <path>` reconnects an existing plan. `/goals solo` lets the
-main chat do the work after confirming other workers stopped; completion is then self-verification.
-`/goals model <model-ref>` picks the worker model. `/schedule-prompt` manages check-ins.
-
-Stop workers before reloading the supervisor: the subagent package can otherwise crash it when a
-worker later exits. The scheduler deletes disabled jobs on reload. Restart the saved Pi session and reattach the plan.
+`/goals` opens the action menu. New plan enters plan mode and starts a conversation;
 
 ## Prompts
 
@@ -172,4 +154,3 @@ This separates output, uncached input and repeated cached input. It excludes sub
 
 MIT
 
-Branch-specific edits: Pi/OpenAI.
