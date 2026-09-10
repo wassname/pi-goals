@@ -4,7 +4,7 @@ Make a short list of goals in one Markdown plan file. The main chat keeps the hi
 
 <img width="2513" height="1259" alt="2026-09-10_15-30-pi-goals" src="https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f" />
 
-Abridged text from the isolated test, with approval and completion shown together. Paths are shortened; bracketed labels are annotations. Both sessions used DeepSeek in this test.
+Abridged text from the isolated test, with approval and completion shown together. Paths are shortened; bracketed labels are annotations. Model names and token counts below illustrate the intended supervisor/worker split, not measurements from this capture.
 
 ```text
 +-----------------------------------------------------------+-----------------------------------------------------------+
@@ -29,11 +29,9 @@ Abridged text from the isolated test, with approval and completion shown togethe
 |   verified-bytes-worker [goals-worker]                    |                                                           |
 |                                                           |                                                           |
 | >                                                         | >                                                         |
-| deepseek-v4-flash-0731 · Fireworks                        | deepseek-v4-flash-0731 · Fireworks                        |
+| astra · 50k tokens                                        | terra · 200k tokens                                       |
 +-----------------------------------------------------------+-----------------------------------------------------------+
 ```
-
-[Full captures and verification](slop/reviews/20260910_package-supervision-herdr.md).
 
 The plan file looks like this:
 
@@ -126,7 +124,7 @@ worker later exits. The scheduler deletes disabled jobs on reload. [Test results
 
 ## Prompts
 
-Planning, worker and supervisor prompts live in [`src/prompts.ts`](src/prompts.ts), in conversation order.
+You can read all the prompts in conversation order in [`src/prompts.ts`](src/prompts.ts).
 
 ## Develop
 

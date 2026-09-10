@@ -70,7 +70,7 @@ Pi/OpenAI implementation scope:
 - The supervisor may edit the plan and approve completion after inspecting actual results. It delegates implementation and must not weaken the agreed goal to accept worker output. Keep normal tools; express the division in editable prompts.
 - State the requested worker model in plan preferences; the supervisor selects it and checks the resolved model. Reuse existing usage displays before adding token-reporting code.
 - Keep all model-facing prompts in `src/prompts.ts`, in narrative order: planning/interview, Ready, supervision and plan upkeep, check-ins/messages, completion, pause/resume and solo. Make them easy for the user to review and edit.
-- Preserve useful features from `main`: plan widgets, progress/subtask visibility, plan-upkeep reminders, high-value planning questions and post-compaction plan context. Check which role needs each feature rather than copying the old supervisor runtime.
+- Preserve useful features from `main`: goal widgets, plan-upkeep reminders, high-value planning questions and post-compaction plan context. User update: omit subtasks from widgets; long task text wastes terminal space. Keep tasks in the plan. Check which role needs each feature rather than copying the old supervisor runtime.
 - Scheduled loops must be visible, editable and removable using the scheduler's own UI. Explain whether each reminder is a scheduled job or an event hook; do not advertise a second timer that does not exist.
 - Keep an explicit recoverable solo mode: confirm any worker has stopped before allowing the main thread to take over implementation and plan edits. Solo completion is self-verification, not an independent supervisor review.
 

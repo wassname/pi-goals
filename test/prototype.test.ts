@@ -455,7 +455,7 @@ it("cancelled goals do not prevent final cleanup, and solo writes self-verificat
 	expect(text).toContain("Preserved context");
 });
 
-it("lineage-only child explicitly attaches its supplied plan, restores subtasks/context, and cannot complete", async () => {
+it("lineage-only child attaches its plan with goal-only widget, retains task context, and cannot complete", async () => {
 	const f = fixture(true);
 	const supplied = join(f.ctx.cwd, "supplied.md");
 	const text = "- [/] goal: exact file\n  - [ ] verify bytes\n## Log\n  - [ ] archived task\n";
@@ -466,13 +466,23 @@ it("lineage-only child explicitly attaches its supplied plan, restores subtasks/
 	await attach.execute("a", { path: "supplied.md" }, undefined, undefined, f.ctx);
 	expect(f.entries.at(-1).data.plan).toBeUndefined(); // no cwd heuristics
 	await attach.execute("a", { path: supplied }, undefined, undefined, f.ctx);
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1].join("\n")).toContain("◦ verify bytes");
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["▸ exact file"]);
 	expect(f.ctx.ui.setWidget.mock.lastCall?.[1].join("\n")).not.toContain("archived task");
 	expect(readFileSync(supplied, "utf8")).toBe(text);
 	f.hooks.get("session_start")({}, f.ctx);
 	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message.content).toContain("exact file");
 	const completion = await f.tools.get("CompleteGoal").execute("c", { goal: "exact file", evidence: [], observation: "claim" }, undefined, undefined, f.ctx);
 	expect(completion.content[0].text).toContain("only to the active parent");
+});
+
+it.each(["solo", "supervising"])("%s widget omits long tasks without altering the plan", async mode => {
+	const f = fixture(); await f.draft();
+	const text = "- [/] goal: first output\n  - [ ] a long task that should never take widget space\n- [ ] goal: second output\n## Log\n";
+	writeFileSync(f.path, text);
+	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
+	else await f.command("ready");
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["▸ first output", "○ second output"]);
+	expect(readFileSync(f.path, "utf8")).toBe(text);
 });
 
 it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, resets on working-set edits, and never starts a turn", async mode => {

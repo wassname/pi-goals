@@ -53,7 +53,6 @@ interface State {
 const initial = (): State => ({ mode: "chat", signoffs: {} });
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const key = (text: string) => text.trim().toLowerCase();
-const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
 function goals(text: string) {
 	return foldPlan(text).split("\n").flatMap((line, index) => {
 		const match = GOAL_LINE.exec(line);
@@ -61,17 +60,6 @@ function goals(text: string) {
 		const box = match[1].toLowerCase();
 		return [{ subject: match[2].trim(), status: (box === "x" ? "done" : box === "/" ? "active" : box === "-" ? "cancelled" : "open") as GoalStatus, index }];
 	});
-}
-/** Open subtasks under the goal at goalLine, up to the next goal line; the widget shows these. */
-function openSubtasks(plan: string, goalLine: number): string[] {
-	const lines = foldPlan(plan).split("\n");
-	const out: string[] = [];
-	for (let i = goalLine + 1; i < lines.length; i++) {
-		if (GOAL_LINE.test(lines[i])) break;
-		const m = SUBTASK_LINE.exec(lines[i]);
-		if (m && (m[1] === " " || m[1] === "/")) out.push(m[2].trim());
-	}
-	return out;
 }
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
@@ -126,16 +114,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 		const accepted = items.filter((g) => g.status === "done" && state.signoffs[key(g.subject)]).length;
 		ctx.ui.setStatus("goals", `goals: ${state.child ? "worker" : state.mode} | ${accepted}/${items.length} reviewed`);
-		// Progress and subtask visibility: the widget is the task list, so the active goal shows its
-		// next open subtasks without reading archived checkboxes below the fold.
-		const plan = snapshot.text;
-		const focus = items.find((g) => g.status === "active") ?? items.find((g) => g.status === "open" && openSubtasks(plan, g.index).length > 0);
 		const mark = (status: GoalStatus, signed: boolean) => status === "done" ? (signed ? "✓" : "?") : status === "active" ? "▸" : status === "cancelled" ? "✗" : "○";
 		const lines: string[] = items.map((g) => `${mark(g.status, Boolean(state.signoffs[key(g.subject)]))} ${g.subject}`);
-		if (focus) {
-			const muted = (s: string) => ctx.ui.theme.fg("muted", `   ◦ ${s}`);
-			lines.push(...openSubtasks(plan, focus.index).slice(0, 3).map(muted));
-		}
 		if (items.some((g) => g.status === "done" && !state.signoffs[key(g.subject)])) lines.push("? = completion claim; parent review still required");
 		ctx.ui.setWidget("goals", lines);
 	}
