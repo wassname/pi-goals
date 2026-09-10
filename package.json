@@ -1,8 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
-  "version": "0.2.2",
-  "description": "Discuss a goal plan, then supervise a visible worker and verify its results.",
-  "private": true,
+  "version": "0.3.2",
+  "description": "One plan file per session: set goals in plan mode, work them, sign off only when the supervisor checks the evidence.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",
