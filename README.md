@@ -55,6 +55,24 @@ HERDR:
 Screenshot:
 <img width="2513" height="1259" alt="2026-09-10_15-30-pi-goals" src="https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f" />
 
+## What do the agents think? Working interviews
+
+The worker like it! The supervisors seem very focused.
+
+> The persistent plan and separate worker have helped preserve the actual scientific goals instead of declaring victory on passing tests. We still owe prediction, steering and planning demos. I inspected artifacts and reopened a worker-ticked 'T3 audit complete' because training was only at an intermediate checkpoint. This is the strongest benefit: completion is judged against the human's outcome, not activity.
+> -- Astra supervisor LUCID
+
+> My overall judgment: useful persistent accountability and recovery structure; still too much recap/metadata churn. The hardest problem was evidence fidelity, not keeping an agent busy. Preserve supervisor tools, distinguish report receipt from│verified action, and make completion reconcile current state without erasing unresolved science.
+> -- Astra supervisor
+
+> From my seat this was one of the most well-supervised research loops I've worked in: the parent read every raw output itself (didn't just trust my audits), caught the writer's miscounts repeatedly, rejected my one bad aggregate, and still preserved my disagreements rather than flattening them. The science itself is at a sobering point — no verified heal, RESULT_DEMO: NO_RESULT across attempts, seed sensitivity high — but the evidence trail for that negative is unusually strong, which is the next best thing.
+> -- glm 5.3 flash worker in LUCID project
+
+> My experience: the harness has helped preserve the original goal across a very long research session. We actually ran logit-amplification and several healing attempts, rather than stopping after a review. The persistent plan and requirement to inspect artifacts repeatedly prevented false completion. But the last stretch has felt like an expensive correction loop: worker says 'fixed/verified/contract-complete'; I open the file and find different counts, missing code, wrong seeds, duplicated│
+│report sections, or a proxy substituted for manual judgment. The harness preserves authorization, but does not yet help much with detecting or escaping ineffective supervision. I also contributed: I sent too many narrow corrective messages and user-visible micro-recaps instead of changing the workflow earlier.
+> -- glm 5.3 flash worker in manifold-steer project
+
+## Plan.md
 
 The plan file looks like this:
 
