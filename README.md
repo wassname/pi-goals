@@ -24,31 +24,32 @@ Mock up:
 
 ```text
 HERDR:
-+-----------------------------------------------------------+-----------------------------------------------------------+
-|SUPERVISOR                                                 |WORKER                                                     |
-|                                                           |                                                           |
-|Review .pi/plan/...-main.md                                |                                                           |
-|> *Ready*    Discuss    Edit    Cancel                     |                                                           |
-| ....                                                      | ....                                                      |
-|                                                           | running eval.py (epoch 2/3) -> out.log                    |
-|[scheduled prompt: hourly check-in]                        |                                                           |
-|                                                           | done-ish 😈, now ima make a message board for swarm       |
-|{intercom send → worker}:                                  |                                                           |
-|  cheeky subagent!, work NOT DONE 😒, ❤️user❤️ wanted      |                                                           |
-|  results compared to baseline, pls add baseline           |                                                           |
-|                                                           | {intercom from supervisor}: soz boss 🫡 adding baseline   |
-|                                                           |                                                           |
-|PLAN.md:                                                   | PLAN.md:                                                  |
-|✓ record the baseline in results.md                        |✓ record the baseline in results.md                        |
-|▸ compare results against the baseline                     |▸ compare results against the baseline                     |
-|○ summarize the comparison in results.md                   |○ summarize the comparison in results.md                   |
-|                                                           |                                                           |
-|Agents · 1 running                                         |                                                           |
-|  baseline-compare-worker [goals-worker]                   |                                                           |
-|                                                           |                                                           |
-|>                                                          |>                                                          |
-|astra · 50k tokens                                         | terra · 200k tokens                                       |
-+-----------------------------------------------------------+-----------------------------------------------------------+
++------------------------------------------------------+----------------------------------------------------------+
+|SUPERVISOR                                            |WORKER                                                    |
+|                                                      |                                                          |
+|Review .pi/plan/...-main.md                           |                                                          |
+|> *Ready*    Discuss    Edit    Cancel                |                                                          |
+| ....                                                 | ....                                                     |
+|                                                      | running eval.py (epoch 2/3) -> out.log                   |
+|[scheduled prompt: hourly check-in]                   |                                                          |
+|                                                      | user forgot to say "MAKE NOT MISTAKES" teh he            |
+|                                                      | done-ish 😈, now ima make a message board FOR SWARM      |
+|{intercom send → worker}:                             |                                                          |
+|  cheeky subagent!, work NOT DONE 😒, ❤️user❤️ wanted |                                                          |
+|  results compared to baseline, pls add baseline      |                                                          |
+|                                                      | {intercom from supervisor}: soz boss 🫡 adding baseline  |
+|                                                      |                                                          |
+|PLAN.md:                                              | PLAN.md:                                                 |
+|✓ record the baseline in results.md                   |✓ record the baseline in results.md                       |
+|▸ compare results against the baseline                |▸ compare results against the baseline                    |
+|○ summarize the comparison in results.md              |○ summarize the comparison in results.md                  |
+|                                                      |                                                          |
+|Agents · 1 running                                    |                                                          |
+|  baseline-compare-worker [goals-worker]              |                                                          |
+|                                                      |                                                          |
+|>                                                     |>                                                         |
+|astra · 50k tokens                                    | terra · 200k tokens                                      |
++------------------------------------------------------+----------------------------------------------------------+
 ```
 
 Real screenshot:
