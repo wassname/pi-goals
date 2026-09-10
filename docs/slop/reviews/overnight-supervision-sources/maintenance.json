@@ -1,0 +1,110 @@
+[
+  {
+    "spec": "edxeth/pi-subagents",
+    "github": "https://github.com/edxeth/pi-subagents",
+    "humans": 5,
+    "human_logins": [
+      "cdgaete",
+      "edxeth",
+      "FasalZein",
+      "hgill-godaddy",
+      "VinhLe1410"
+    ],
+    "stars": 121,
+    "created": "2026-04-16",
+    "created_age": "4mo",
+    "open_issues": 0,
+    "closed_issues": 9,
+    "last_commit": "2026-09-07",
+    "age": "2d",
+    "freshness": "current",
+    "repo_kind": "dedicated"
+  },
+  {
+    "spec": "boadij/pi-herdsman",
+    "github": "https://github.com/boadij/pi-herdsman",
+    "humans": 1,
+    "human_logins": [
+      "boadij"
+    ],
+    "stars": 3,
+    "created": "2026-09-07",
+    "created_age": "2d",
+    "open_issues": 0,
+    "closed_issues": 0,
+    "last_commit": "2026-09-09",
+    "age": "0d",
+    "freshness": "current",
+    "repo_kind": "dedicated"
+  },
+  {
+    "spec": "kirel/herdr-subagents",
+    "github": "https://github.com/kirel/herdr-subagents",
+    "humans": 1,
+    "human_logins": [
+      "kirel"
+    ],
+    "stars": 3,
+    "created": "2026-06-10",
+    "created_age": "3mo",
+    "open_issues": 0,
+    "closed_issues": 0,
+    "last_commit": "2026-06-19",
+    "age": "2mo",
+    "freshness": "watch",
+    "repo_kind": "dedicated"
+  },
+  {
+    "spec": "monotykamary/pi-supervisor",
+    "github": "https://github.com/monotykamary/pi-supervisor",
+    "humans": 2,
+    "human_logins": [
+      "monotykamary",
+      "tintinweb"
+    ],
+    "stars": 4,
+    "created": "2026-03-12",
+    "created_age": "6mo",
+    "open_issues": 0,
+    "closed_issues": 0,
+    "last_commit": "2026-09-05",
+    "age": "4d",
+    "freshness": "current",
+    "repo_kind": "dedicated"
+  },
+  {
+    "spec": "hao1939/herdr-supervisor",
+    "github": "https://github.com/hao1939/herdr-supervisor",
+    "humans": 1,
+    "human_logins": [
+      "hao1939"
+    ],
+    "stars": 1,
+    "created": "2026-08-29",
+    "created_age": "11d",
+    "open_issues": 0,
+    "closed_issues": 0,
+    "last_commit": "2026-09-06",
+    "age": "3d",
+    "freshness": "current",
+    "repo_kind": "dedicated"
+  },
+  {
+    "spec": "HenryLach/taskplane",
+    "github": "https://github.com/HenryLach/taskplane",
+    "humans": 2,
+    "human_logins": [
+      "HenryLach",
+      "NerfEko"
+    ],
+    "stars": 214,
+    "created": "2026-03-12",
+    "created_age": "6mo",
+    "open_issues": 24,
+    "closed_issues": 137,
+    "last_commit": "2026-09-08",
+    "age": "2d",
+    "freshness": "current",
+    "repo_kind": "dedicated"
+  }
+]
