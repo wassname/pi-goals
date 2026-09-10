@@ -53,6 +53,66 @@ And it would only be a few output tokens.
 
 -- wassname (spelling and punctuation corrected by Pi/OpenAI)
 
+## User voice: redesign discussion, 2026-09-10
+
+> This seems too complex. Models are trained to use subagents. Maybe I should make the main thread supervisor and use a worker thread. Main thread smart model, fewer tokens. Subagent dumber but more tokens.
+
+> If we get this right it would result in simple editable prompts, clear and easier code, etc.
+
+On the Nicobailon fleet viewer:
+
+> Yeah, it's ugly, hard to read. Just plain text, no syntax highlighting or even formatting.
+
+When should the supervisor review?
+
+> Q1: 1) on stop (without process or subagent running) 2) every 60 minutes 3) on check of or change in plan.
+> Note, if we want to be simple we can use pi-scheduled prompt to tell supervisor to check in?
+> How will supervisor view subagent in a token-efficient way?
+
+Who owns the plan and completion?
+
+> Q2: hmm, I was thinking the worker does, but yeah, in this model maybe the supervisor... it's just I wanted an independent check where the supervisor is on a Ralph loop and has perspective, perhaps read-only (or partial).
+
+On patching packages:
+
+> Q3: yes, we can patch if needed, hopefully we don't need to.
+
+> If we have to patch, it might be easier to patch or extend the main subagent packages, idk.
+
+On seeing the real worker Pi pane:
+
+> Oh, I see the subagent go, it's looking good so far.
+
+Asked whether the worker view must allow direct interaction (typing messages, interrupting, using `/model` and `/tree`):
+
+> Yes, I do.
+
+On simplicity and visible status:
+
+> Keep it simple and robust, that's why I thought pi-schedule-prompt might help, but maybe it will add complexity, idk. It's good for a user to be able to see if it's connected and so on.
+
+On reviewing completed supervisor/worker pairs:
+
+> And at the end I want to be able to see the tokens used in supervisor and worker. And to be able to have you find pairs, with the versions or commit used, and inspect them for how well they behaved. This will be a script in the fork.
+
+On proceeding with the whole normal Pi worker interface:
+
+> I do want the whole normal [Pi interface].
+
+> Let's do that.
+
+-- wassname (spelling and punctuation corrected by Pi/OpenAI; bracketed words supply context)
+
+Pi/OpenAI decision record: proceed with edxeth's full interactive worker UI and validate supervision/recovery before replacing global settings. A formatted transcript-only viewer does not satisfy the request.
+
+On supervisor plan ownership:
+
+> Maybe the supervisor can just approve or deny worker edits to the plan? Or, okay, yeah, let's start permissive, sure.
+
+-- wassname (spelling and punctuation corrected by Pi/OpenAI)
+
+Pi/OpenAI decision record: start permissive. The supervisor may edit the plan and approve completion, while the worker implements and records evidence. The supervisor independently inspects results; it must not weaken the agreed goal to accept the worker's output. Keep normal tools available and express the division of work in editable prompts. The user confirmed proceeding with "so yes, do it". The workflow above describes the current implementation, not a requirement to retain its two-step approval mechanism.
+
 ## Supervisor behavior preferences
 
 Recorded by Pi/OpenAI from wassname's instructions.

@@ -1,0 +1,14 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+fatal: not a git repository (or any of the parent directories): .git
+
+ Test Files  22 passed (22)
+      Tests  165 passed (165)
+   Start at  11:35:07
+   Duration  9.51s (transform 4.40s, setup 0ms, import 9.86s, tests 16.76s, environment 3ms)
+

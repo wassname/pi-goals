@@ -1,0 +1,1344 @@
+diff --git a/README.md b/README.md
+index 8000fcd..cb83577 100644
+--- a/README.md
++++ b/README.md
+@@ -175,6 +175,7 @@ For a fuller example of the intended style, see the [scout agent gist by edxeth]
+ | `no-session` | `false` | Use an ephemeral child session file and delete it after completion |
+ | `trust-project` | `false` | Whether interactive child launches pass Pi's `--approve` flag and trust project-local files/settings. Background children always generate `--no-approve` for safety; use `flags` only as an explicit advanced override. |
+ | `auto-exit` | `false` | Close the child after a normal completion |
++| `interactive-status` | `false` | For a normal interactive worker, publish settled-turn status while leaving its pane open; enables `subagent_steer` |
+ | `system-prompt` | task body | `append` adds the agent body to the child's own Pi system prompt (Pi's default unless the child has an applicable `SYSTEM.md`); `replace` replaces that base prompt with the agent body. The parent agent's system prompt is never inherited. |
+ | `session-mode` | `lineage-only` | `standalone`, `lineage-only`, or `fork` |
+ | `flags` | unset | Extra CLI flags passed to the child pi process (e.g. `--verbose` or `--some-custom-flag`). Appended after all generated args — last-wins semantics against conflicting generated args, including `--approve` / `--no-approve`. Use only as an advanced escape hatch for extension-registered flags or pi built-in flags not covered by other frontmatter fields. |
+@@ -641,6 +642,18 @@ Pi hides `subagent_done` for `auto-exit: true` agents. If you want an interactiv
+ 
+ Use `caller_ping` when the child needs the parent. The child sends a message up, exits, and leaves a session file that the parent can resume.
+ 
++### Persistent interactive worker status and steering
++
++Set `interactive-status: true` only on an `interactive`, `auto-exit: false` worker. It retains its normal pane while reporting each settled Pi turn to its parent; incompatible launch or resume configuration fails clearly. The parent receives `subagents:status:v1` events with reachable pane, turn state (`running`, `settled`, or `error`), and active child/process counts. A quiet settled status (both counts are known zero) also wakes the parent with the latest assistant output; active or unknown work updates status without waking a stop review. `activeProcesses` is zero when no `process` tool is active, otherwise Pi queries the documented `pi-processes` list callback and reports `unknown` if no provider answers.
++
++While the worker is reachable and its latest status is quiet and `settled`, the parent can call:
++
++```text
++subagent_steer({ id, text })
++```
++
++`text` may be multiline. The tool atomically queues a message for that child run; the child calls Pi's supported `sendUserMessage` API when idle. It never types into the terminal editor, so a human draft remains untouched. Its result means queued only, not child acceptance or execution; wait for a following status before treating it as executed. Queue items are run-id scoped and are not replayed by a resumed worker. A parent `/reload` retains and reattaches an opted-in worker in the same Pi process; a full parent exit still follows `parent-close-policy`.
++
+ ## Resuming child sessions
+ 
+ `subagent_resume` starts an existing child session again. You can pass a follow-up task.
+diff --git a/src/agents/definitions.ts b/src/agents/definitions.ts
+index 95b95a1..1caa520 100644
+--- a/src/agents/definitions.ts
++++ b/src/agents/definitions.ts
+@@ -19,6 +19,8 @@ export interface AgentDefaults {
+ 	spawnWidth?: number;
+ 	visibleTo?: string[];
+ 	autoExit?: boolean;
++	/** Opt-in settled-turn reports for an interactive worker that remains open. */
++	interactiveStatus?: boolean;
+ 	systemPromptMode?: "append" | "replace";
+ 	cwd?: string;
+ 	cwdBase?: string;
+@@ -115,6 +117,7 @@ function parseAgentDefinition(
+ 	if (enabledRaw === "false") return null;
+ 	const spawningRaw = get("spawning");
+ 	const autoExitRaw = get("auto-exit");
++	const interactiveStatusRaw = get("interactive-status");
+ 	const allowModelOverrideRaw = get("allow-model-override");
+ 	const modeRaw = get("mode");
+ 	const sessionModeRaw = get("session-mode");
+@@ -185,6 +188,7 @@ function parseAgentDefinition(
+ 		...(spawnWidth !== undefined ? { spawnWidth } : {}),
+ 		visibleTo,
+ 		autoExit: autoExitRaw != null ? autoExitRaw === "true" : undefined,
++		interactiveStatus: interactiveStatusRaw != null ? interactiveStatusRaw === "true" : undefined,
+ 		systemPromptMode: systemPromptRaw === "append" || systemPromptRaw === "replace" ? systemPromptRaw : undefined,
+ 		cwd: get("cwd"),
+ 		cwdBase,
+diff --git a/src/launch/interactive.ts b/src/launch/interactive.ts
+index 33cfe06..1bce5b0 100644
+--- a/src/launch/interactive.ts
++++ b/src/launch/interactive.ts
+@@ -153,8 +153,10 @@ export async function launchInteractiveSubagent(
+ 				herdr: herdrContext,
+ 				zellij: zellijContext,
+ 			})));
++	const interactiveStatus = prepared.agentDefs?.interactiveStatus === true;
+ 	const envVars = {
+ 		...launch.envVars,
++		...(interactiveStatus ? { PI_SUBAGENT_INTERACTIVE_STATUS: "1", PI_SUBAGENT_RUN_ID: id } : {}),
+ 		...(zellijTarget ? { ZELLIJ_SESSION_NAME: zellijTarget.sessionName } : {}),
+ 		...(ordinarySurface ? { PI_SUBAGENT_SURFACE: ordinarySurface } : {}),
+ 		// The child receives the parent's clock, not its own: pane startup time
+@@ -229,6 +231,7 @@ export async function launchInteractiveSubagent(
+ 		blocking: params.blocking ?? false,
+ 		async: params.async ?? !(params.blocking ?? false),
+ 		autoExit: prepared.agentDefs?.autoExit ?? false,
++		interactiveStatus,
+ 		noSession,
+ 		reportContextUsage: resolveSubagentReportContextUsage(prepared.agentDefs),
+ 		...resolveSubagentTimeoutState(prepared.agentDefs),
+diff --git a/src/launch/prep.ts b/src/launch/prep.ts
+index 442335c..5425dbd 100644
+--- a/src/launch/prep.ts
++++ b/src/launch/prep.ts
+@@ -84,6 +84,18 @@ export interface PreparedSubagentLaunch {
+ 	spawnPolicy?: SpawnPolicyResult;
+ }
+ 
++export function assertInteractiveStatusCompatible(
++	name: string,
++	interactiveStatus: boolean | undefined,
++	mode: ResumeMode,
++	autoExit: boolean | undefined,
++): void {
++	if (interactiveStatus !== true || (mode === "interactive" && autoExit !== true)) return;
++	throw new Error(
++		`Agent "${name}" sets interactive-status: true, which requires mode: interactive and auto-exit: false.`,
++	);
++}
++
+ function loadAgentDefaults(
+ 	agentName: string,
+ 	cwdHint: string | null | undefined,
+@@ -123,6 +135,7 @@ export async function prepareSubagentLaunch(
+ 	if (ctx.autoExit !== undefined && agentDefs) {
+ 		agentDefs.autoExit = ctx.autoExit;
+ 	}
++	assertInteractiveStatusCompatible(params.agent ?? params.name, agentDefs?.interactiveStatus, mode, agentDefs?.autoExit);
+ 	const sessionFile = ctx.sessionManager.getSessionFile() ?? null;
+ 	// When there is no parent session file (pi --no-session), standalone
+ 	// no-session children can still launch with a tmpdir fallback.
+@@ -356,7 +369,10 @@ export function buildPersistedSubagentLaunchMetadata(
+ 		...(params.agent ? { agent: params.agent } : {}),
+ 		mode,
+ 		sessionMode,
+-		...(prepared.agentAutoExit !== undefined ? { autoExit: prepared.agentAutoExit } : {}),
++		...(prepared.agentAutoExit !== undefined || prepared.agentDefs?.interactiveStatus === true
++			? { autoExit: prepared.agentAutoExit ?? false }
++			: {}),
++		...(prepared.agentDefs?.interactiveStatus === true ? { interactiveStatus: true } : {}),
+ 		parentClosePolicy: resolveSubagentParentClosePolicy(prepared.agentDefs),
+ 		reportContextUsage: resolveSubagentReportContextUsage(prepared.agentDefs),
+ 		async: params.async !== false,
+diff --git a/src/launch/skill-visibility.ts b/src/launch/skill-visibility.ts
+index b379c1c..9272558 100644
+--- a/src/launch/skill-visibility.ts
++++ b/src/launch/skill-visibility.ts
+@@ -8,6 +8,10 @@ export type SkillFileReadTool = "read" | "bash";
+ 
+ type SkillVisibility = "auto" | "manual";
+ 
++function isSkillVisibility(value: string): value is SkillVisibility {
++	return value === "auto" || value === "manual";
++}
++
+ export interface SkillListEntry {
+ 	name: string;
+ 	visibility?: SkillVisibility;
+@@ -33,7 +37,7 @@ export function parseSkillListEntries(raw: string | undefined): SkillListEntry[]
+ 		const annotation = separator === -1 ? null : trimmed.slice(separator + 1);
+ 		if (!name) throw new Error(`Invalid skills entry: "${trimmed}".`);
+ 		if (annotation !== null) {
+-			if (annotation !== "auto" && annotation !== "manual") {
++			if (!isSkillVisibility(annotation)) {
+ 				throw new Error(
+ 					`Invalid skill visibility annotation "${annotation}" in "${trimmed}". Use "=auto" or "=manual".`,
+ 				);
+diff --git a/src/runtime/interactive-watch.ts b/src/runtime/interactive-watch.ts
+index a318795..4938938 100644
+--- a/src/runtime/interactive-watch.ts
++++ b/src/runtime/interactive-watch.ts
+@@ -17,6 +17,7 @@ import {
+ 	observeSubagentProgress,
+ } from "./timeout-budget.ts";
+ import { startTimeoutWrapUpWithinDeadline } from "./timeout-restart.ts";
++import { getInteractiveTurnStatuses } from "./interactive-status.ts";
+ 
+ export interface InteractiveWatchRuntime {
+ 	cleanupNoSessionSessionFile(running: RunningSubagent): void;
+@@ -203,10 +204,21 @@ async function watchInteractiveGeneration(
+ 				const entries = getEntryCount(sessionFile);
+ 				// Only the child's own output restarts the idle clock; a prompt the
+ 				// runtime wrote into the session is not child progress.
+-				const produced =
+-					entries > previousEntries ? hasChildProgress(getNewEntries(sessionFile, previousEntries)) : false;
++				const newEntries = entries > previousEntries ? getNewEntries(sessionFile, previousEntries) : [];
++				const produced = hasChildProgress(newEntries);
+ 				observeSubagentProgress(running, stat.size, now, produced);
+ 				running.entries = entries;
++				if (running.interactiveStatus) {
++					const observed = new Set(running.observedTurnStatusIds);
++					for (const status of getInteractiveTurnStatuses(newEntries)) {
++						if (status.runId !== running.id || observed.has(status.statusId)) continue;
++						observed.add(status.statusId);
++						running.turnStatus = status;
++						if (running.turnStatusListener) running.turnStatusListener(status);
++						else (running.pendingTurnStatuses ??= []).push(status);
++					}
++					running.observedTurnStatusIds = [...observed];
++				}
+ 			}
+ 		} catch {}
+ 		const expired = checkSubagentTimeout(running, now);
+@@ -252,6 +264,8 @@ async function watchInteractiveGeneration(
+ 			sessionFile,
+ 			signalAborted: signal.aborted,
+ 		});
++		// Scan before the first poll so a fast first turn is not delayed or lost.
++		updateStats();
+ 		const pollResult =
+ 			getMuxBackend() === "zellij"
+ 				? await pollForZellijFiles(running, signal, updateStats)
+diff --git a/src/runtime/nested-lifecycle.ts b/src/runtime/nested-lifecycle.ts
+index f033911..2159abc 100644
+--- a/src/runtime/nested-lifecycle.ts
++++ b/src/runtime/nested-lifecycle.ts
+@@ -8,11 +8,16 @@ export function publishRunningSubagentCount(getCount: RunningSubagentCountGetter
+ }
+ 
+ /** Read the live child count without requiring the main extension to be loaded. */
+-export function getPublishedRunningSubagentCount(): number {
++export function getPublishedRunningSubagentCountStatus(): number | "unknown" {
+ 	const getCount = (globalThis as Record<PropertyKey, unknown>)[RUNNING_SUBAGENT_COUNT_KEY];
+-	if (typeof getCount !== "function") return 0;
++	if (typeof getCount !== "function") return "unknown";
+ 	const count = (getCount as RunningSubagentCountGetter)();
+-	return Number.isFinite(count) && count > 0 ? count : 0;
++	return Number.isFinite(count) && count >= 0 ? count : "unknown";
++}
++
++export function getPublishedRunningSubagentCount(): number {
++	const count = getPublishedRunningSubagentCountStatus();
++	return typeof count === "number" ? count : 0;
+ }
+ 
+ export function clearPublishedRunningSubagentCountForTest(): void {
+diff --git a/src/runtime/resume-service.ts b/src/runtime/resume-service.ts
+index 103a259..5088d1c 100644
+--- a/src/runtime/resume-service.ts
++++ b/src/runtime/resume-service.ts
+@@ -16,6 +16,7 @@ import {
+ 	getExtensionLaunchArgs,
+ 	getPersistedPromptLaunchArgs,
+ 	getPersistedSessionParityArgs,
++	assertInteractiveStatusCompatible,
+ 	normalizeModelRef,
+ 	resolveAvailableModelRef,
+ } from "../launch/prep.ts";
+@@ -426,11 +427,17 @@ async function resumeSubagentSessionWithoutWidth(
+ 
+ 	const resumedAsync = invocationMetadata?.async ?? metadata.async ?? true;
+ 	const resumedAutoExit = invocationMetadata?.autoExit ?? metadata.autoExit ?? true;
++	assertInteractiveStatusCompatible(name, invocationMetadata?.interactiveStatus, metadata.mode, resumedAutoExit);
+ 	resumeEnvVars.PI_SUBAGENT_AUTO_EXIT = resumedAutoExit ? "1" : "";
+ 	resumeEnvVars.PI_PACKAGE_DIR = "";
+ 	resumeEnvVars.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
+ 
+ 	const id = Math.random().toString(16).slice(2, 10);
++	const resumedInteractiveStatus = invocationMetadata?.interactiveStatus === true && metadata.mode === "interactive";
++	if (resumedInteractiveStatus) {
++		resumeEnvVars.PI_SUBAGENT_INTERACTIVE_STATUS = "1";
++		resumeEnvVars.PI_SUBAGENT_RUN_ID = id;
++	}
+ 	const running: RunningSubagent = {
+ 		id,
+ 		name,
+@@ -443,6 +450,7 @@ async function resumeSubagentSessionWithoutWidth(
+ 		async: resumedAsync,
+ 		blocking: resumedAsync === false,
+ 		autoExit: resumedAutoExit,
++		interactiveStatus: resumedInteractiveStatus,
+ 		reportContextUsage: invocationMetadata?.reportContextUsage ?? true,
+ 		...resolveSubagentTimeoutState({
+ 			timeout: resumedTimeout,
+diff --git a/src/runtime/running-registry.ts b/src/runtime/running-registry.ts
+index 5a73127..bfa8cc5 100644
+--- a/src/runtime/running-registry.ts
++++ b/src/runtime/running-registry.ts
+@@ -10,6 +10,7 @@ import {
+ 	runningSubagents,
+ } from "./state.ts";
+ import { releaseSpawnWidthSlot } from "./spawn-width.ts";
++import type { InteractiveTurnStatus } from "../tools/interactive-status.ts";
+ 
+ export interface RunningRegistryRuntime {
+ 	formatElapsed(elapsed: number): string;
+@@ -238,6 +239,37 @@ function handleDetachedSubagentOutcome(
+ 	});
+ }
+ 
++function deliverInteractiveTurnStatus(pi: ExtensionAPI, running: RunningSubagent, status: InteractiveTurnStatus): void {
++	if (running.allowSteerDelivery === false) return;
++	pi.events.emit("subagents:status:v1", {
++		...status,
++		sessionFile: running.sessionFile,
++		surface: running.surface,
++		reachablePane: !!running.surface,
++	});
++	// A settled worker is reviewable only when all reported nested work is known
++	// quiet. Unknown providers and open work update the status event/UI only.
++	if (status.turn !== "settled" || status.activeSubagents !== 0 || status.activeProcesses !== 0) return;
++	const output = status.lastAssistant?.text ? `\n\nLatest assistant output:\n${status.lastAssistant.text}` : "";
++	pi.sendMessage(
++		{
++			customType: "subagent_status",
++			content:
++				`Sub-agent "${running.name}" settled a quiet turn and remains reachable. ` +
++				`This is a live turn-status notification, not task-success confirmation.${output}`,
++			display: true,
++			details: {
++				id: running.id,
++				name: running.name,
++				mode: running.mode,
++				status,
++				injectionState: "none",
++			},
++		},
++		{ triggerTurn: true, deliverAs: "steer" },
++	);
++}
++
+ export function wireSubagentSteerBack(
+ 	pi: ExtensionAPI,
+ 	running: RunningSubagent,
+@@ -245,6 +277,11 @@ export function wireSubagentSteerBack(
+ 	formatElapsed: (elapsed: number) => string,
+ 	updateWidget: () => void,
+ ): void {
++	if (running.interactiveStatus) {
++		running.turnStatusListener = (status) => deliverInteractiveTurnStatus(pi, running, status);
++		for (const status of running.pendingTurnStatuses ?? []) deliverInteractiveTurnStatus(pi, running, status);
++		running.pendingTurnStatuses = undefined;
++	}
+ 	watchPromise
+ 		.then((result) => {
+ 			handleDetachedSubagentOutcome(pi, running, result, formatElapsed, updateWidget);
+@@ -252,6 +289,9 @@ export function wireSubagentSteerBack(
+ 		.catch((err) => {
+ 			releaseSpawnWidthSlot(running);
+ 			runningSubagents.delete(running.id);
++			// Parent shutdown/reload detaches delivery before aborting its watcher.
++			// Do not touch the stale extension context from this late rejection.
++			if (running.allowSteerDelivery === false) return;
+ 			updateWidget();
+ 			pi.sendMessage(
+ 				{
+diff --git a/src/runtime/shutdown.ts b/src/runtime/shutdown.ts
+index bd1575b..575a9eb 100644
+--- a/src/runtime/shutdown.ts
++++ b/src/runtime/shutdown.ts
+@@ -3,6 +3,8 @@ import { clearSubagentShutdownTimer } from "./state.ts";
+ 
+ export type ShutdownSubagentsOptions = {
+ 	escalationMs?: number;
++	/** `/reload` preserves opted-in persistent interactive workers in-process. */
++	retainPersistentInteractiveWorkers?: boolean;
+ };
+ 
+ export interface ShutdownRuntime {
+@@ -68,7 +70,10 @@ export async function shutdownSubagentsForParentExit(
+ 		agent.resultOwner = undefined;
+ 		agent.deliveryState = "detached";
+ 
+-		if (agent.parentClosePolicy === "continue") {
++		if (
++			agent.parentClosePolicy === "continue" ||
++			(options.retainPersistentInteractiveWorkers && agent.mode === "interactive" && agent.interactiveStatus === true)
++		) {
+ 			actions.push({
+ 				id: agent.id,
+ 				policy: agent.parentClosePolicy,
+diff --git a/src/runtime/state.ts b/src/runtime/state.ts
+index 20654be..7f76e78 100644
+--- a/src/runtime/state.ts
++++ b/src/runtime/state.ts
+@@ -7,6 +7,24 @@ import { SubagentWidgetManager } from "./widget.ts";
+ export const runningSubagents = new Map<string, RunningSubagent>();
+ export const completedSubagentResults = new Map<string, CompletedSubagentResult>();
+ 
++const PERSISTENT_INTERACTIVE_RELOAD_KEY = Symbol.for("pi-subagents/persistent-interactive-reload");
++
++/** Preserve opted-in worker handles across `/reload` in this same Pi process. */
++export function retainPersistentInteractiveWorkersForReload(): void {
++	const retained = [...runningSubagents.values()].filter(
++		(running) => running.mode === "interactive" && running.interactiveStatus === true,
++	);
++	(globalThis as Record<PropertyKey, unknown>)[PERSISTENT_INTERACTIVE_RELOAD_KEY] = retained;
++}
++
++/** Consume the one-process reload handoff; it is intentionally not durable. */
++export function takeRetainedPersistentInteractiveWorkers(): RunningSubagent[] {
++	const global = globalThis as Record<PropertyKey, unknown>;
++	const retained = global[PERSISTENT_INTERACTIVE_RELOAD_KEY];
++	delete global[PERSISTENT_INTERACTIVE_RELOAD_KEY];
++	return Array.isArray(retained) ? (retained as RunningSubagent[]) : [];
++}
++
+ function getSubagentCompletionStatus(
+ 	result: SubagentResult,
+ 	running?: Pick<RunningSubagent, "mode" | "autoExit">,
+diff --git a/src/session/session-files.ts b/src/session/session-files.ts
+index c971734..20ffb8c 100644
+--- a/src/session/session-files.ts
++++ b/src/session/session-files.ts
+@@ -32,6 +32,8 @@ export interface PersistedSubagentLaunchMetadata {
+ 	mode: ResumeMode;
+ 	sessionMode: SubagentSessionMode;
+ 	autoExit?: boolean;
++	/** Opt-in interactive settled-turn status contract. */
++	interactiveStatus?: boolean;
+ 	parentClosePolicy: ParentClosePolicy;
+ 	/** @deprecated compat — stop writing. Readers treat `blocking: true` as `async: false`. */
+ 	blocking?: boolean;
+diff --git a/src/subagents.ts b/src/subagents.ts
+index 4146b3f..a4f42fe 100644
+--- a/src/subagents.ts
++++ b/src/subagents.ts
+@@ -72,7 +72,9 @@ import {
+ 	markSubagentBatchBlocking,
+ 	requestSubagentBatchStop,
+ 	resetSubagentBatchStopRequest,
++	retainPersistentInteractiveWorkersForReload,
+ 	stopAfterCurrentSubagentBatch,
++	takeRetainedPersistentInteractiveWorkers,
+ } from "./runtime/state.ts";
+ import { registerSubagentMessageRenderers } from "./tools/message-renderers.ts";
+ import { registerSubagentResumeTool } from "./tools/resume-tool.ts";
+@@ -83,6 +85,7 @@ import {
+ } from "./tools/subagent-tools.ts";
+ import { registerSubagentsView } from "./tools/subagents-view.ts";
+ import { SUBAGENT_TOOL_NAME } from "./tools/tool-names.ts";
++import { registerSubagentSteerTool } from "./tools/subagent-steer.ts";
+ import { adoptVerifiedRuns } from "./vf/run/adopt.ts";
+ import { createOrchestratorController } from "./runtime/orchestrator-controller.ts";
+ 
+@@ -147,7 +150,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
+ 	// creating an agent file and starting a session restores the full surface.
+ 	if (getEffectiveAgentDefinitions().length === 0) return;
+ 
+-	publishRunningSubagentCount(() => runningSubagents.size);
++	publishRunningSubagentCount(
++		() =>
++			[...runningSubagents.values()].filter(
++				(agent) => !agent.interactiveStatus || agent.turnStatus?.turn !== "settled",
++			).length,
++	);
+ 
+ 	function attachWidgetContext(ctx: ExtensionContext) {
+ 		widgetManager.attachContext(ctx);
+@@ -174,6 +182,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
+ 		resetSubagentBatchStopRequest();
+ 		applySubagentLineage(ctx);
+ 		attachWidgetContext(ctx);
++		for (const running of takeRetainedPersistentInteractiveWorkers()) {
++			running.allowSteerDelivery = true;
++			runningSubagents.set(running.id, running);
++			wireSubagentSteerBack(pi, running, watchSubagent(running, getWatcherSignal(running, moduleAbortController)));
++		}
+ 		orchestrator.handleSessionStart(ctx);
+ 		// Verified fan-outs outlive their parent session: deliver finished
+ 		// results exactly once to their authorized recipient and re-watch live
+@@ -354,7 +367,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
+ 		moduleAbortController.abort();
+ 		widgetManager.reset();
+ 		resetSubagentBatchStopRequest();
+-		await shutdownSubagentsForParentExit();
++		if (event.reason === "reload") retainPersistentInteractiveWorkersForReload();
++		await shutdownSubagentsForParentExit({ retainPersistentInteractiveWorkers: event.reason === "reload" });
+ 		if (ctx.hasUI) {
+ 			ctx.ui.setWidget("subagent-status", undefined);
+ 		}
+@@ -386,6 +400,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
+ 		muxUnavailableResult: () => muxUnavailableResult("tab-title"),
+ 	});
+ 
++	registerSubagentSteerTool(pi, shouldRegister);
++
+ 	registerSubagentResumeTool(pi, shouldRegister, {
+ 		getShellReadyDelayMs,
+ 		isMuxAvailable,
+diff --git a/src/tools/subagent-done.ts b/src/tools/subagent-done.ts
+index 1f4fb25..b6a72c3 100644
+--- a/src/tools/subagent-done.ts
++++ b/src/tools/subagent-done.ts
+@@ -11,6 +11,7 @@ import { getPublishedRunningSubagentCount } from "../runtime/nested-lifecycle.ts
+ import { installSubagentContextReminders } from "./context-reminders.ts";
+ import { createExitSignalWriter } from "./exit-signal.ts";
+ import { installSubagentTimeoutReminders } from "./timeout-reminders.ts";
++import { installInteractiveTurnStatus } from "./interactive-status.ts";
+ import { type FinalContextSnapshot, getFinalContextSnapshot } from "./final-context-snapshot.ts";
+ import { isMissingOptionalDependency, optionalRequire } from "./optional-dependency.ts";
+ import { ProviderErrorRecoveryController, resolveProviderRecoveryDelaysMs } from "./provider-error-recovery.ts";
+@@ -111,6 +112,7 @@ export default function (pi: ExtensionAPI) {
+ 	const callerPingState = createCallerPingState();
+ 	const contextReminders = installSubagentContextReminders(pi);
+ 	installSubagentTimeoutReminders(pi);
++	installInteractiveTurnStatus(pi);
+ 
+ 	function requestShutdown(ctx: { shutdown: () => void }) {
+ 		setTimeout(() => {
+diff --git a/src/tools/tool-names.ts b/src/tools/tool-names.ts
+index 9dd57b6..2ab63cc 100644
+--- a/src/tools/tool-names.ts
++++ b/src/tools/tool-names.ts
+@@ -9,6 +9,7 @@
+ export const SUBAGENT_TOOL_NAME = "subagent";
+ export const SUBAGENT_RESUME_TOOL_NAME = "subagent_resume";
+ export const SUBAGENT_KILL_TOOL_NAME = "subagent_kill";
++export const SUBAGENT_STEER_TOOL_NAME = "subagent_steer";
+ export const SET_TAB_TITLE_TOOL_NAME = "set_tab_title";
+ 
+ // Child-side protocol tools provided by the bundled subagent extension:
+@@ -41,6 +42,7 @@ export const PI_SUBAGENTS_INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set([
+ 	SUBAGENT_TOOL_NAME,
+ 	SUBAGENT_RESUME_TOOL_NAME,
+ 	SUBAGENT_KILL_TOOL_NAME,
++	SUBAGENT_STEER_TOOL_NAME,
+ 	SET_TAB_TITLE_TOOL_NAME,
+ ]);
+ 
+@@ -52,5 +54,6 @@ export const ORCHESTRATOR_ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([
+ 	SUBAGENT_TOOL_NAME,
+ 	SUBAGENT_KILL_TOOL_NAME,
+ 	SUBAGENT_RESUME_TOOL_NAME,
++	SUBAGENT_STEER_TOOL_NAME,
+ 	SET_TAB_TITLE_TOOL_NAME,
+ ]);
+diff --git a/src/types.ts b/src/types.ts
+index e57a066..c20c82a 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -1,5 +1,6 @@
+ import type { ChildProcess } from "node:child_process";
+ import type { PersistedSubagentLaunchMetadata } from "./session/session-files.ts";
++import type { InteractiveTurnStatus } from "./tools/interactive-status.ts";
+ 
+ export type DeliveryState = "detached" | "awaited";
+ export type ParentClosePolicy = "terminate" | "continue";
+@@ -127,6 +128,16 @@ export interface RunningSubagent {
+ 	blocking?: boolean;
+ 	async?: boolean;
+ 	autoExit?: boolean;
++	/** Opted-in manual interactive worker status. */
++	interactiveStatus?: boolean;
++	/** Latest append-only settled-turn status observed from the child session. */
++	turnStatus?: InteractiveTurnStatus;
++	/** Child status entries already forwarded during this parent runtime. */
++	observedTurnStatusIds?: string[];
++	/** Runtime-only listener installed after launch wiring; not persisted. */
++	turnStatusListener?: (status: InteractiveTurnStatus) => void;
++	/** Fast statuses observed before parent delivery wiring completed. */
++	pendingTurnStatuses?: InteractiveTurnStatus[];
+ 	noSession?: boolean;
+ 	reportContextUsage?: boolean;
+ 	/** Budgets the watcher enforces for this child. Absent means unbounded. */
+diff --git a/src/vf/run/adopt.ts b/src/vf/run/adopt.ts
+index 1a92a72..fb41790 100644
+--- a/src/vf/run/adopt.ts
++++ b/src/vf/run/adopt.ts
+@@ -98,7 +98,7 @@ export async function adoptVerifiedRuns(
+ 				sessionId,
+ 				expectedGeneration: verifiedRunResultGeneration(manifest),
+ 			});
+-			if (!lease.acquired) {
++			if (lease.acquired === false) {
+ 				outcomes.push({
+ 					runDir,
+ 					runId: manifest.runId,
+diff --git a/src/vf/supervisor/main.ts b/src/vf/supervisor/main.ts
+index 9f5d4e3..54cb66a 100644
+--- a/src/vf/supervisor/main.ts
++++ b/src/vf/supervisor/main.ts
+@@ -125,6 +125,20 @@ updateManifest(runDir, (current) => {
+ });
+ log(`claimed run ${manifest.runId} (pid ${process.pid}, runtime ${runtimeLabel})`);
+ 
++// Install signal handling before publishing body ownership. Otherwise a parent
++// can cancel in the narrow interval after `body` is written but before the
++// body executor attaches its handler, which leaves an orphaned body and a
++// non-terminal manifest.
++let cancelled = false;
++let abortForSignal: (() => void) | undefined;
++function onSignal(signal: NodeJS.Signals): void {
++	log(`${signal} received; cancelling run`);
++	cancelled = true;
++	abortForSignal?.();
++}
++process.on("SIGTERM", () => onSignal("SIGTERM"));
++process.on("SIGINT", () => onSignal("SIGINT"));
++
+ // ---------------------------------------------------------------------------
+ // Body execution
+ // ---------------------------------------------------------------------------
+@@ -135,7 +149,6 @@ type BodyOutcome =
+ 	| { kind: "timeout"; timeoutMs: number };
+ 
+ const request = manifest.request;
+-let cancelled = false;
+ let timedOut = false;
+ let stdoutBytes = 0;
+ let stderrBytes = 0;
+@@ -245,15 +258,11 @@ const outcome = await new Promise<BodyOutcome>((resolveOutcome) => {
+ 		})();
+ 	}, TICK_MS);
+ 
+-	const onSignal = (signal: NodeJS.Signals) => {
++	abortForSignal = () => {
+ 		if (settled) return;
+-		log(`${signal} received; cancelling run`);
+-		cancelled = true;
+ 		clearInterval(timer);
+ 		void abortBody("cancelled");
+ 	};
+-	process.on("SIGTERM", () => onSignal("SIGTERM"));
+-	process.on("SIGINT", () => onSignal("SIGINT"));
+ });
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/test/agents/definitions-agent-list.test.ts b/test/agents/definitions-agent-list.test.ts
+index 481e610..2602273 100644
+--- a/test/agents/definitions-agent-list.test.ts
++++ b/test/agents/definitions-agent-list.test.ts
+@@ -22,6 +22,14 @@ import {
+ 	writeFileSync,
+ } from "../support/index.ts";
+ 
++function configureRegisteredAgentFixture(): void {
++	const dir = createTestDir();
++	const configDir = join(dir, "agent-root");
++	mkdirSync(join(configDir, "agents"), { recursive: true });
++	writeFileSync(join(configDir, "agents", "worker.md"), "---\nname: worker\n---\nWorker.");
++	process.env.PI_CODING_AGENT_DIR = configDir;
++}
++
+ describe("agent definitions and catalog", () => {
+ 	afterEach(() => {
+ 		resetSubagentStateForTest();
+@@ -495,6 +503,7 @@ describe("agent definitions and catalog", () => {
+ 	});
+ 
+ 	it("registers conservative delegation guidance on the subagent tool", () => {
++		configureRegisteredAgentFixture();
+ 		const tools = new Map<string, any>();
+ 
+ 		subagentsExtension({
+@@ -540,6 +549,7 @@ describe("agent definitions and catalog", () => {
+ 	});
+ 
+ 	it("registers opt-out delegation guidance when coordinator-only turn stop is disabled", () => {
++		configureRegisteredAgentFixture();
+ 		process.env.PI_SUBAGENT_DISABLE_COORDINATOR_ONLY_TURN = "1";
+ 		const tools = new Map<string, any>();
+ 
+@@ -565,6 +575,7 @@ describe("agent definitions and catalog", () => {
+ 	});
+ 
+ 	it("tells a one-shot pi -p parent that every launch waits and returns the report inline", () => {
++		configureRegisteredAgentFixture();
+ 		const originalArgv = process.argv;
+ 		process.argv = ["node", "pi", "-p", "@task.md"];
+ 		const tools = new Map<string, any>();
+diff --git a/test/agents/registration-gating.test.ts b/test/agents/registration-gating.test.ts
+index 1aa9782..7856330 100644
+--- a/test/agents/registration-gating.test.ts
++++ b/test/agents/registration-gating.test.ts
+@@ -89,7 +89,7 @@ describe("extension registration gating", () => {
+ 		try {
+ 			const { captured, api } = createCapturingPi();
+ 			subagentsExtension(api);
+-			assert.deepEqual([...captured.tools].sort(), ["subagent", "subagent_kill", "subagent_resume"]);
++			assert.deepEqual([...captured.tools].sort(), ["subagent", "subagent_kill", "subagent_resume", "subagent_steer"]);
+ 			assert.deepEqual(captured.commands, ["subagents"]);
+ 			assert.deepEqual(captured.shortcuts, ["alt+s"]);
+ 			assert.deepEqual([...captured.renderers].sort(), ["subagent_ping", "subagent_result"]);
+diff --git a/test/launch/skill-visibility.test.ts b/test/launch/skill-visibility.test.ts
+index 77f20dd..2514b5d 100644
+--- a/test/launch/skill-visibility.test.ts
++++ b/test/launch/skill-visibility.test.ts
+@@ -47,6 +47,7 @@ describe("skill visibility annotations", () => {
+ 
+ 	it("keeps all and none free of annotations", async () => {
+ 		const dir = createTestDir();
++		writeSkill(dir, "tdd");
+ 		assert.equal((await buildSkillLaunchPlanForTest("all", undefined, dir, dir)).visibilitySpec, "");
+ 		assert.equal((await buildSkillLaunchPlanForTest(undefined, undefined, dir, dir)).visibilitySpec, "");
+ 		assert.equal((await buildSkillLaunchPlanForTest("none", undefined, dir, dir)).visibilitySpec, "");
+diff --git a/test/runtime/interactive-watch-timeout.test.ts b/test/runtime/interactive-watch-timeout.test.ts
+index cf48e77..cb3cb7e 100644
+--- a/test/runtime/interactive-watch-timeout.test.ts
++++ b/test/runtime/interactive-watch-timeout.test.ts
+@@ -23,8 +23,10 @@ function settleWithin<T>(promise: Promise<T>, ms: number, label: string): Promis
+ 	return Promise.race([
+ 		promise,
+ 		new Promise<never>((_resolve, reject) => {
+-			const timer = setTimeout(() => reject(new Error(`watcher did not settle within ${ms}ms: ${label}`)), ms);
+-			timer.unref?.();
++			// This watchdog is the only handle while a fake poll waits for the
++			// deadline callback. Keep it referenced so Node reports its bounded
++			// assertion instead of cancelling the pending test as the event loop exits.
++			setTimeout(() => reject(new Error(`watcher did not settle within ${ms}ms: ${label}`)), ms);
+ 		}),
+ 	]);
+ }
+diff --git a/test/runtime/skill-visibility-env.test.ts b/test/runtime/skill-visibility-env.test.ts
+index 67da562..e6db013 100644
+--- a/test/runtime/skill-visibility-env.test.ts
++++ b/test/runtime/skill-visibility-env.test.ts
+@@ -1,4 +1,4 @@
+-import { writeFileSync } from "node:fs";
++import { mkdirSync, writeFileSync } from "node:fs";
+ 
+ import { resumeSubagentSession } from "../../src/runtime/resume-service.ts";
+ import { restartSubagentForTimeoutWrapUp } from "../../src/runtime/timeout-wrap-up.ts";
+@@ -30,6 +30,14 @@ async function readNonEmptyFileEventually(path: string): Promise<string> {
+ 	throw new Error(`Timed out waiting for ${path}; last content: ${lastText}`);
+ }
+ 
++function writeSkillFixtures(dir: string): void {
++	for (const name of ["context7", "tdd"]) {
++		const skillDir = join(dir, "skills", name);
++		mkdirSync(skillDir, { recursive: true });
++		writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n`);
++	}
++}
++
+ function writeCapturePi(dir: string, envLog: string): string {
+ 	return writeExecutable(
+ 		dir,
+@@ -39,6 +47,7 @@ function writeCapturePi(dir: string, envLog: string): string {
+ }
+ 
+ async function resumeAndCapture(dir: string, skills: string | undefined): Promise<string> {
++	writeSkillFixtures(dir);
+ 	const envLog = join(dir, `env-${Math.random().toString(36).slice(2)}.log`);
+ 	const bin = writeCapturePi(dir, envLog);
+ 	const originalCommand = process.env.PI_SUBAGENT_PI_COMMAND;
+@@ -123,6 +132,7 @@ describe("skill visibility env on resume and timeout wrap-up", () => {
+ 	it("restarts timeout wrap-up with the original annotation spec, and clears it without one", async () => {
+ 		const dir = createTestDir();
+ 		for (const skills of ["context7=auto, tdd", "tdd"]) {
++			writeSkillFixtures(dir);
+ 			const envLog = join(dir, `wrapup-${Math.random().toString(36).slice(2)}.log`);
+ 			process.env.PI_SUBAGENT_PI_COMMAND = writeCapturePi(dir, envLog);
+ 			process.env.PI_SUBAGENT_SKILL_VISIBILITY = skills === "tdd" ? "context7=auto" : "";
+@@ -176,7 +186,6 @@ describe("skill visibility env on resume and timeout wrap-up", () => {
+ 			};
+ 			await restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 });
+ 			assert.ok(running.childProcess);
+-			await new Promise((resolve) => running.childProcess!.once("exit", resolve));
+ 			assert.match(
+ 				(await readNonEmptyFileEventually(envLog)).trim(),
+ 				skills === "tdd" ? /^V=(|UNSET)$/ : /^V=context7=auto$/,
+diff --git a/test/runtime/timeout-wrap-up.test.ts b/test/runtime/timeout-wrap-up.test.ts
+index 5450b7e..f2418a8 100644
+--- a/test/runtime/timeout-wrap-up.test.ts
++++ b/test/runtime/timeout-wrap-up.test.ts
+@@ -1,5 +1,4 @@
+ import { mkdirSync, readdirSync } from "node:fs";
+-import { once } from "node:events";
+ import { restartSubagentForTimeoutWrapUp } from "../../src/runtime/timeout-wrap-up.ts";
+ import type { PersistedSubagentLaunchMetadata } from "../../src/session/session-files.ts";
+ import type { RunningSubagent } from "../../src/types.ts";
+@@ -30,6 +29,14 @@ async function readNonEmptyFileEventually(path: string): Promise<string> {
+ 	throw new Error(`Timed out waiting for ${path}`);
+ }
+ 
++async function waitForChildExit(child: NonNullable<RunningSubagent["childProcess"]>): Promise<void> {
++	for (let attempt = 0; attempt < 100; attempt++) {
++		if (child.exitCode !== null || child.signalCode !== null) return;
++		await new Promise((resolve) => setTimeout(resolve, 10));
++	}
++	throw new Error(`Timed out waiting for wrap-up child ${child.pid ?? "unknown"} to exit.`);
++}
++
+ function makeMetadata(dir: string): PersistedSubagentLaunchMetadata {
+ 	return {
+ 		version: 1,
+@@ -110,7 +117,6 @@ cat > "${stdinFile}"
+ 
+ 		await restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 });
+ 		assert.ok(running.childProcess);
+-		await once(running.childProcess!, "exit");
+ 
+ 		assert.equal(
+ 			await readNonEmptyFileEventually(envFile),
+@@ -129,6 +135,9 @@ cat > "${stdinFile}"
+ 		assert.match(prompt, /interrupted your previous active operation/i);
+ 		assert.match(prompt, /Do not retry.*tool/i);
+ 		assert.match(prompt, /Report your result now/i);
++
++		await waitForChildExit(running.childProcess!);
++		assert.equal(running.childProcess!.exitCode, 0, "the report-only child must exit after stdin closes");
+ 	});
+ 
+ 	it("closes an interactive pane when restart fails after surface creation", async () => {
+diff --git a/test/test.ts b/test/test.ts
+index 69f6064..4b5f969 100644
+--- a/test/test.ts
++++ b/test/test.ts
+@@ -52,6 +52,7 @@ import "./agents/verified-field.test.ts";
+ import "./agents/verified-field-split.test.ts";
+ import "./spawn/policy.test.ts";
+ import "./runtime/launch-results.test.ts";
++import "./runtime/persistent-interactive-worker.test.ts";
+ import "./runtime/result-router.test.ts";
+ import "./runtime/coordinator-turn-hardening.test.ts";
+ import "./runtime/background-watch.test.ts";
+diff --git a/../pi-subagents-visible-worker/src/runtime/interactive-inbox.ts b/src/runtime/interactive-inbox.ts
+new file mode 100644
+index 0000000..236e72a
+--- /dev/null
++++ b/src/runtime/interactive-inbox.ts
+@@ -0,0 +1,65 @@
++import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
++import { basename, dirname, join } from "node:path";
++
++export interface InteractiveInboxMessage {
++	version: 1;
++	runId: string;
++	messageId: string;
++	text: string;
++}
++
++function inboxDirectory(sessionFile: string, runId: string): string {
++	return join(dirname(sessionFile), `.${basename(sessionFile)}.interactive-inbox`, runId);
++}
++
++/** Queue one parent follow-up for exactly one live child run. */
++export function enqueueInteractiveInboxMessage(sessionFile: string, runId: string, text: string): InteractiveInboxMessage {
++	const directory = inboxDirectory(sessionFile, runId);
++	mkdirSync(directory, { recursive: true, mode: 0o700 });
++	const message: InteractiveInboxMessage = {
++		version: 1,
++		runId,
++		messageId: `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
++		text,
++	};
++	const destination = join(directory, `${message.messageId}.json`);
++	const temporary = `${destination}.${process.pid}.tmp`;
++	writeFileSync(temporary, JSON.stringify(message), { encoding: "utf8", mode: 0o600, flag: "wx" });
++	renameSync(temporary, destination);
++	return message;
++}
++
++function isInteractiveInboxMessage(value: unknown, runId: string): value is InteractiveInboxMessage {
++	if (!value || typeof value !== "object") return false;
++	const message = value as Partial<InteractiveInboxMessage>;
++	return message.version === 1 && message.runId === runId && typeof message.messageId === "string" && typeof message.text === "string";
++}
++
++/** Read queued messages without deleting them; callers delete only after Pi accepts delivery. */
++export function readInteractiveInboxMessages(sessionFile: string, runId: string): Array<{ path: string; message: InteractiveInboxMessage }> {
++	const directory = inboxDirectory(sessionFile, runId);
++	try {
++		return readdirSync(directory)
++			.filter((name) => name.endsWith(".json"))
++			.sort()
++			.flatMap((name) => {
++				const path = join(directory, name);
++				try {
++					const message = JSON.parse(readFileSync(path, "utf8"));
++					return isInteractiveInboxMessage(message, runId) ? [{ path, message }] : [];
++				} catch {
++					return [];
++				}
++			});
++	} catch {
++		return [];
++	}
++}
++
++export function acknowledgeInteractiveInboxMessage(path: string): void {
++	rmSync(path, { force: true });
++}
++
++export function clearInteractiveInbox(sessionFile: string, runId: string): void {
++	rmSync(inboxDirectory(sessionFile, runId), { recursive: true, force: true });
++}
+diff --git a/../pi-subagents-visible-worker/src/runtime/interactive-status.ts b/src/runtime/interactive-status.ts
+new file mode 100644
+index 0000000..a99cb27
+--- /dev/null
++++ b/src/runtime/interactive-status.ts
+@@ -0,0 +1,30 @@
++import type { SessionEntry } from "../session/session.ts";
++import {
++	INTERACTIVE_TURN_STATUS_ENTRY,
++	type InteractiveTurnStatus,
++} from "../tools/interactive-status.ts";
++
++function isTurnStatus(value: unknown): value is InteractiveTurnStatus {
++	if (!value || typeof value !== "object") return false;
++	const status = value as Partial<InteractiveTurnStatus>;
++	return (
++		status.version === 1 &&
++		typeof status.statusId === "string" &&
++		typeof status.runId === "string" &&
++		typeof status.updatedAt === "string" &&
++		(status.turn === "running" || status.turn === "settled" || status.turn === "error") &&
++		(typeof status.activeSubagents === "number" || status.activeSubagents === "unknown") &&
++		(typeof status.activeProcesses === "number" || status.activeProcesses === "unknown")
++	);
++}
++
++/** Read only valid append-only child turn statuses, ignoring other extension data. */
++export function getInteractiveTurnStatuses(entries: SessionEntry[]): InteractiveTurnStatus[] {
++	const statuses: InteractiveTurnStatus[] = [];
++	for (const entry of entries) {
++		const custom = entry as { type?: unknown; customType?: unknown; data?: unknown };
++		if (custom.type !== "custom" || custom.customType !== INTERACTIVE_TURN_STATUS_ENTRY) continue;
++		if (isTurnStatus(custom.data)) statuses.push(custom.data);
++	}
++	return statuses;
++}
+diff --git a/../pi-subagents-visible-worker/src/tools/interactive-status.ts b/src/tools/interactive-status.ts
+new file mode 100644
+index 0000000..96387f9
+--- /dev/null
++++ b/src/tools/interactive-status.ts
+@@ -0,0 +1,164 @@
++import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { acknowledgeInteractiveInboxMessage, readInteractiveInboxMessages } from "../runtime/interactive-inbox.ts";
++import { getPublishedRunningSubagentCountStatus } from "../runtime/nested-lifecycle.ts";
++
++export const INTERACTIVE_TURN_STATUS_ENTRY = "pi-subagents:turn-status:v1";
++export type InteractiveTurnState = "running" | "settled" | "error";
++export type ActiveWorkCount = number | "unknown";
++
++export interface InteractiveTurnStatus {
++	version: 1;
++	statusId: string;
++	runId: string;
++	updatedAt: string;
++	turn: InteractiveTurnState;
++	activeSubagents: ActiveWorkCount;
++	activeProcesses: ActiveWorkCount;
++	lastAssistant?: { entryId?: string; text?: string };
++	error?: string;
++}
++
++type SessionEntry = {
++	id?: unknown;
++	type?: unknown;
++	message?: {
++		role?: unknown;
++		content?: Array<{ type?: unknown; text?: unknown }>;
++		stopReason?: unknown;
++		errorMessage?: unknown;
++	};
++};
++
++type ProcessInfo = { status?: unknown };
++const LIVE_PROCESS_STATUSES = new Set(["running", "terminating", "terminate_timeout"]);
++
++function lastAssistant(ctx: ExtensionContext): { entryId?: string; text?: string; stopReason?: string; error?: string } | undefined {
++	const entries = ctx.sessionManager.getEntries() as SessionEntry[];
++	for (let index = entries.length - 1; index >= 0; index--) {
++		const entry = entries[index];
++		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
++		const text = (entry.message.content ?? [])
++			.filter((block) => block.type === "text" && typeof block.text === "string")
++			.map((block) => block.text as string)
++			.join("\n")
++			.trim()
++			.slice(0, 2_000);
++		return {
++			...(typeof entry.id === "string" ? { entryId: entry.id } : {}),
++			...(text ? { text } : {}),
++			...(typeof entry.message.stopReason === "string" ? { stopReason: entry.message.stopReason } : {}),
++			...(typeof entry.message.errorMessage === "string" ? { error: entry.message.errorMessage } : {}),
++		};
++	}
++	return undefined;
++}
++
++/** Query pi-processes' documented synchronous list callback when its tool is active. */
++function getActiveProcessCount(pi: Pick<ExtensionAPI, "events" | "getActiveTools">): ActiveWorkCount {
++	if (!pi.getActiveTools().includes("process")) return 0;
++	let replied = false;
++	let processes: unknown;
++	try {
++		pi.events.emit("processes:request:list", {
++			reply(value: unknown) {
++				replied = true;
++				processes = value;
++			},
++		});
++	} catch {
++		return "unknown";
++	}
++	if (!replied || !Array.isArray(processes)) return "unknown";
++	return processes.filter((process) => {
++		const status = (process as ProcessInfo).status;
++		return typeof status === "string" && LIVE_PROCESS_STATUSES.has(status);
++	}).length;
++}
++
++function isQuiet(status: Pick<InteractiveTurnStatus, "turn" | "activeSubagents" | "activeProcesses">): boolean {
++	return status.turn === "settled" && status.activeSubagents === 0 && status.activeProcesses === 0;
++}
++
++/**
++ * Persist turn state and accept bounded inbox items through Pi's own message
++ * API. No terminal editor input is ever used for parent steering.
++ */
++export function installInteractiveTurnStatus(pi: Pick<ExtensionAPI, "appendEntry" | "events" | "getActiveTools" | "on" | "sendUserMessage">): void {
++	if (process.env.PI_SUBAGENT_INTERACTIVE_STATUS !== "1" || !process.env.PI_SUBAGENT_SURFACE) return;
++	const runId = process.env.PI_SUBAGENT_RUN_ID?.trim() || "unknown";
++	const sessionFile = process.env.PI_SUBAGENT_SESSION?.trim();
++	let sequence = 0;
++	let lastStatus: InteractiveTurnStatus | undefined;
++	let latestContext: ExtensionContext | undefined;
++	let quietPoll: ReturnType<typeof setInterval> | undefined;
++
++	const publish = (turn: InteractiveTurnState, ctx: ExtensionContext, error?: string) => {
++		const assistant = lastAssistant(ctx);
++		const activeSubagents = getPublishedRunningSubagentCountStatus();
++		const activeProcesses = getActiveProcessCount(pi);
++		const status: InteractiveTurnStatus = {
++			version: 1,
++			statusId: `${runId}:${Date.now()}:${++sequence}`,
++			updatedAt: new Date().toISOString(),
++			runId,
++			turn,
++			activeSubagents,
++			activeProcesses,
++			...(assistant?.entryId || assistant?.text
++				? { lastAssistant: { ...(assistant.entryId ? { entryId: assistant.entryId } : {}), ...(assistant.text ? { text: assistant.text } : {}) } }
++				: {}),
++			...(error ? { error: error.slice(0, 1_000) } : {}),
++		};
++		lastStatus = status;
++		pi.appendEntry(INTERACTIVE_TURN_STATUS_ENTRY, status);
++		return status;
++	};
++
++	const acceptQueuedMessage = (ctx: ExtensionContext) => {
++		if (!sessionFile || !ctx.isIdle()) return;
++		const queued = readInteractiveInboxMessages(sessionFile, runId)[0];
++		if (!queued) return;
++		try {
++			pi.sendUserMessage(queued.message.text);
++			acknowledgeInteractiveInboxMessage(queued.path);
++		} catch {
++			// Pi did not accept it; retain it for the next idle check.
++		}
++	};
++
++	const updateQuietStatus = () => {
++		if (!latestContext || !lastStatus || lastStatus.turn !== "settled") return;
++		const activeSubagents = getPublishedRunningSubagentCountStatus();
++		const activeProcesses = getActiveProcessCount(pi);
++		if (activeSubagents === lastStatus.activeSubagents && activeProcesses === lastStatus.activeProcesses) {
++			if (isQuiet(lastStatus)) acceptQueuedMessage(latestContext);
++			return;
++		}
++		const status = publish("settled", latestContext);
++		if (isQuiet(status)) acceptQueuedMessage(latestContext);
++	};
++
++	pi.on("agent_start", (_event, ctx) => {
++		latestContext = ctx;
++		publish("running", ctx);
++	});
++	pi.on("agent_settled", (_event, ctx) => {
++		latestContext = ctx;
++		const assistant = lastAssistant(ctx);
++		const status =
++			assistant?.stopReason === "error" || assistant?.stopReason === "aborted"
++				? publish("error", ctx, assistant.error ?? `assistant stopReason: ${assistant.stopReason}`)
++				: publish("settled", ctx);
++		if (isQuiet(status)) acceptQueuedMessage(ctx);
++	});
++	pi.on("session_start", (_event, ctx) => {
++		latestContext = ctx;
++		quietPoll ??= setInterval(updateQuietStatus, 500);
++		quietPoll.unref?.();
++	});
++	pi.on("session_shutdown", () => {
++		if (quietPoll) clearInterval(quietPoll);
++		quietPoll = undefined;
++		latestContext = undefined;
++	});
++}
+diff --git a/../pi-subagents-visible-worker/src/tools/subagent-steer.ts b/src/tools/subagent-steer.ts
+new file mode 100644
+index 0000000..4dc70ce
+--- /dev/null
++++ b/src/tools/subagent-steer.ts
+@@ -0,0 +1,84 @@
++import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
++import { Type } from "typebox";
++import { enqueueInteractiveInboxMessage } from "../runtime/interactive-inbox.ts";
++import { findRunningSubagent } from "../runtime/running-registry.ts";
++
++type SteerToolDetails = {
++	id?: string;
++	name?: string;
++	error?: string;
++	turn?: string;
++	status?: string;
++	delivery?: string;
++};
++
++const SubagentSteerParams = Type.Object({
++	id: Type.String({ description: "Running interactive subagent id or unique display name." }),
++	text: Type.String({ description: "Follow-up text for the settled worker. Multiline text is preserved." }),
++});
++
++/**
++ * Register narrow live steering through the child inbox. The child, not pane
++ * keystrokes, calls Pi's supported sendUserMessage API when it next observes
++ * the queued item.
++ */
++export function registerSubagentSteerTool(
++	pi: ExtensionAPI,
++	shouldRegister: (name: string) => boolean,
++	deps: { enqueue(sessionFile: string, runId: string, text: string): void } = { enqueue: enqueueInteractiveInboxMessage },
++): void {
++	if (!shouldRegister("subagent_steer")) return;
++	pi.registerTool({
++		name: "subagent_steer",
++		label: "Steer Subagent",
++		description: "Queue follow-up text for a reachable opted-in interactive worker after it settles.",
++		promptSnippet: "Queue a safe follow-up for a settled opted-in interactive worker.",
++		promptGuidelines: [
++			"Use subagent_steer only after a quiet settled-turn status; its result confirms queueing, not child execution.",
++		],
++		parameters: SubagentSteerParams,
++		async execute(_toolCallId, params): Promise<AgentToolResult<SteerToolDetails>> {
++			const match = findRunningSubagent(params.id);
++			const running = match.running;
++			if (!running) {
++				return { content: [{ type: "text" as const, text: match.error ?? "Subagent not found." }], details: { error: "not_found" } };
++			}
++			if (running.mode !== "interactive" || !running.interactiveStatus) {
++				return {
++					content: [{ type: "text" as const, text: `Sub-agent "${running.name}" did not opt into live interactive steering.` }],
++					details: { id: running.id, error: "not_opted_in" },
++				};
++			}
++			if (running.turnStatus?.turn !== "settled") {
++				return {
++					content: [{ type: "text" as const, text: `Sub-agent "${running.name}" is not at a settled turn.` }],
++					details: { id: running.id, error: "not_settled", turn: running.turnStatus?.turn ?? "unknown" },
++				};
++			}
++			if (!running.surface) {
++				return {
++					content: [{ type: "text" as const, text: `Sub-agent "${running.name}" has no reachable interactive pane.` }],
++					details: { id: running.id, error: "pane_unreachable" },
++				};
++			}
++			try {
++				deps.enqueue(running.sessionFile, running.id, params.text);
++			} catch (error) {
++				const message = error instanceof Error ? error.message : String(error);
++				return {
++					content: [{ type: "text" as const, text: `Could not queue follow-up for sub-agent "${running.name}": ${message}` }],
++					details: { id: running.id, error: "queue_failed" },
++				};
++			}
++			return {
++				content: [
++					{
++						type: "text" as const,
++						text: `Follow-up queued for sub-agent "${running.name}" (${running.id}). The child has not accepted or executed it yet.`,
++					},
++				],
++				details: { id: running.id, name: running.name, status: "queued", delivery: "pending_child_acceptance" },
++			};
++		},
++	});
++}
+diff --git a/../pi-subagents-visible-worker/test/runtime/persistent-interactive-worker.test.ts b/test/runtime/persistent-interactive-worker.test.ts
+new file mode 100644
+index 0000000..bcb627a
+--- /dev/null
++++ b/test/runtime/persistent-interactive-worker.test.ts
+@@ -0,0 +1,181 @@
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { assert, afterEach, describe, it, resetSubagentStateForTest, setRunningSubagentForTest } from "../support/index.ts";
++import { enqueueInteractiveInboxMessage, readInteractiveInboxMessages } from "../../src/runtime/interactive-inbox.ts";
++import { publishRunningSubagentCount } from "../../src/runtime/nested-lifecycle.ts";
++import { retainPersistentInteractiveWorkersForReload, takeRetainedPersistentInteractiveWorkers } from "../../src/runtime/state.ts";
++import { wireSubagentSteerBack } from "../../src/runtime/running-registry.ts";
++import { getInteractiveTurnStatuses } from "../../src/runtime/interactive-status.ts";
++import { registerSubagentSteerTool } from "../../src/tools/subagent-steer.ts";
++import { INTERACTIVE_TURN_STATUS_ENTRY, installInteractiveTurnStatus } from "../../src/tools/interactive-status.ts";
++import { assertInteractiveStatusCompatible } from "../../src/launch/prep.ts";
++import { ORCHESTRATOR_ALLOWED_TOOL_NAMES, SUBAGENT_STEER_TOOL_NAME } from "../../src/tools/tool-names.ts";
++
++const settledStatus = {
++	version: 1 as const,
++	statusId: "worker-1:2:1",
++	runId: "worker-1",
++	updatedAt: "2026-09-10T00:00:00.000Z",
++	turn: "settled" as const,
++	activeSubagents: 0,
++	activeProcesses: 0,
++	lastAssistant: { entryId: "answer-1", text: "Worker result" },
++};
++
++describe("persistent interactive worker", () => {
++	afterEach(() => resetSubagentStateForTest());
++
++	it("does not use stale parent context after shutdown aborts a watcher", async () => {
++		const running = {
++			id: "reload-worker", name: "Reload worker", task: "Stay open", mode: "interactive" as const,
++			executionState: "running" as const, deliveryState: "detached" as const, parentClosePolicy: "terminate" as const,
++			startTime: Date.now(), sessionFile: "/tmp/reload-worker.jsonl", allowSteerDelivery: false,
++		};
++		setRunningSubagentForTest(running);
++		let updates = 0;
++		let deliveries = 0;
++		wireSubagentSteerBack({ sendMessage() { deliveries++; } } as any, running, Promise.reject(new Error("Aborted")), () => "0s", () => updates++);
++		await new Promise((resolve) => setTimeout(resolve, 0));
++		assert.equal(updates, 0);
++		assert.equal(deliveries, 0);
++	});
++
++	it("parses only valid append-only turn statuses", () => {
++		assert.deepEqual(
++			getInteractiveTurnStatuses([
++				{ type: "custom", customType: INTERACTIVE_TURN_STATUS_ENTRY, data: settledStatus } as any,
++				{ type: "custom", customType: INTERACTIVE_TURN_STATUS_ENTRY, data: { version: 1 } } as any,
++			]),
++			[settledStatus],
++		);
++	});
++
++	it("reports known zero without a process tool and queries an active process provider", () => {
++		const handlers = new Map<string, Function>();
++		const statuses: any[] = [];
++		const priorEnabled = process.env.PI_SUBAGENT_INTERACTIVE_STATUS;
++		const priorSurface = process.env.PI_SUBAGENT_SURFACE;
++		const priorRunId = process.env.PI_SUBAGENT_RUN_ID;
++		process.env.PI_SUBAGENT_INTERACTIVE_STATUS = "1";
++		process.env.PI_SUBAGENT_SURFACE = "pane:worker";
++		process.env.PI_SUBAGENT_RUN_ID = "worker-1";
++		try {
++			installInteractiveTurnStatus({
++				on(event: string, handler: Function) { handlers.set(event, handler); },
++				appendEntry(_type: string, status: unknown) { statuses.push(status); },
++				getActiveTools: () => [],
++				events: { emit() {} },
++				sendUserMessage() {},
++			} as any);
++			const ctx = { isIdle: () => true, sessionManager: { getEntries: () => [{ type: "message", id: "answer-1", message: { role: "assistant", content: [{ type: "text", text: "Worker result" }], stopReason: "stop" } }] } };
++			handlers.get("agent_start")!({}, ctx);
++			handlers.get("agent_settled")!({}, ctx);
++			assert.equal(statuses[1].activeProcesses, 0);
++
++			const providerHandlers = new Map<string, Function>();
++			const providerStatuses: any[] = [];
++			installInteractiveTurnStatus({
++				on(event: string, handler: Function) { providerHandlers.set(event, handler); },
++				appendEntry(_type: string, status: unknown) { providerStatuses.push(status); },
++				getActiveTools: () => ["process"],
++				events: { emit(_name: string, payload: any) { payload.reply([{ status: "running" }, { status: "exited" }]); } },
++				sendUserMessage() {},
++			} as any);
++			providerHandlers.get("agent_settled")!({}, ctx);
++			assert.equal(providerStatuses[0].activeProcesses, 1);
++
++			const unavailableHandlers = new Map<string, Function>();
++			const unavailableStatuses: any[] = [];
++			installInteractiveTurnStatus({
++				on(event: string, handler: Function) { unavailableHandlers.set(event, handler); },
++				appendEntry(_type: string, status: unknown) { unavailableStatuses.push(status); },
++				getActiveTools: () => ["process"], events: { emit() {} }, sendUserMessage() {},
++			} as any);
++			unavailableHandlers.get("agent_settled")!({}, ctx);
++			assert.equal(unavailableStatuses[0].activeProcesses, "unknown");
++		} finally {
++			if (priorEnabled === undefined) delete process.env.PI_SUBAGENT_INTERACTIVE_STATUS; else process.env.PI_SUBAGENT_INTERACTIVE_STATUS = priorEnabled;
++			if (priorSurface === undefined) delete process.env.PI_SUBAGENT_SURFACE; else process.env.PI_SUBAGENT_SURFACE = priorSurface;
++			if (priorRunId === undefined) delete process.env.PI_SUBAGENT_RUN_ID; else process.env.PI_SUBAGENT_RUN_ID = priorRunId;
++		}
++	});
++
++	it("queues multiline steering without pane input and scopes it to one run", async () => {
++		const directory = mkdtempSync(join(tmpdir(), "pi-subagents-inbox-"));
++		try {
++			const sessionFile = join(directory, "worker.jsonl");
++			const running = {
++				id: "worker-1", name: "Worker", task: "Stay open", mode: "interactive" as const,
++				executionState: "running" as const, deliveryState: "detached" as const, parentClosePolicy: "terminate" as const,
++				startTime: Date.now(), sessionFile, interactiveStatus: true, surface: "pane:worker", turnStatus: settledStatus,
++			};
++			setRunningSubagentForTest(running);
++			const tools = new Map<string, any>();
++			registerSubagentSteerTool({ registerTool(tool: any) { tools.set(tool.name, tool); } } as any, () => true);
++			const result = await tools.get("subagent_steer").execute("call-1", { id: "worker-1", text: "First line\nSecond line" });
++			assert.equal(result.details.delivery, "pending_child_acceptance");
++			assert.deepEqual(readInteractiveInboxMessages(sessionFile, "worker-1").map(({ message }) => message.text), ["First line\nSecond line"]);
++			assert.deepEqual(readInteractiveInboxMessages(sessionFile, "worker-2"), []);
++		} finally {
++			rmSync(directory, { recursive: true, force: true });
++		}
++	});
++
++	it("uses child Pi messaging only after quiet settlement and preserves queued content", async () => {
++		const directory = mkdtempSync(join(tmpdir(), "pi-subagents-inbox-"));
++		const sessionFile = join(directory, "worker.jsonl");
++		const prior = { enabled: process.env.PI_SUBAGENT_INTERACTIVE_STATUS, surface: process.env.PI_SUBAGENT_SURFACE, runId: process.env.PI_SUBAGENT_RUN_ID, session: process.env.PI_SUBAGENT_SESSION };
++		process.env.PI_SUBAGENT_INTERACTIVE_STATUS = "1";
++		process.env.PI_SUBAGENT_SURFACE = "pane:worker";
++		process.env.PI_SUBAGENT_RUN_ID = "worker-1";
++		process.env.PI_SUBAGENT_SESSION = sessionFile;
++		try {
++			publishRunningSubagentCount(() => 0);
++			const handlers = new Map<string, Function>();
++			const sent: string[] = [];
++			installInteractiveTurnStatus({
++				on(event: string, handler: Function) { handlers.set(event, handler); }, appendEntry() {}, getActiveTools: () => [], events: { emit() {} },
++				sendUserMessage(text: string) { sent.push(text); },
++			} as any);
++			const ctx = { isIdle: () => true, sessionManager: { getEntries: () => [] } };
++			handlers.get("agent_settled")!({}, ctx);
++			enqueueInteractiveInboxMessage(sessionFile, "worker-1", "safe\nfollow-up");
++			handlers.get("session_start")!({}, ctx);
++			await new Promise((resolve) => setTimeout(resolve, 550));
++			assert.deepEqual(sent, ["safe\nfollow-up"]);
++			assert.equal(readInteractiveInboxMessages(sessionFile, "worker-1").length, 0);
++			handlers.get("session_shutdown")!({}, ctx);
++		} finally {
++			for (const [key, value] of Object.entries(prior)) {
++				const envKey = key === "enabled" ? "PI_SUBAGENT_INTERACTIVE_STATUS" : key === "surface" ? "PI_SUBAGENT_SURFACE" : key === "runId" ? "PI_SUBAGENT_RUN_ID" : "PI_SUBAGENT_SESSION";
++				if (value === undefined) delete process.env[envKey]; else process.env[envKey] = value;
++			}
++			rmSync(directory, { recursive: true, force: true });
++		}
++	});
++
++	it("retains only opted-in interactive workers for same-process reload", () => {
++		setRunningSubagentForTest({ id: "persistent", name: "Persistent", task: "wait", mode: "interactive", executionState: "running", deliveryState: "detached", parentClosePolicy: "terminate", startTime: Date.now(), sessionFile: "/tmp/persistent.jsonl", interactiveStatus: true });
++		setRunningSubagentForTest({ id: "ordinary", name: "Ordinary", task: "wait", mode: "interactive", executionState: "running", deliveryState: "detached", parentClosePolicy: "terminate", startTime: Date.now(), sessionFile: "/tmp/ordinary.jsonl" });
++		retainPersistentInteractiveWorkersForReload();
++		assert.deepEqual(takeRetainedPersistentInteractiveWorkers().map((running) => running.id), ["persistent"]);
++		assert.deepEqual(takeRetainedPersistentInteractiveWorkers(), []);
++	});
++
++	it("rejects incompatible interactive-status launch and resume shapes", () => {
++		assert.doesNotThrow(() => assertInteractiveStatusCompatible("worker", true, "interactive", false));
++		assert.throws(
++			() => assertInteractiveStatusCompatible("worker", true, "background", false),
++			/mode: interactive and auto-exit: false/,
++		);
++		assert.throws(
++			() => assertInteractiveStatusCompatible("worker", true, "interactive", true),
++			/mode: interactive and auto-exit: false/,
++		);
++	});
++
++	it("allows steering in orchestrator mode", () => {
++		assert.equal(ORCHESTRATOR_ALLOWED_TOOL_NAMES.has(SUBAGENT_STEER_TOOL_NAME), true);
++	});
++});

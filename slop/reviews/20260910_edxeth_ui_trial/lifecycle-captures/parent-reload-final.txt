@@ -1,0 +1,63 @@
+
+ pi v0.85.1
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Skills]
+  afk, agent-vault, annoy-less, append-daily-notes, arj, arxiv, asf, auditlog, aws, bounded-completion, browsermcp, busy,
+claude-in-chrome, clean-repo, context7, cybersec-situational-awareness, finance, flash-attn-prebuilt, gh, goal-desc,
+grant-writing, grilling, grpo-tuning, handoff, herdr, inspect, jax, jaxtyping, just, latex-paper, lesswrong-graphql, machine-map,
+marimo, marimo-pair, markdown-tables, ml-debug, moa, moa-brainstorm, moa-science, modal, native-web-search, oracle, paper-review,
+paper-writing, persona-steering, plan-format, ponytailplus, pseudopy, pueue, qmd, quarto, recommending-pi-extensions,
+resolving-merge-conflicts, retro-marimo-pair, review, rust, search, setup-repo, stealth-browser, therustyclaw,
+token-efficient-logging, tufte-viz, typst, uv, vargdown, varglight, wandb, wassname-skill-creation, web-browser, yadm
+
+[Extensions]
+  src
+
+[Skill conflicts]
+  ~/.agents/skills/self-verify/SKILL.md
+    Missing closing 'quote at line 2, column 899:
+
+…sing", "rollback/return", "test passes", "self-verify", "verify before acting".
+                                                                                ^
+
+
+
+ This is an isolated UI lifecycle trial. Launch exactly one subagent now using agent "trial-worker", name "trial-worker", and
+ title "Isolated worker artifact". Give it this exact task: In this temporary repository, create worker-artifact.txt whose only
+ line is WORKER_ARTIFACT_OK, create worker-verification.txt whose only line is VERIFIED_WORKER_ARTIFACT_OK, then read both files
+ and report the exact contents. Do not do any file work yourself and do not launch any other child. When the child result is
+ automatically delivered, independently read and verify both files before reporting whether the result is valid. Remain available
+ for the result; do not ask me for confirmation.
+
+
+
+ ▸ Spawn trial-worker (trial-worker)
+ In this temporary repository, create worker-artifact.txt whose only line is WORKER_ARTIFACT_OK, create worker-verification.txt
+ whose only line is VERIFIED_WORKER_ARTIFACT_OK, then read both files and report the exact contents. Do not do any file work
+ yourself and do not launch any other child.
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Reloading keybindings, extensions, skills, prompts, themes, and context files...
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/pi-goals-edxeth-lifecycle-20260910-094807-460795/repo (main)
+↑7.9k ↓97 R2.6k CH24.5% $0.017 (sub) 3.9%/272k (auto)                                        (openai-codex) gpt-5.6-terra • medium
+
+
+pi exiting due to uncaughtException:
+Error: This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().
+    at ExtensionRunner.assertActive (file:///home/code/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-JVUZSMYM.js:1066:25652)
+    at get hasUI (file:///home/code/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-JVUZSMYM.js:1066:27753)
+    at SubagentWidgetManager.update (/tmp/pi-github-repos/runtime-5r3g94/7afde8b084b6a7ca709b6e0bb17b2c0d10af7a53389429a62258c92e767db91c/src/runtime/widget.ts:139:24)
+    at updateWidget (/tmp/pi-github-repos/runtime-5r3g94/7afde8b084b6a7ca709b6e0bb17b2c0d10af7a53389429a62258c92e767db91c/src/runtime/wiring.ts:72:24)
+    at /tmp/pi-github-repos/runtime-5r3g94/7afde8b084b6a7ca709b6e0bb17b2c0d10af7a53389429a62258c92e767db91c/src/runtime/running-registry.ts:255:5
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+
+code@coi-91cea783-1 /tmp/pi-goals-edxeth-lifecycle-20260910-094807-460795/repo main* 3m 48s
+❯

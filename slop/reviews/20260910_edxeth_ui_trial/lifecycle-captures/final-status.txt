@@ -1,0 +1,27 @@
+--- main checkout ---
+## experiment/main-supervisor-visible-worker
+ M AGENTS.md
+ M slop/reviews/review-fixes-native/supervisor-events.jsonl
+ M slop/reviews/review-fixes-native/worker-events.jsonl
+?? .local/
+?? docs/human_journal.md
+?? slop/plans/20260910_main_supervisor_visible_worker.md
+?? slop/research/
+?? slop/reviews/2026-09-10_glm-5.3-flash_moa_brainstorm_glm_pi_goals_simplicity.md
+?? slop/reviews/2026-09-10_glm-5.3-flash_moa_brainstorm_glm_pi_goals_simplicity.trace.jsonl
+?? slop/reviews/2026-09-10_kimi-k3_moa_brainstorm_kimi_pi_goals_simplicity.md
+?? slop/reviews/2026-09-10_kimi-k3_moa_brainstorm_kimi_pi_goals_simplicity.trace.jsonl
+?? slop/reviews/20260910_edxeth_ui_trial/
+staged=no
+--- candidate ---
+953c6f6d2fc7d8a5c956c30cd77c51bad697c2a4
+## main...origin/main
+--- trial repo ---
+## main
+?? worker-artifact.txt
+?? worker-verification.txt
+--- artifact digest ---
+e2a7ca7c72b07fb50b7862a4f4fe46f50c70110cca91762f064ba30769ce7cdd  /tmp/pi-goals-edxeth-lifecycle-20260910-094807-460795/repo/worker-artifact.txt
+48f1324e44b69148509929d074000414c117f70a992f5b3d3c304b2fad00fc4f  /tmp/pi-goals-edxeth-lifecycle-20260910-094807-460795/repo/worker-verification.txt
+--- herdr workspace final before closure ---
+{"id":"cli:workspace:get","result":{"type":"workspace_info","workspace":{"active_tab_id":"w9:t1","agent_status":"unknown","focused":false,"label":"pi-subagents isolated lifecycle trial","number":2,"pane_count":2,"tab_count":1,"workspace_id":"w9"}}}

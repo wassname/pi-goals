@@ -1,0 +1,100 @@
+ const expected = 'Hello, World!';
+ const actual = greet('World');
+
+ const actualBuf = Buffer.from(actual, 'utf8');
+ const expectedBuf = Buffer.from(expected, 'utf8');
+ const byteExact = actualBuf.equals(expectedBuf);
+
+ const result = [
+   `input:       greet('World')`,
+   `output:      ${JSON.stringify(actual)}`,
+   `expected:    ${JSON.stringify(expected)}`,
+   `output bytes: ${JSON.stringify([...actualBuf])}
+ (${actualBuf.length} bytes)`,
+   `byte-exact match: ${byteExact ? 'PASS' : 'FAIL'}`,
+ ].join('\n');
+
+ console.log(result);
+ process.exitCode = byteExact ? 0 : 1;
+ EOF
+ node _check.mjs > verify.log 2>&1; code=$?
+ cat verify.log
+ echo "---node exit code: $code---"
+ rm _check.mjs
+ ls -la
+
+ ... (10 earlier lines, ctrl+o to expand)
+ drwx------ 4 code code 4096 Sep 10 09:34 ..
+ drwxrwxr-x 8 code code 4096 Sep 10 09:35 .git
+ -rw-rw-r-- 1 code code   76 Sep 10 09:35 hello.ts
+ -rw-rw-r-- 1 code code  184 Sep 10 09:34 README.md
+ -rw-rw-r-- 1 code code  183 Sep 10 09:36 verify.log
+
+ Took 0.1s
+
+
+ Both checks pass. Let me verify the final files are
+ correct.
+
+ Both files are in place. Let me confirm the final state of
+ the repository:
+
+
+ $ cd /tmp/pi-goals-edxeth-trial-YxPEE5/repo && echo "===
+ hello.ts ===" && cat hello.ts && echo "" && echo "===
+ verify.log ===" && cat verify.log && echo "=== git status
+ ===" && git status --short
+
+ ... (11 earlier lines, ctrl+o to expand)
+ bytes)
+ byte-exact match: PASS
+ === git status ===
+ ?? hello.ts
+ ?? verify.log
+
+ Took 0.0s
+
+
+ Done. Both tasks are complete in the disposable repo.
+
+ The function (hello.ts)
+
+ ```typescript
+   export function greet(name: string): string {
+     return `Hello, ${name}!`;
+   }
+ ```
+
+ Byte-exact check result (verify.log)
+
+ The check ran with the pre-installed Node v22.23.2 runtime
+ (its native TypeScript type-stripping, no installs) and
+ saved its output to verify.log:
+
+ ```text
+   input:       greet('World')
+   output:      "Hello, World!"
+   expected:    "Hello, World!"
+   output bytes:
+ [72,101,108,108,111,44,32,87,111,114,108,100,33] (13
+ bytes)
+   byte-exact match: PASS
+ ```
+
+ The output Hello, World! matches the expected string
+ byte-for-byte (13 UTF-8 bytes: 72 101 108 108 111 44 32 87
+ 111 114 108 100 33), and the check exited with code 0
+ (PASS). The temporary check script was removed, leaving
+ only hello.ts and verify.log as untracked additions.
+
+ I'll stay in this pane and wait — let me know if you'd
+ like any changes.
+
+ — Pi/DeepSeek
+
+▸ Agent ui-worker (trial-worker)
+────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────
+/tmp/pi-goals-edxeth-trial-YxPEE5/repo (main) • [trial-wo...
+↑4.3k ↓1.8k R14k CH94.2% $0.002 0.5%/1.0M (auto)  accounts/f
