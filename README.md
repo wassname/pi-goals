@@ -4,15 +4,17 @@ Make a short list of goals in one Markdown plan file. The main chat keeps the hi
 
 # User ask
 
-The hope is we can have a smart supervisor, with judgment and context. But it doesn't use many tokens as it checks in and sees an overview from a cheaper worker.
+The hope is we can have a smart supervisor, with judgment and context. 
 
-The supervisor has a goal / plan that it agrees on with the user, and is reminded of it in a Ralph-loop-type repeat.
+The supervisor has a goal / plan that it discusses and agrees on with the user, and is reminded of it in a Ralph-loop-type repeat.
 
-It compacts every 150k or similar to avoid cost and context rot.
+Supervisor compacts every 150k or similar to avoid cost and context rot.
+But it doesn't use many tokens as it checks in and sees an overview from a cheaper worker.
 
-It steers a smaller model, adding perspective and judgment.
+Supervisor steers a smaller model, adding perspective, diligence, and judgment.
+It checks in a) every hour b) if the worker stops c) if the worker edits plan.md d) if the worker has a question
 
-Since it's two panes, the user can review both, intervene in both and have visibility on sub-agent mis/communication.
+Since it's two+ herdr panes, the user can review both, intervene in both and have visibility on sub-agent mis/communication.
 
 -- wassname (spelling and punctuation corrected by Pi/OpenAI)
 
@@ -21,6 +23,7 @@ Since it's two panes, the user can review both, intervene in both and have visib
 Mock up:
 
 ```text
+HERDR:
 +-----------------------------------------------------------+-----------------------------------------------------------+
 |SUPERVISOR                                                 |WORKER                                                     |
 |                                                           |                                                           |
