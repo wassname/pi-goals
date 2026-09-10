@@ -22,28 +22,26 @@ Mock up:
 
 ```text
 +-----------------------------------------------------------+-----------------------------------------------------------+
-| SUPERVISOR                                                | WORKER                                                    |
+|SUPERVISOR                                                 |WORKER                                                     |
 |                                                           |                                                           |
-| Review .pi/plan/...-main.md                               | Task 2 — verify command run, real output saved:           |
-| > Ready    Discuss    Edit    Cancel                      | - Exit code 0 (pass only)                                 |
-|                                                           | - evidence/verified.log (112 bytes)                       |
-| [scheduled prompt: hourly check-in]                       |   PASS: 9 bytes: verified + LF                            |
+|Review .pi/plan/...-main.md                                |Task 2 — compare results against the baseline:             |
+|> Ready    Discuss    Edit    Cancel                       |- run scripts/eval.py --with-baseline                      |
+|                                                           |- save outputs/baseline-comparison.log                     |
+|[scheduled prompt: hourly check-in]                        |                                                           |
+|                                                           |running eval.py (epoch 2/3)...                             |
+|intercom send → worker:                                    |                                                           |
+|  this is not done, the user wanted                        |intercom from supervisor: received, adding                 |
+|  results compared to baseline, add baseline               |the baseline run next                                      |
 |                                                           |                                                           |
-| The supervisor independently inspected both artifacts     | Task 3 — plan evidence filled                             |
-| before sign-off.                                          |                                                           |
-|                                                           | Completion report sent via Intercom to supervisor         |
-| Schedule: job wS79fJFPbB removed;                         | 01a089c9. My pane remains open for the supervisor’s       |
-| .pi/schedule-prompts.json shows 0 jobs.                   | independent inspection before sign-off.                   |
+|✓ record the baseline in results.md                        |✓ record the baseline in results.md                        |
+|▸ compare results against the baseline                     |▸ compare results against the baseline                     |
+|○ summarize the comparison in results.md                   |○ summarize the comparison in results.md                   |
 |                                                           |                                                           |
-| ✓ verified.txt holds exactly the 9 bytes                  | ○ verified.txt holds exactly the 9 bytes                  |
-|   verified + LF                                           |   verified + LF                                           |
-|   evidence/verified.log records a real byte check         |   evidence/verified.log records a real byte check         |
+|Agents · 1 running                                         |>                                                          |
+|  baseline-compare-worker [goals-worker]                   |terra · 200k tokens                                        |
 |                                                           |                                                           |
-| Agents · 1 running                                        | [idle widget still shows its earlier snapshot]            |
-|   verified-bytes-worker [goals-worker]                    |                                                           |
-|                                                           |                                                           |
-| >                                                         | >                                                         |
-| astra · 50k tokens                                        | terra · 200k tokens                                       |
+|>                                                          |                                                           |
+|astra · 50k tokens                                         |                                                           |
 +-----------------------------------------------------------+-----------------------------------------------------------+
 ```
 
