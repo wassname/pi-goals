@@ -330,19 +330,20 @@ export function registerWorker(pi: ExtensionAPI): void {
 		await waitSupervisor();
 	}
 
-	let workerTurns = 0;
 	let viewGeneration = 0;
 	let viewTimer: ReturnType<typeof setInterval> | undefined;
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
+	let planReviewPending = false;
 
-	async function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started" | "plan"): Promise<void> {
+	async function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "interval" | "started" | "status" | "plan"): Promise<void> {
 		if (state.phase !== "working" || state.mode === "solo" || modelError || !intercom.bound) return;
 		const generation = ++viewGeneration;
 		const binding = state.approvalId;
 		const background = reason === "started" ? { quiet: false, description: "agent starting; background state not queried" } : await backgroundState(pi);
 		if (!intercom.bound || modelError || generation !== viewGeneration || binding !== state.approvalId || state.phase !== "working") return;
 		refreshSignoffs(ctx);
+		updateWidget(ctx);
 		const plan = readPlan(ctx);
 		const entries = ctx.sessionManager.getBranch();
 		const view = workerView(entries, reason, reason !== "started" && ctx.isIdle(), {
@@ -353,7 +354,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 			planReview: `Plan: ${planRel(ctx)}\n${planReview(plan)}`,
 		});
 		intercom.view(view, reason, entries.at(-1)?.id, background.quiet);
-		if (reason !== "started" && intercom.connected && state.previousPlan !== plan) {
+		if (reason !== "started" && reason !== "status" && intercom.connected && state.previousPlan !== plan) {
 			state = { ...state, previousPlan: plan };
 			persist();
 		}
@@ -374,10 +375,9 @@ export function registerWorker(pi: ExtensionAPI): void {
 						planEditTimer = undefined;
 						if (intercom.ended || state.phase !== "working" || planPath(ctx) !== activePath) return;
 						updateWidget(ctx);
-						// Working edits coalesce into the existing settled view; idle edits wake review now.
-						if (ctx.isIdle() && readPlan(ctx) !== state.previousPlan) {
-							void publishWorkerView(ctx, "plan").catch(error => { if (!intercom.ended) ctx.ui.notify(`Plan review failed: ${String(error)}`, "error"); });
-						}
+						if (readPlan(ctx) === state.previousPlan) return;
+						if (!ctx.isIdle()) { planReviewPending = true; return; }
+						void publishWorkerView(ctx, "plan").catch(error => { if (!intercom.ended) ctx.ui.notify(`Plan review failed: ${String(error)}`, "error"); });
 					}, 150);
 				});
 				planWatcher.on("error", error => { if (!intercom.ended) ctx.ui.notify(`Plan watch failed: ${error.message}`, "error"); });
@@ -393,6 +393,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 		planWatcher = undefined;
 		if (planEditTimer) clearTimeout(planEditTimer);
 		planEditTimer = undefined;
+		planReviewPending = false;
 		if (viewTimer) clearInterval(viewTimer);
 		viewTimer = undefined;
 	}
@@ -702,16 +703,12 @@ export function registerWorker(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
+		// PI/OpenAI: Started views update approval safety without starting supervisor inference.
 		await publishWorkerView(ctx, "started");
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
 		updateWidget(ctx);
-		if (state.phase !== "working") return;
-		workerTurns++;
-		if (workerTurns < 50) return;
-		workerTurns = 0;
-		await publishWorkerView(ctx, "turns");
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -755,7 +752,11 @@ export function registerWorker(pi: ExtensionAPI): void {
 			return;
 		}
 		if (state.phase === "working") {
-			await publishWorkerView(ctx, "settled");
+			await publishWorkerView(ctx, "status");
+			updateWidget(ctx);
+			if (!planReviewPending) return;
+			planReviewPending = false;
+			await publishWorkerView(ctx, "plan");
 			return;
 		}
 		if (state.phase !== "planning" || modelError || !ctx.hasUI) return;

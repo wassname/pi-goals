@@ -320,7 +320,7 @@ export class GoalIntercom {
 		}
 		if (message.kind === "view" && this.role === "supervisor") {
 			this.latestView = { id: message.id, text: message.text!, reason: message.reason!, through: message.through, backgroundQuiet: message.backgroundQuiet === true };
-			if (message.reason === "started") { this.record("in", message); return; }
+			if (message.reason === "started" || message.reason === "status") { this.record("in", message); return; }
 		} else if (message.kind !== "steer" || this.role !== "worker") return;
 		if (this.inbox.has(message.id)) return;
 		if (this.inbox.size >= 64) { this.ctx?.ui.notify("Supervision inbox is full; message was not acknowledged. Use /goals reconnect after pending review finishes.", "error"); return; }

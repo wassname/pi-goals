@@ -283,12 +283,12 @@ export function registerVisibleSupervisor(pi: ExtensionAPI, restored?: Superviso
 			if (!intercom.connected) return result("Cannot approve: worker supervision is disconnected or not ready. Restore the existing connection before review.", true);
 			if (!newest) return result("Cannot approve: no worker view has arrived.", true);
 			if (newest.reason === "started") return result("Cannot approve while the worker is starting or running. Wait for its stopped-worker view.", true);
-			if (view !== newest.text) return result("Cannot approve this older worker view. A newer view is queued for you; finish this response to receive it. Do not ask the worker to generate another handoff merely to refresh this review.", true);
-			if (!view?.startsWith("The worker stopped.")) return result("Cannot approve without a current stopped-worker view.", true);
 			if (!newest.backgroundQuiet) return result("Cannot approve while tracked background work is active or unknown.", true);
-			const pendingTool = view.match(/^tool calls with no result: (?!none$)(.+)$/m);
-			const pendingChild = view.match(/^child pi processes still running: (?!none$)(.+)$/m);
+			const pendingTool = newest.text.match(/^tool calls with no result: (?!none$)(.+)$/m);
+			const pendingChild = newest.text.match(/^child pi processes still running: (?!none$)(.+)$/m);
 			if (pendingTool || pendingChild) return result(`Cannot approve while work is active: ${(pendingTool ?? pendingChild)![1]}`, true);
+			if (view !== newest.text && newest.reason !== "status") return result("Cannot approve this older worker view. A newer view is queued for you; finish this response to receive it. Do not ask the worker to generate another handoff merely to refresh this review.", true);
+			if (!view?.startsWith("The worker stopped.") && !(newest.reason === "status" && newest.text.startsWith("The worker stopped."))) return result("Cannot approve without a current stopped-worker view.", true);
 			let plan: string;
 			let repository: ReturnType<typeof repositoryState>;
 			try {

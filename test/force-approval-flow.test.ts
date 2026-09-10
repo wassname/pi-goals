@@ -142,12 +142,22 @@ it.each(["tracked content", "untracked content", "new untracked", "deleted untra
 	} finally { await flow.close(); }
 });
 
-it.each(["evidence", "verification", "stopped view", "tool call", "unknown tracker", "active tracker"])("force does not bypass the %s gate", async gate => {
+it("does not approve while the worker start status is current", async () => {
+	const flow = await setup();
+	try {
+		flow.worker.ctx.isIdle.mockReturnValue(false);
+		await flow.worker.hooks.get("agent_start")({}, flow.worker.ctx);
+		const response = await flow.approve();
+		expect(response.isError).toBe(true);
+		expect(response.content[0].text).toContain("starting or running");
+	} finally { await flow.close(); }
+});
+
+it.each(["evidence", "verification", "tool call", "unknown tracker", "active tracker"])("force does not bypass the %s gate", async gate => {
 	const flow = await setup();
 	try {
 		if (gate === "evidence") writeFileSync(flow.planPath, flow.plan.replace("evidence: verify.txt", "evidence: (empty until sign-off)"));
 		if (gate === "verification") writeFileSync(join(flow.cwd, "verify.txt"), "");
-		if (gate === "stopped view") { flow.worker.ctx.isIdle.mockReturnValue(false); await flow.worker.hooks.get("agent_start")({}, flow.worker.ctx); }
 		if (gate === "tool call") flow.worker.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "pending", name: "edit" }] } });
 		if (gate.endsWith("tracker")) {
 			flow.worker.pi.getAllTools.mockReturnValue([{ name: "process" }]);

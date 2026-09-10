@@ -224,7 +224,7 @@ export function supervisorCompaction(planPath: string, initial: boolean): string
 }
 
 /* 4. Check-ins: decide whether work is on track, then act when needed. */
-export type SupervisorReviewReason = "ready" | "settled" | "turns" | "interval" | "started" | "plan";
+export type SupervisorReviewReason = "ready" | "settled" | "turns" | "interval" | "started" | "status" | "plan";
 
 export const supervisorReadyReview = "Check the agreed outcome and decide the next useful action. Use SteerWorker to send the worker a concrete starting instruction; do not repeat one already being acted on.";
 export const supervisorStartedReview = "The worker has begun a turn. Check whether its direction fits the agreed goal; let productive work continue and use SteerWorker only if a correction is needed.";
