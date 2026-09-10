@@ -126,7 +126,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		clearTimeout(planEditTimer);
 		planEditTimer = undefined;
 		const snapshot = readPlan();
-		if (snapshot.text !== undefined) planHash = digest(planViews(snapshot.text).short);
+		if (snapshot.text !== undefined) planHash = digest(planViews(snapshot.text).notify);
 		if (state.child || state.mode !== "supervising" || !state.plan) return;
 		const stamp = generation;
 		// Watch the directory so atomic plan replacement remains observable. This is an event hook:
@@ -143,7 +143,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				const snapshot = readPlan();
 				if (snapshot.text === undefined) { ctx.ui.notify(snapshot.error!, "warning"); return; }
 				refresh(ctx);
-				const hash = digest(planViews(snapshot.text).short);
+				const hash = digest(planViews(snapshot.text).notify);
 				if (hash === planHash) return;
 				planHash = hash;
 				notice = true;
@@ -340,7 +340,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (found >= 0) lines[found] = pref;
 					else { const title = lines.findIndex((line) => /^#\s/.test(line)); lines.splice(title >= 0 ? title + 1 : 0, 0, pref); }
 					writeFileSync(state.plan, lines.join("\n"));
-					planHash = digest(planViews(planText()).short);
+					planHash = digest(planViews(planText()).notify);
 					refresh(ctx);
 					ctx.ui.notify(ref ? `Preferred worker model set to ${ref} in plan preferences. The supervisor selects it at launch and verifies the resolved model; the worker pane's own model is chosen with /model in that pane.` : "Preferred worker model cleared.", "info");
 					return;
@@ -437,7 +437,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			lines.splice(log + 1, 0, "", completionLog(params.goal, params.observation, evidence, state.mode === "solo"));
 			writeFileSync(state.plan, `${lines.join("\n").trimEnd()}\n`);
 			state.signoffs[key(matches[0].subject)] = { evidence, observation: params.observation };
-			planHash = digest(planViews(planText()).short);
+			planHash = digest(planViews(planText()).notify);
 			save(); refresh(ctx);
 			const remaining = goals(planText()).some((goal) => goal.status !== "cancelled" && (goal.status !== "done" || !state.signoffs[key(goal.subject)]));
 			return result(completionResult(matches[0].subject, ctx.sessionManager.getSessionId(), remaining, state.mode === "solo"));

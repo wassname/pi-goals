@@ -1,6 +1,11 @@
 // Pi/OpenAI: Preserve plan wording; omit history and, in the short view, task/evidence details.
-export function planViews(plan: string): { short: string; long: string } {
+// The notify view governs plan-change events: goals, tasks, evidence and inferences are
+// content worth a supervisor review; worker identity bookkeeping is not (field report,
+// LUCID3 supervisor 2026-09-10: two identical review events for a session-path edit).
+export function planViews(plan: string): { short: string; notify: string; long: string } {
 	const long = plan.split(/^#{1,6}\s+(?:Log|Appendix|Appendices|Appendixes|Interview|Learnings|Papercuts)\b.*$/mi)[0].trim();
+	const identity = /^-\s*(?:active worker|worker session|worker intercom session):/i;
+	const notify = long.split("\n").filter((line) => !identity.test(line)).join("\n").trim();
 	const kept: string[] = [];
 	let omittedIndent: number | null = null;
 	let omittedHeading: number | null = null;
@@ -24,5 +29,5 @@ export function planViews(plan: string): { short: string; long: string } {
 		}
 		kept.push(line);
 	}
-	return { short: kept.join("\n").trim(), long };
+	return { short: kept.join("\n").trim(), notify, long };
 }

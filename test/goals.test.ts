@@ -447,18 +447,22 @@ it.each(["missing", "empty", "directory"])("%s plan snapshots never erase signof
 	expect(f.changed()).toBe(0);
 });
 
-it("ignores post-completion maintenance but reviews a real requirement or manual reopening", async () => {
+it("ignores post-completion maintenance but reviews evidence, requirement or manual reopening changes", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	writeFileSync(join(f.ctx.cwd, "proof.log"), "PASS\n");
 	for (const goal of ["first output", "second output"]) await f.tools.get("CompleteGoal").execute("c", { goal, evidence: ["proof.log"], observation: "PASS" }, undefined, undefined, f.ctx);
 	const signed = readFileSync(f.path, "utf8");
-	await f.atomicWrite(signed.replace("## Log", "  - evidence: proof.log\n## Log\n- recap: finished"));
+	await f.atomicWrite(signed.replace("## Log", "## Log\n- recap: finished"));
 	await delay(250);
-	expect(f.changed()).toBe(0);
-	await f.atomicWrite(signed.replace("## Log", "- discriminator: exact bytes and trailing newline\n## Log"));
+	expect(f.changed()).toBe(0); // Log-only edits are history, not requirements
+	// Worker-authored evidence above the Log must surface: a supervisor caught a worker's
+	// contradictory evidence block through exactly this event (LUCID3, 2026-09-10).
+	await f.atomicWrite(signed.replace("## Log", "  - evidence: proof.log\n## Log\n- recap: finished"));
 	await waitFor(() => f.changed() === 1);
-	await f.atomicWrite(signed.replace("[x] goal: first", "[ ] goal: first"));
+	await f.atomicWrite(signed.replace("## Log", "- discriminator: exact bytes and trailing newline\n## Log"));
 	await waitFor(() => f.changed() === 2);
+	await f.atomicWrite(signed.replace("[x] goal: first", "[ ] goal: first"));
+	await waitFor(() => f.changed() === 3);
 	expect(f.entries.at(-1).data.signoffs["first output"]).toBeUndefined();
 });
 

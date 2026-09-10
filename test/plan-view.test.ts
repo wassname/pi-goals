@@ -20,6 +20,19 @@ it("omits only named worker identity fields from review while retaining them in 
 	expect(planViews(base.replace("[ ]", "[x]")).short).not.toBe(planViews(base).short);
 });
 
+it("notifies on goal and task changes but not on identity bookkeeping or log edits", () => {
+	const base = "# Plan\n- [ ] goal: result\n## Task list\n- [ ] run it\n- worker session: /saved.jsonl\n## Log\nfirst entry";
+	const baseView = planViews(base).notify;
+	// identity bookkeeping: silent
+	expect(planViews(base.replace("/saved.jsonl", "/moved.jsonl")).notify).toBe(baseView);
+	// log edits: silent
+	expect(planViews(base.replace("first entry", "second entry")).notify).toBe(baseView);
+	// worker ticking a task: review event (field catch, LUCID3 2026-09-10)
+	expect(planViews(base.replace("- [ ] run it", "- [x] run it")).notify).not.toBe(baseView);
+	// goal edits: review event
+	expect(planViews(base.replace("[ ] goal: result", "[x] goal: result")).notify).not.toBe(baseView);
+});
+
 it("stops at history and preserves a manual goal tick", () => {
 	const view = planViews("# Plan\n1. [x] goal: result\n## Log\n1. [ ] goal: historical");
 	expect(view.short).toContain("[x] goal: result");
