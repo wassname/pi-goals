@@ -1,5 +1,9 @@
 # pi-goals
 
+> **Experimental branch:** this checkout loads the [main-chat supervisor prototype](prototype/README.md), not the older runtime described below. It uses edxeth's interactive Pi workers in Herdr. Do not install it over a running research session. This package is marked private while the prototype is evaluated. — Pi/OpenAI
+
+## Previous runtime (retained for comparison)
+
 Plan in one Pi session, then do the work there while a stronger visible Pi session supervises it.
 
 ## How it works

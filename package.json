@@ -1,7 +1,8 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.2.2",
-  "description": "Plan in one Pi session, then work under a visible forked supervisor.",
+  "description": "Prototype: plan and supervise in the main chat with a visible edxeth Pi worker.",
+  "private": true,
   "author": "wassname",
   "license": "MIT",
   "type": "module",
@@ -28,6 +29,7 @@
   },
   "files": [
     "src",
+    "prototype",
     "README.md"
   ],
   "publishConfig": {
@@ -58,7 +60,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/prototype.ts"
     ],
     "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
   }

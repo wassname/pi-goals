@@ -11,8 +11,9 @@ describe("package manifest", () => {
 	it("includes the extension without registering a packaged subagent", () => {
 		const root = resolve(import.meta.dirname, "..");
 		const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as PackageManifest;
-		expect(manifest.files).toEqual(["src", "README.md"]);
-		expect(manifest.pi.extensions).toEqual(["./src/index.ts"]);
+		expect(manifest.files).toEqual(["src", "prototype", "README.md"]);
+		expect(manifest.pi.extensions).toEqual(["./src/prototype.ts"]);
+		expect(manifest.private).toBe(true);
 		expect(manifest.pi.subagents).toBeUndefined();
 	});
 });

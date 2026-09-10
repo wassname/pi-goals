@@ -1,0 +1,17 @@
+
+ - greeting.txt: exactly hello worker\n, 13 bytes.
+ - count.mjs: dependency-free CLI; all 9 verification cases passed, including strict argument errors and confirmed read
+   denial.
+
+ The same worker session handled both goals sequentially. Scripts and actual stdout/stderr/exit captures are preserved under
+ ignored evidence/; supervisor results are in evidence/supervisor/.
+
+ ✓ Create greeting.txt with exactly hello worker and one LF newline
+ ✓ Create count.mjs with exact byte-count output and strict CLI errors
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│
+│
+│
+│ gpt-6-astra  Github Copilot  minimal
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ project on  master [?]    goals: supervising | 2/2 reviewed | 6.0%/400k (auto) | ↑51 ↓3.1k 󰆼 98.8% R258k W60k | $0.000 (sub)

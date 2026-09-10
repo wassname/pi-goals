@@ -1,0 +1,2 @@
+evidence/greeting-worker/stdout.txt
+evidence/greeting-supervisor/stdout.txt

@@ -1,0 +1,5 @@
+Supervisor inspected count.mjs, worker verify.mjs and run.sh, captured stdout/stderr, summary.json and genuine EACCES evidence for UID 1000. Worker captures report all eight cases passing.
+Supervisor attempted bash command: id; ls evidence/count-worker/run-lCEfQi; wc -c evidence/count-worker/capture-mhlBLh/stderr.txt; git status --short
+Tool exited 127 before command execution:
+/bin/bash: line 4: /home/ubuntu/.pi/agent/npm/node_modules/@carderne/sandbox-runtime/vendor/seccomp/x64/apply-seccomp: No such file or directory
+Independent supervisor CLI rerun is blocked by the command runtime. No settings changed or alternate execution route attempted. Goal remains unsigned pending the planned independent rerun.

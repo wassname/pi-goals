@@ -1,0 +1,9 @@
+{
+  "command": "git",
+  "args": [
+    "ls-files",
+    "--",
+    "evidence/"
+  ],
+  "cwd": "/tmp/goals-edxeth-trial-PjLvDi/project/"
+}

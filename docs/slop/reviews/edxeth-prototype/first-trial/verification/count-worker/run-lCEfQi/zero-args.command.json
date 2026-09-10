@@ -1,0 +1,7 @@
+{
+  "command": "/home/ubuntu/.nvm/versions/node/v25.8.1/bin/node",
+  "args": [
+    "count.mjs"
+  ],
+  "cwd": "/tmp/goals-edxeth-trial-PjLvDi/project/"
+}

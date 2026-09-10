@@ -1,0 +1,10 @@
+Evidence: /tmp/goals-edxeth-trial-PjLvDi/project/evidence/count-worker/run-lCEfQi
+PASS: greeting
+PASS: empty
+PASS: utf8
+PASS: binary
+PASS: zero-args
+PASS: two-args
+PASS: nonexistent
+PASS: permission-denied
+PASS: all 8 CLI cases; genuine EACCES; evidence ignored and untracked
