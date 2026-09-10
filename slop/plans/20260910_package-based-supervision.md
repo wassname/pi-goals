@@ -45,7 +45,16 @@ User intent and exact preferences: [AGENTS.md](../../AGENTS.md#agreed-package-ba
 - Use only new test panes; never operate existing user/demo panes. This parent had `HERDR_ENV=1`, `HERDR_PANE_ID=w8:p62`; recheck after compaction. Headless subagents may lack Herdr context.
 - Read failed outputs, fix their cause, retry the affected scenario. No global package switch until successful trial. Reuse existing token displays; custom pair/token scripts are deferred.
 
-## Current parent handover (supersedes older continuation notes below)
+## Installed result — Pi/OpenAI, 2026-09-10
+
+- Implementation and evidence pushed on `experiment/main-supervisor-edxeth` through `5cda3d6`. 162 tests, typecheck and lint pass. Both external native reviews completed; final current result and interventions are at the top of the functional trial notes.
+- Normal `/home/code/.pi/agent/settings.json` now selects this local checkout instead of the unpinned git source and `/home/code/.pi/agent/git/github.com/wassname/pi-subagents-stock-validation` instead of `npm:pi-subagents`. Stock edxeth is detached at `953c6f6`; its existing dependency directory is symlinked from pi-goals. Intercom and scheduled-prompt package entries are unchanged. Local paths avoid Pi reconciliation overwriting unrelated dirty files.
+- `/home/code/.pi/agent/agents/goals-worker.md` points to this repo's worker definition. The existing agents-directory symlink had a missing target; created that target without replacing the symlink. Settings and worker path were not yadm-tracked.
+- Fresh normal-profile pane `w8:p6M` successfully loads `/goals status` and the stock `/subagents` UI with Orchestrator Off. Existing user sessions were not reloaded. Start a new Pi session to use this installation; stop workers before any later supervisor reload.
+- Rollback: restore package entries `npm:pi-subagents` and `git:github.com/wassname/pi-goals` in settings, and remove only the new goals-worker symlink. Do not load both subagent packages. This does not require deleting either source checkout.
+- Remaining limits: stock reload crash, disabled scheduler-job deletion, idle worker widget snapshot not immediately refreshed, human-attested ownership/stop checks. These are documented, not claimed fixed.
+
+## Earlier parent handover (historical)
 
 - Authoritative latest UAT: [functional trial notes](../reviews/20260910_package-supervision-herdr.md). Solo recovery after restarting saved supervisor passed with exact files and self-verification log. Timer prompt update/firing/removal passed. Disabled jobs are deleted by scheduler on reload. Parent reload kept worker usable, but later worker exit crashed parent in stock edxeth stale-widget callback; full reload lifecycle FAILS.
 - Native `/review` workflow `a1bcfc11-0212-410e-aad7-6fd704f7e9c6` has DeepSeek and GLM reviewers; exact child ids and search interruption evidence are in UAT notes. Broad find processes were terminated, both reviews resumed using exact package paths. Wait for their native completion; do not launch duplicates. Earlier Claude CLI attempts were a mistaken route for the requested /review skill.
