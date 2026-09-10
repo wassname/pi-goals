@@ -46,11 +46,12 @@ interface State {
 	mode: Mode;
 	plan?: string;
 	worker?: { id?: string; sessionFile: string };
+	helpers: { id?: string; sessionFile: string }[];
 	workerStopped?: boolean;
 	signoffs: Record<string, { evidence: string[]; observation: string }>;
 	child?: boolean;
 }
-const initial = (): State => ({ mode: "chat", signoffs: {} });
+const initial = (): State => ({ mode: "chat", helpers: [], signoffs: {} });
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const key = (text: string) => text.trim().toLowerCase();
 function goals(text: string) {
@@ -67,7 +68,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let state = initial();
 	let generation = 0;
 	let workerRevision = 0;
-	let launchPending = false;
+	let pendingLaunches = 0;
 	let notice = true;
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
@@ -164,6 +165,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			// Lineage-only workers attach the explicit task path using AttachGoalPlan.
 			save();
 		}
+		state.helpers ??= []; // sessions persisted before helper bookkeeping
 		notice = true;
 		turnsStale = 0;
 		lastWorkingSet = "";
@@ -182,7 +184,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "followUp", triggerTurn: false });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
-		if (launchPending) { ctx.ui.notify("Worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
+		if (pendingLaunches > 0) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
 		const stamp = generation;
 		const revision = workerRevision;
 		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
@@ -276,14 +278,20 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (state.child || !["subagent", "subagent_resume"].includes(event.toolName)) return;
 		// Solo means this chat took over implementation: no concurrent writer may be delegated.
 		if (state.mode === "planning" || state.mode === "paused" || state.mode === "solo") return { block: true, reason: goalToolBlocked(state.mode) };
-		if (state.plan) { launchPending = true; state.workerStopped = false; workerRevision++; save(); }
+		if (state.plan) { pendingLaunches++; state.workerStopped = false; workerRevision++; save(); }
 	});
 	pi.on("tool_result", (event) => {
 		if (state.child || !state.plan || !["subagent", "subagent_resume"].includes(event.toolName)) return;
-		launchPending = false;
+		pendingLaunches = Math.max(0, pendingLaunches - 1);
 		if (event.isError) return;
 		const details = event.details as { id?: string; sessionFile?: string } | undefined;
-		if (details?.id && details.sessionFile) { state.worker = { id: details.id, sessionFile: details.sessionFile }; state.workerStopped = false; workerRevision++; save(); }
+		if (!details?.id || !details.sessionFile) return;
+		const record = { id: details.id, sessionFile: details.sessionFile };
+		if (state.worker?.sessionFile === record.sessionFile) state.worker = record;
+		else if (!state.worker) state.worker = record;
+		// Extra launches stay recorded as helpers; the implementation binding never moves silently.
+		else state.helpers = [...(state.helpers ?? []).filter((h) => h.sessionFile !== record.sessionFile), record];
+		state.workerStopped = false; workerRevision++; save();
 	});
 
 	pi.registerCommand("goals", {
@@ -313,6 +321,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						`Plan: ${state.plan ?? "none"}`,
 						`Preferred worker model (plan): ${notedPlanValue("preferred worker model") ?? "not stated; use /goals model <model>"}`,
 						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
+						`Helper subagent sessions: ${state.helpers.length} recorded (liveness via /subagents)`,
 						notedPlanValue("worker session") ? `Worker session noted in plan: ${notedPlanValue("worker session")}` : "",
 						`Hourly check-in: schedule_prompt job ${JSON.stringify(`goals-${ctx.sessionManager.getSessionId()}`)} (list/remove via schedule_prompt; plan-change reviews are the plan-watcher event hook)`,
 						"Liveness is owned by edxeth; inspect /subagents.",
@@ -351,7 +360,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (!(await confirmOwnership(ctx, target, text, solo))) return;
 					const retained = target === state.plan ? state.signoffs : {};
 					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
-					state = { mode: solo ? "solo" : "planning", plan: target, signoffs: retained, worker, workerStopped: solo || (!noted && state.workerStopped) };
+					state = { mode: solo ? "solo" : "planning", plan: target, signoffs: retained, worker, helpers: [], workerStopped: solo || (!noted && state.workerStopped) };
 					generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 					if (solo) enterSolo(ctx);
 					else send(attachNotice(target, false, noted));
@@ -389,7 +398,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				mkdirSync(dirname(path), { recursive: true });
 				// Never overwrite an earlier plan at this session path; the model can revise it after inspection.
 				try { writeFileSync(path, planDocument(objective), { flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, helpers: state.helpers, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 				send(planningSeed(objective, path));
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},

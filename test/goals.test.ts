@@ -535,6 +535,36 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, resets on
 	expect(reminders()).toHaveLength(1);
 });
 
+it("extra subagent launches are recorded as helpers and never steal the implementation identity", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	f.hooks.get("tool_result")({ toolName: "subagent", details: { id: "impl", sessionFile: "/tmp/impl.jsonl" } });
+	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "impl", sessionFile: "/tmp/impl.jsonl" }, helpers: [] });
+	f.hooks.get("tool_result")({ toolName: "subagent", details: { id: "reviewer", sessionFile: "/tmp/review.jsonl" } });
+	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "impl" }, helpers: [{ id: "reviewer", sessionFile: "/tmp/review.jsonl" }] });
+	// a repeated helper launch updates its record instead of duplicating it
+	f.hooks.get("tool_result")({ toolName: "subagent", details: { id: "reviewer-2", sessionFile: "/tmp/review.jsonl" } });
+	expect(f.entries.at(-1).data.helpers).toEqual([{ id: "reviewer-2", sessionFile: "/tmp/review.jsonl" }]);
+	// resuming the worker keeps the binding and refreshes its id
+	f.hooks.get("tool_result")({ toolName: "subagent_resume", details: { id: "impl-2", sessionFile: "/tmp/impl.jsonl" } });
+	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "impl-2", sessionFile: "/tmp/impl.jsonl" }, helpers: [{ id: "reviewer-2" }] });
+});
+
+it("pending launch counter survives concurrent launches until every result lands", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	f.hooks.get("tool_call")({ toolName: "subagent" });
+	f.hooks.get("tool_call")({ toolName: "subagent" });
+	f.hooks.get("tool_result")({ toolName: "subagent", details: { id: "a", sessionFile: "/tmp/a.jsonl" } });
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
+	await f.command("solo");
+	expect(f.entries.at(-1).data.mode).toBe("supervising"); // one launch still pending
+	expect(f.ctx.notify ?? f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("still pending"), "warning");
+	f.hooks.get("tool_result")({ toolName: "subagent", details: { id: "b", sessionFile: "/tmp/b.jsonl" } });
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
+	await f.command("solo");
+	expect(f.entries.at(-1).data.mode).toBe("solo");
+	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "a" }, helpers: [{ id: "b" }] });
+});
+
 it("late worker results invalidate a takeover menu but do not disable plan watching", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	let answer!: (choice: string) => void;
