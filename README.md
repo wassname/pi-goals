@@ -2,9 +2,23 @@
 
 Make a short list of goals in one Markdown plan file. The main chat keeps the high-level context, supervises a worker in a visible Herdr pane, and checks whether each goal is complete.
 
-<img width="2513" height="1259" alt="2026-09-10_15-30-pi-goals" src="https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f" />
+# User ask
 
-Abridged text from the isolated test, with approval and completion shown together. Paths are shortened; bracketed labels are annotations. Model names and token counts below illustrate the intended supervisor/worker split, not measurements from this capture.
+The hope is we can have a smart supervisor, with judgment and context. But it doesn't use many tokens as it checks in and sees an overview from a cheaper worker.
+
+The supervisor has a goal / plan that it agrees on with the user, and is reminded of it in a Ralph-loop-type repeat.
+
+It compacts every 150k or similar to avoid cost and context rot.
+
+It steers a smaller model, adding perspective and judgment.
+
+Since it's two panes, the user can review both, intervene in both and have visibility on sub-agent mis/communication.
+
+-- wassname (spelling and punctuation corrected by Pi/OpenAI)
+
+## Screenshot
+
+Mock up:
 
 ```text
 +-----------------------------------------------------------+-----------------------------------------------------------+
@@ -32,6 +46,10 @@ Abridged text from the isolated test, with approval and completion shown togethe
 | astra · 50k tokens                                        | terra · 200k tokens                                       |
 +-----------------------------------------------------------+-----------------------------------------------------------+
 ```
+
+Real screenshot:
+<img width="2513" height="1259" alt="2026-09-10_15-30-pi-goals" src="https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f" />
+
 
 The plan file looks like this:
 
@@ -81,7 +99,7 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Requires Herdr. The package includes the worker, messaging and scheduled-prompt extensions. Remove separate installations of pi-subagents, pi-intercom and pi-schedule-prompt to avoid loading them twice.
+Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. Disable separately loaded copies to avoid duplicate commands.
 
 ```bash
 pi install git:github.com/wassname/pi-goals@experiment/main-supervisor-edxeth
