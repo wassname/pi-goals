@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { foldPlan, openSubtasks } from "../src/index.js";
+import { foldPlan } from "../src/plan.js";
 
 const plan = `# Plan
 
@@ -48,21 +48,4 @@ describe("foldPlan (current goals are above ## Log; durable memory is below it)"
 		const draft = "# Plan\n\n## Goals\n\n1. [ ] goal: do the thing\n";
 		expect(foldPlan(draft)).toBe(draft.trimEnd());
 	});
-});
-
-describe("openSubtasks (the widget shows the next action, so the plan IS the task list)", () => {
-	const active = plan.split("\n").findIndex((l) => l.includes("goal: Implement the cache layer"));
-
-	it("lists the active goal's open and in-progress subtasks, stopping at the next goal", () => {
-		expect(openSubtasks(plan, active)).toEqual(["eviction policy", "bench p95"]);
-	});
-
-	it("does not leak subtasks from the goal below", () => {
-		expect(openSubtasks(plan, active)).not.toContain("write the readme");
-	});
-});
-
-it("does not show historical Log subtasks under the last active goal", () => {
-	const plan = "1. [/] goal: current\n  - [ ] current task\n\n## Log\n  - [ ] historical task\n";
-	expect(openSubtasks(plan, 0)).toEqual(["current task"]);
 });

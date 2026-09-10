@@ -1,6 +1,0 @@
-Parent independent byte assertion PASS: verified + LF, 9 bytes. Saved verification nonempty with PASS. Scheduler jobs empty.
-== byte verification of verified.txt ==
-9 verified.txt
- 76 65 72 69 66 69 65 64 0a
-PASS: 9 bytes: verified + LF
-

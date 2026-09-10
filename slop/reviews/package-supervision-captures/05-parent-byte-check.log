@@ -1,7 +1,0 @@
-Pi/OpenAI: Node assert.deepStrictEqual(actual, Buffer.from("hello from the worker\n")) passed
-bytes=22
-hex=68656c6c6f2066726f6d2074686520776f726b65720a
-scheduler={
-  "jobs": [],
-  "version": 1
-}

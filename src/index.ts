@@ -1,842 +1,437 @@
-/**
- * PI: pi-goals owns one versioned plan per session. After Ready, the main session implements the
- * plan while a compacted, visible fork supervises it through pi-intercom.
- *
- * Each /goals call makes `.pi/plan/<session_id>-vN.md`. The selected version survives resume and
- * compaction. Old plans stay on disk but inactive. A session with no selected plan has no widget,
- * supervision, or CompleteGoal sign-off.
- *
- * TypeScript reads only goal checkbox lines for the widget. Models read the plan as prose. The
- * worker edits the project and records evidence. The supervisor inspects it and writes a private
- * approval checkpoint.
- *
- * -- Pi/Codex
- */
-
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, type FSWatcher, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+// Pi/OpenAI: Plan and supervise in the main chat; delegate implementation to a visible worker.
+import { createHash } from "node:crypto";
+import { type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { approvalMatches, approvalPath, goalBlock, hashGoalBlock, readApproval, repositoryState } from "./approval.js";
-import { backgroundState } from "./background.js";
-import { closeSupervisorPane, openSupervisorPane } from "./herdr.js";
-import { GoalIntercom } from "./intercom.js";
-import { FOLD_LINE, foldPlan, GOAL_LINE } from "./plan.js";
-import { completeGoalDescription, completeGoalParamDescription, planDrafting, planningState, resync, supervisorPlanReview } from "./prompts.js";
-import { RoleModels } from "./role-models.js";
-import { isVisibleSupervisor, registerVisibleSupervisor, restoredSupervisor } from "./supervisor-session.js";
-import { workerView } from "./worker-view.js";
+import { foldPlan, GOAL_LINE } from "./plan.js";
+import { planViews } from "./plan-view.js";
+import {
+	attachGoalPlanDescription,
+	attachNotice,
+	childPlanAttached,
+	childPlanRole,
+	completeGoalDescription,
+	completionLog,
+	completionResult,
+	discuss,
+	emptyEvidence,
+	evidenceUnavailable,
+	goalToolBlocked,
+	manualReview,
+	messages,
+	pausedRole,
+	pauseExitNotice,
+	planChangedReview,
+	planContext,
+	planDocument,
+	planning,
+	planningSeed,
+	planUnavailable,
+	readyApproved,
+	removeGoalSchedule,
+	resumeNotice,
+	scheduleCheckIn,
+	soloNotice,
+	soloRole,
+	supervisor,
+	upkeep,
+} from "./prompts.js";
 
-export { foldPlan } from "./plan.js";
-
-const STATE = "pi-goals-state";
-const STATUS_KEY = "pi-goals";
-const WIDGET_KEY = "pi-goals-widget";
-const PLANNING_CONTEXT = "pi-goals-planning-context";
-const PLAN_DIR = ".pi/plan";
-// For static text (the /goals description) where there is no ctx to resolve the session id.
-const PLAN_SHAPE = `${PLAN_DIR}/<session_id>-vN.md`;
-// Plan mode blocks edit/write except for its plan file. bash remains available for read-only inspection. -- Pi/Codex
-const PLAN_MODE_BLOCKED_TOOLS = ["edit", "write"];
-
-// An indented checkbox line that isn't a goal: a subtask. Only the widget reads these, so the human
-// sees the next action and not just the goal -- this file IS the task list.
-const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
+const STATE = "pi-goals-main-supervisor-v1";
+const WORKER = "goals-worker";
+type Mode = "chat" | "planning" | "supervising" | "paused" | "solo";
 type GoalStatus = "open" | "active" | "done" | "cancelled";
-const CHAR_TO_STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "done", "-": "cancelled" };
-const STATUS_TO_CHAR: Record<GoalStatus, string> = { open: " ", active: "/", done: "x", cancelled: "-" };
-const goalKey = (subject: string) => subject.trim().toLowerCase();
-
-function scanGoals(plan: string): Array<{ status: GoalStatus; subject: string; line: number }> {
-	const goals: Array<{ status: GoalStatus; subject: string; line: number }> = [];
-	foldPlan(plan).split("\n").forEach((line, i) => {
-		const m = GOAL_LINE.exec(line);
-		if (m) goals.push({ status: CHAR_TO_STATUS[m[1].toLowerCase()] ?? "open", subject: m[2].trim(), line: i });
-	});
-	return goals;
+interface State {
+	mode: Mode;
+	plan?: string;
+	worker?: { id?: string; sessionFile: string };
+	workerStopped?: boolean;
+	signoffs: Record<string, { evidence: string[]; observation: string }>;
+	child?: boolean;
 }
-
-/** Open subtasks under the goal on line `goalLine`, up to the next goal line. */
-export function openSubtasks(plan: string, goalLine: number): string[] {
-	const lines = foldPlan(plan).split("\n");
-	const out: string[] = [];
-	for (let i = goalLine + 1; i < lines.length; i++) {
-		if (GOAL_LINE.test(lines[i])) break;
-		const m = SUBTASK_LINE.exec(lines[i]);
-		if (m && (m[1] === " " || m[1] === "/")) out.push(m[2].trim());
-	}
-	return out;
-}
-
-export function nextPlanVersion(planNames: string[], sessionId: string): number {
-	const prefix = `${sessionId}-v`;
-	const versions = planNames.flatMap((name) => {
-		if (!name.startsWith(prefix) || !name.endsWith(".md")) return [];
-		const version = Number(name.slice(prefix.length, -".md".length));
-		return Number.isInteger(version) && version > 0 ? [version] : [];
-	});
-	return Math.max(0, ...versions) + 1;
-}
-
-type Phase = "planning" | "working" | null;
-
-export function isMainSession(isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1"): boolean {
-	return !isSubagentChild && !isVisibleSupervisor();
-}
-
-interface PlanState {
-	phase: Phase;
-	supervisorModel: string | null;
-	supervisorPaneId: string | null;
-	approvalId: string | null;
-	planVersion: number | null;
-	latestDirection: string;
-	signedOffGoals: string[];
-	previousPlan: string | null;
-}
-
-export default function piGoalsExtension(pi: ExtensionAPI): void {
-	let initialized = false;
-	pi.on("session_start", async (_event, ctx) => {
-		if (initialized) return;
-		initialized = true;
-		const saved = restoredSupervisor(ctx.sessionManager.getEntries());
-		if (saved || isVisibleSupervisor()) registerVisibleSupervisor(pi, saved);
-		else if (isMainSession()) registerWorker(pi);
-		// Pi's dispatcher iterates its live handler list, including those just registered.
+const initial = (): State => ({ mode: "chat", signoffs: {} });
+const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+const key = (text: string) => text.trim().toLowerCase();
+function goals(text: string) {
+	return foldPlan(text).split("\n").flatMap((line, index) => {
+		const match = GOAL_LINE.exec(line);
+		if (!match) return [];
+		const box = match[1].toLowerCase();
+		return [{ subject: match[2].trim(), status: (box === "x" ? "done" : box === "/" ? "active" : box === "-" ? "cancelled" : "open") as GoalStatus, index }];
 	});
 }
+const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
-export function registerWorker(pi: ExtensionAPI): void {
-	const intercom = new GoalIntercom(pi);
-	const models = new RoleModels(pi);
-	intercom.onSteer = (instruction) => {
-		if (state.phase !== "working" || modelError) throw new Error("Worker is paused or its plan is not active; instruction not delivered. Use /goals reconnect after selecting an available model.");
-		pi.sendUserMessage(`[supervisor] ${instruction}`, { deliverAs: "steer" });
-	};
-	let state: PlanState = {
-		phase: null,
-		supervisorModel: null,
-		supervisorPaneId: null,
-		approvalId: null,
-		planVersion: null,
-		latestDirection: "",
-		signedOffGoals: [],
-		previousPlan: null,
-	};
-	let modelError: string | null = null;
-	let readyAttempt: object | undefined;
-	let wasConnected = false;
-	intercom.onConnectionChange = (ctx) => {
-		const connected = intercom.connected;
-		const rejoined = connected && !wasConnected;
-		wasConnected = connected;
-		updateWidget(ctx);
-		// Ready publishes its own first view. Subsequent rejoins need a new ID even if the old view was accepted.
-		if (rejoined && !readyAttempt && state.phase === "working" && !modelError) {
-			void publishWorkerView(ctx, "settled").catch(error => { if (!intercom.ended) ctx.ui.notify(`Recovery view failed: ${String(error)}`, "error"); });
-		}
-	};
-	let planningContextPending = false;
-	let resyncReason: string | null = "New session.";
-
-	const planRel = (ctx: ExtensionContext) => (state.planVersion === null ? PLAN_SHAPE : `${PLAN_DIR}/${ctx.sessionManager.getSessionId()}-v${state.planVersion}.md`);
-	const planPath = (ctx: ExtensionContext) => {
-		if (state.planVersion === null) throw new Error("No active plan version.");
-		return join(ctx.cwd, planRel(ctx));
-	};
-	const readPlan = (ctx: ExtensionContext): string => (state.planVersion !== null && existsSync(planPath(ctx)) ? readFileSync(planPath(ctx), "utf-8") : "");
-	const writePlan = (ctx: ExtensionContext, content: string): void => {
-		mkdirSync(join(ctx.cwd, PLAN_DIR), { recursive: true });
-		writeFileSync(planPath(ctx), content);
-	};
-	const nextVersion = (ctx: ExtensionContext): number =>
-		nextPlanVersion(existsSync(join(ctx.cwd, PLAN_DIR)) ? readdirSync(join(ctx.cwd, PLAN_DIR)) : [], ctx.sessionManager.getSessionId());
-
-	function persist(): void {
-		pi.appendEntry<PlanState>(STATE, state);
-	}
-
-	// Only CompleteGoal adds sign-off; direct edits remain claims for supervisor judgment.
-	function refreshSignoffs(ctx: ExtensionContext): void {
-		if (state.phase !== "working") return;
-		const goals = scanGoals(readPlan(ctx));
-		const signedOffGoals = state.signedOffGoals.filter(subject => {
-			const matches = goals.filter(goal => goalKey(goal.subject) === subject);
-			return matches.length === 1 && matches[0].status === "done";
-		});
-		if (signedOffGoals.length !== state.signedOffGoals.length) {
-			state = { ...state, signedOffGoals };
-			persist();
-		}
-	}
-
-	function planReview(plan: string): string {
-		const goals = scanGoals(plan);
-		const previous = scanGoals(state.previousPlan ?? "");
-		const changes = goals.flatMap(goal => {
-			const old = previous.find(prior => goalKey(prior.subject) === goalKey(goal.subject));
-			return old?.status === goal.status ? [] : [`${goal.subject}: ${old ? `[${STATUS_TO_CHAR[old.status]}]` : "not previously observed"} -> [${STATUS_TO_CHAR[goal.status]}]${goal.status === "done" ? state.signedOffGoals.includes(goalKey(goal.subject)) ? "; CompleteGoal sign-off recorded" : "; manual completion claim, no CompleteGoal sign-off recorded" : ""}`];
-		});
-		const claims = goals.filter(goal => goal.status === "done" && !state.signedOffGoals.includes(goalKey(goal.subject)));
-		return supervisorPlanReview(claims.map(goal => goal.subject), changes, planDiff(state.previousPlan ?? "", plan));
-	}
-
-	function pauseReason(): string | null {
-		if (!state.phase) return null;
-		if (modelError) return `${modelError} Select /model, then run /goals reconnect.`;
-		if (state.phase === "working" && !intercom.connected) return intercom.peerPresent
-			? "Supervisor is present but not ready. Inspect its pane for startup/compaction or model errors; recover with /model then /goals reconnect in the supervisor pane if needed."
-			: "Supervisor disconnected. Run /goals reconnect, or /goals restart to replace its tracked pane without discarding the plan.";
-		return null;
-	}
-
-	async function restoreModel(role: "planning" | "worker", ctx: ExtensionContext): Promise<void> {
-		modelError = `${role} model restoration is pending.`;
-		intercom.markNotReady();
-		try {
-			await models.enter(role, ctx);
-			modelError = null;
-		} catch (error) {
-			modelError = error instanceof Error ? error.message : String(error);
-			throw error;
-		}
-	}
-
-	function beginReview(ctx: ExtensionContext): void {
-		for (const goal of scanGoals(readPlan(ctx))) {
-			rmSync(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), goal.subject), { force: true });
-		}
-		const approvalId = randomUUID();
-		state = { ...state, approvalId };
-		intercom.configure(approvalId, "worker", ctx, false);
-		persist();
-	}
-
-	function repositoryRoot(cwd: string): string {
-		return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" }).trim();
-	}
-
-	async function startSupervisor(ctx: ExtensionContext, isCurrent = () => !intercom.ended): Promise<void> {
-		if (intercom.ended) throw new Error("Session ended before supervisor startup.");
-		repositoryRoot(ctx.cwd);
-		const sourceSessionFile = ctx.sessionManager.getSessionFile();
-		if (!sourceSessionFile) throw new Error("The current session is not persisted, so it cannot be forked.");
-		if (state.supervisorPaneId && state.approvalId) {
-			intercom.configure(state.approvalId, "worker", ctx, false);
-			await intercom.waitReady(undefined, { peerOnly: true });
-			return;
-		}
-		beginReview(ctx);
-		const binding = state.approvalId;
-		const current = () => isCurrent() && !intercom.ended && state.approvalId === binding;
-		let paneId: string | null = null;
-		try {
-			paneId = await openSupervisorPane({
-				cwd: ctx.cwd,
-				sourceSessionFile,
-				workerSessionId: ctx.sessionManager.getSessionId(),
-				planPath: planPath(ctx),
-				approvalId: state.approvalId!,
-				extensionPath: fileURLToPath(import.meta.url),
-				model: state.supervisorModel,
-			}, (opened) => {
-				if (!current()) throw new Error("Supervisor startup was cancelled.");
-				paneId = opened;
-				state = { ...state, supervisorPaneId: opened };
-				persist();
-			});
-		} catch (error) {
-			if (paneId) throw new Error(`Supervisor startup failed in Herdr pane ${paneId}; it remains open for inspection. ${error instanceof Error ? error.message : String(error)}`);
-			throw error;
-		}
-		if (!current()) throw new Error("Supervisor startup was cancelled.");
-		state = { ...state, supervisorPaneId: paneId };
-		persist();
-		await intercom.waitReady(undefined, { peerOnly: true });
-	}
-
-	let workerTurns = 0;
-	let viewGeneration = 0;
-	let viewTimer: ReturnType<typeof setInterval> | undefined;
+export default function mainSupervisor(pi: ExtensionAPI) {
+	let state = initial();
+	let generation = 0;
+	let workerRevision = 0;
+	let launchPending = false;
+	let notice = true;
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
-
-	async function publishWorkerView(ctx: ExtensionContext, reason: "ready" | "settled" | "turns" | "interval" | "started" | "plan"): Promise<void> {
-		if (state.phase !== "working" || modelError || !intercom.bound) return;
-		const generation = ++viewGeneration;
-		const binding = state.approvalId;
-		const background = reason === "started" ? { quiet: false, description: "agent starting; background state not queried" } : await backgroundState(pi);
-		if (!intercom.bound || modelError || generation !== viewGeneration || binding !== state.approvalId || state.phase !== "working") return;
-		refreshSignoffs(ctx);
-		const plan = readPlan(ctx);
-		const entries = ctx.sessionManager.getBranch();
-		const view = workerView(entries, reason, reason !== "started" && ctx.isIdle(), {
-			sourceSession: ctx.sessionManager.getSessionFile()!, latestDirection: state.latestDirection,
-			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "not selected",
-			contextPercent: ctx.getContextUsage()?.percent,
-			since: intercom.acknowledgedEntry, background: background.description,
-			planReview: `Plan: ${planRel(ctx)}\n${planReview(plan)}`,
-		});
-		intercom.view(view, reason, entries.at(-1)?.id, background.quiet);
-		if (reason !== "started" && intercom.connected && state.previousPlan !== plan) {
-			state = { ...state, previousPlan: plan };
-			persist();
+	let planHash = "";
+	const childEnvironment = process.env.PI_SUBAGENT_AGENT === WORKER;
+	const save = () => pi.appendEntry(STATE, state);
+	// Missing, empty and failed reads are unavailable snapshots, never an empty authoritative plan.
+	const readPlan = () => {
+		try {
+			if (!state.plan) throw new Error(messages.noPlan);
+			const text = readFileSync(state.plan, "utf8");
+			if (!text.trim()) throw new Error(messages.emptyPlan);
+			return { text };
+		} catch (error) { return { error: planUnavailable(state.plan, error) }; }
+	};
+	const planText = () => {
+		const snapshot = readPlan();
+		if (snapshot.text === undefined) throw new Error(snapshot.error);
+		return snapshot.text;
+	};
+	let turnsStale = 0;
+	let lastWorkingSet = "";
+	const checkIn = (ctx: ExtensionContext) => scheduleCheckIn(ctx.sessionManager.getSessionId(), state.plan ?? "");
+	const hasScheduleTool = () => pi.getAllTools().some((tool) => tool.name === "schedule_prompt");
+	const notedPlanValue = (prefix: string) => {
+		const snapshot = readPlan();
+		if (snapshot.text === undefined) return null;
+		const m = new RegExp(`^\\-\\s*${prefix}:\\s*(.+)$`, "im").exec(foldPlan(snapshot.text));
+		return m?.[1]?.trim() ?? null;
+	};
+	function refresh(ctx: ExtensionContext) {
+		if (state.mode === "chat") { ctx.ui.setStatus("goals", undefined); ctx.ui.setWidget("goals", undefined); return; }
+		const snapshot = readPlan();
+		if (snapshot.text === undefined) {
+			ctx.ui.setStatus("goals", snapshot.error);
+			ctx.ui.setWidget("goals", [snapshot.error]);
+			return;
 		}
-		const goals = scanGoals(plan);
-		if (goals.length > 0 && goals.every((goal) => (goal.status === "done" && state.signedOffGoals.includes(goalKey(goal.subject))) || goal.status === "cancelled")) {
-			stopWorkerTimers();
-			state = { ...state, phase: null };
-			models.leave();
-			persist();
-			intercom.detach();
+		const items = goals(snapshot.text);
+		// Reopened/deleted/ambiguous goal identities lose their sign-off. Manual ticks remain claims.
+		for (const subject of Object.keys(state.signoffs)) {
+			const matches = items.filter((g) => key(g.subject) === subject);
+			if (matches.length !== 1 || matches[0].status !== "done") { delete state.signoffs[subject]; save(); }
 		}
+		const accepted = items.filter((g) => g.status === "done" && state.signoffs[key(g.subject)]).length;
+		ctx.ui.setStatus("goals", `goals: ${state.child ? "worker" : state.mode} | ${accepted}/${items.length} reviewed`);
+		const mark = (status: GoalStatus, signed: boolean) => status === "done" ? (signed ? "✓" : "?") : status === "active" ? "▸" : status === "cancelled" ? "✗" : "○";
+		const lines: string[] = items.map((g) => `${mark(g.status, Boolean(state.signoffs[key(g.subject)]))} ${g.subject}`);
+		if (items.some((g) => g.status === "done" && !state.signoffs[key(g.subject)])) lines.push("? = completion claim; parent review still required");
+		ctx.ui.setWidget("goals", lines);
 	}
-
-	function startWorkerTimers(ctx: ExtensionContext): void {
-		if (!planWatcher) {
-			const activePath = planPath(ctx);
-			try {
-				// Watch the containing directory so atomic replacement does not lose the file watch.
-				planWatcher = watch(join(ctx.cwd, PLAN_DIR), (_event, filename) => {
-					if (intercom.ended || state.phase !== "working") return;
-					if (filename && join(ctx.cwd, PLAN_DIR, filename.toString()) !== activePath) return;
-					if (planEditTimer) clearTimeout(planEditTimer);
-					planEditTimer = setTimeout(() => {
-						planEditTimer = undefined;
-						if (intercom.ended || state.phase !== "working" || planPath(ctx) !== activePath) return;
-						updateWidget(ctx);
-						// Working edits coalesce into the existing settled view; idle edits wake review now.
-						if (ctx.isIdle() && readPlan(ctx) !== state.previousPlan) {
-							void publishWorkerView(ctx, "plan").catch(error => { if (!intercom.ended) ctx.ui.notify(`Plan review failed: ${String(error)}`, "error"); });
-						}
-					}, 150);
-				});
-				planWatcher.on("error", error => { if (!intercom.ended) ctx.ui.notify(`Plan watch failed: ${error.message}`, "error"); });
-			} catch (error) { ctx.ui.notify(`Could not watch active plan: ${String(error)}`, "warning"); }
-		}
-		if (!viewTimer) viewTimer = setInterval(() => {
-			void publishWorkerView(ctx, "interval").catch(error => { if (!intercom.ended) ctx.ui.notify(`Worker view failed: ${String(error)}`, "error"); });
-		}, 60 * 60_000);
-	}
-
-	function stopWorkerTimers(): void {
+	function watchPlan(ctx: ExtensionContext) {
 		planWatcher?.close();
 		planWatcher = undefined;
-		if (planEditTimer) clearTimeout(planEditTimer);
+		clearTimeout(planEditTimer);
 		planEditTimer = undefined;
-		if (viewTimer) clearInterval(viewTimer);
-		viewTimer = undefined;
-	}
-
-	async function stopSupervisor(): Promise<boolean> {
-		readyAttempt = undefined;
-		if (!state.supervisorPaneId) { stopWorkerTimers(); intercom.detach(); return true; }
+		const snapshot = readPlan();
+		if (snapshot.text !== undefined) planHash = digest(planViews(snapshot.text).short);
+		if (state.child || state.mode !== "supervising" || !state.plan) return;
+		const stamp = generation;
+		// Watch the directory so atomic plan replacement remains observable. This is an event hook:
+		// plan-change reviews, not another scheduled loop (the hourly job is schedule_prompt's). A
+		// short debounce coalesces bursts. Existing high-level plan views exclude maintenance
+		// (tasks/evidence/Log) while preserving requirement wording and goal checkbox claims.
 		try {
-			await closeSupervisorPane(state.supervisorPaneId);
-			stopWorkerTimers();
-			intercom.detach();
-			state = { ...state, supervisorPaneId: null };
-			persist();
-			return true;
-		} catch {
-			return false;
-		}
+			planWatcher = watch(dirname(state.plan), { persistent: false }, () => {
+			if (stamp !== generation) return;
+			if (planEditTimer) clearTimeout(planEditTimer);
+			planEditTimer = setTimeout(() => {
+				planEditTimer = undefined;
+				if (stamp !== generation || state.mode !== "supervising") return;
+				const snapshot = readPlan();
+				if (snapshot.text === undefined) { ctx.ui.notify(snapshot.error!, "warning"); return; }
+				refresh(ctx);
+				const hash = digest(planViews(snapshot.text).short);
+				if (hash === planHash) return;
+				planHash = hash;
+				notice = true;
+				send(planChangedReview(state.plan!));
+			}, 150);
+		});
+		planWatcher.on("error", (error) => { planWatcher?.close(); planWatcher = undefined; ctx.ui.notify(`Plan monitoring failed: ${error.message}`, "error"); });
+		} catch (error) { ctx.ui.notify(`Plan monitoring unavailable: ${String(error)}`, "error"); }
 	}
-
-	function updateWidget(ctx: ExtensionContext): void {
-		refreshSignoffs(ctx);
-		const paused = pauseReason();
-		if (paused) {
-			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "goals paused"));
-			ctx.ui.setWidget(WIDGET_KEY, [`pi-goals paused: ${paused}`]);
-			return;
+	function restore(ctx: ExtensionContext) {
+		generation++;
+		state = initial();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === STATE) state = structuredClone(entry.data as State);
 		}
-		if (state.phase === "planning") {
-			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("warning", "planning"));
-			ctx.ui.setWidget(WIDGET_KEY, ["pi-goals: drafting goals"]);
-			return;
+		if (childEnvironment) {
+			state.child = true;
+			state.mode = "solo";
+			// Lineage-only workers attach the explicit task path using AttachGoalPlan.
+			save();
 		}
-		const goals = scanGoals(readPlan(ctx));
-		if (goals.length === 0) {
-			ctx.ui.setStatus(STATUS_KEY, undefined);
-			ctx.ui.setWidget(WIDGET_KEY, undefined);
-			return;
-		}
-		const isSignedOff = (subject: string) => state.signedOffGoals.includes(goalKey(subject));
-		const done = goals.filter(g => g.status === "done" && isSignedOff(g.subject)).length;
-		const claimed = goals.filter(g => g.status === "done" && !isSignedOff(g.subject));
-		const liveGoals = goals.filter(g => g.status === "active" || g.status === "open");
-		const stateLabel = claimed.length ? ` · ${claimed.length} claimed, awaiting review` : liveGoals.length > 0 ? " · supervised" : " · complete";
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `◷ ${done}/${goals.length} goals${stateLabel}`));
-		const mark: Record<GoalStatus, string> = { done: "✔", active: "▸", open: "◻", cancelled: "✗" };
-		// Only live goals get lines so finished work never pushes current work off screen. The active
-		// goal also shows its open subtasks: this file is the task list, so the widget is the task list.
-		// No path line: the session id makes it too long to be useful in the widget.
-		const plan = readPlan(ctx);
-		const lines: string[] = claimed.map(g => `? claimed complete; awaiting supervisor review: ${g.subject}`);
-		if (liveGoals.length === 0 && claimed.length === 0) lines.push("✔ complete");
-		for (const g of liveGoals) {
-			lines.push(`${mark[g.status]} ${g.status === "active" ? "supervising… " : ""}${g.subject}`);
-			if (g.status === "active") lines.push(...openSubtasks(plan, g.line).slice(0, 3).map((s) => ctx.ui.theme.fg("muted", `   ◦ ${s}`)));
-		}
-		ctx.ui.setWidget(WIDGET_KEY, lines);
+		notice = true;
+		turnsStale = 0;
+		lastWorkingSet = "";
+		refresh(ctx);
+		watchPlan(ctx);
 	}
-
-	// --- /goals: enter plan mode or configure supervision -- Pi/Codex -----------------------------
-
-	pi.registerCommand("goals", {
-		description: `Plan goals, then open a visible supervisor session. /goals <objective> | work | supervise | noplan | reconnect | restart | clear | model <supervisor>`,
-		handler: async (args, ctx) => {
-			let arg = args.trim();
-			if (arg === "supervise") { ctx.ui.notify("This is the worker session. Run /goals supervise in the saved supervisor session; no new pairing was created.", "warning"); return; }
-			if (arg === "work") {
-				if (state.phase !== "working" || !state.approvalId || !state.supervisorPaneId) { ctx.ui.notify("No approved worker pairing to reconnect. A retained draft still needs Ready.", "warning"); return; }
-				arg = "reconnect";
-			}
-			if (arg === "noplan") {
-				if (state.phase !== "planning") { ctx.ui.notify("Not in planning mode; the current plan is unchanged.", "info"); return; }
-				readyAttempt = undefined;
-				planningContextPending = false;
-				resyncReason = null;
-				stopWorkerTimers();
-				intercom.detach();
-				models.leave();
-				state = { ...state, phase: null };
-				persist();
-				updateWidget(ctx);
-				ctx.ui.notify(`Planning exited. Draft preserved at ${planRel(ctx)}; no implementation was approved or started.`, "info");
-				return;
-			}
-			if (arg === "reconnect" || arg === "restart") {
-				if (!state.phase) { ctx.ui.notify("No active plan to recover.", "info"); return; }
-				if (!ctx.isIdle()) { ctx.ui.notify("Stop the current turn before recovering goal supervision.", "warning"); return; }
-				readyAttempt = undefined;
-				try {
-					await restoreModel(state.phase === "planning" ? "planning" : "worker", ctx);
-					if (arg === "restart") {
-						if (!(await stopSupervisor())) throw new Error("Could not close the tracked supervisor pane; no replacement was opened.");
-						state = { ...state, supervisorPaneId: null, approvalId: null };
-						persist();
-					}
-					if (state.phase === "working" || state.supervisorPaneId) {
-						if (arg === "reconnect") {
-							if (!state.approvalId) throw new Error("No saved supervision binding. Use /goals restart.");
-							intercom.configure(state.approvalId, "worker", ctx, false);
-							await intercom.waitReady(undefined, { peerOnly: true });
-						} else await startSupervisor(ctx);
-					}
-					if (intercom.ended) return;
-					if (state.phase === "working") {
-						intercom.markReady();
-						startWorkerTimers(ctx);
-					}
-					ctx.ui.notify(state.phase === "planning" ? "Planning model restored. Choose Ready when the plan is agreed." : "Goal supervision reconnected; the current plan is unchanged.", "info");
-				} catch (error) {
-					if (intercom.ended) return;
-					ctx.ui.notify(`Goal recovery failed: ${String(error)} Use /goals reconnect to retry, or /goals restart to explicitly replace the tracked pane.`, "warning");
-				}
-				updateWidget(ctx);
-				return;
-			}
-			if (arg === "clear") {
-				if (state.planVersion === null) {
-					ctx.ui.notify("No active plan to disconnect.", "info");
-					return;
-				}
-				const currentPlan = planRel(ctx);
-				if (!(await stopSupervisor())) {
-					ctx.ui.notify("Could not close the visible supervisor; the plan remains connected.", "warning");
-					return;
-				}
-				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, planVersion: null };
-				models.leave();
-				modelError = null;
-				persist();
-				updateWidget(ctx);
-				ctx.ui.notify(`Disconnected from ${currentPlan}; the file remains on disk.`, "info");
-				return;
-			}
-			if (arg === "model" || arg.startsWith("model ")) {
-				if (state.phase === "working") {
-					ctx.ui.notify("Run /goals clear before changing the active supervisor model.", "warning");
-					return;
-				}
-				if (!(await stopSupervisor())) {
-					ctx.ui.notify("Could not close the visible supervisor; its model was not changed.", "warning");
-					return;
-				}
-				const ref = arg.slice("model".length).trim();
-				state = { ...state, supervisorModel: ref || null, supervisorPaneId: null, approvalId: null };
-				persist();
-				ctx.ui.notify(`Goal-supervisor model ${ref ? `set to ${ref}` : "reset to the remembered supervisor model"}.`, "info");
-				return;
-			}
-			if (!(await stopSupervisor())) {
-				ctx.ui.notify("Could not close the visible supervisor; no new plan was started.", "warning");
-				return;
-			}
-			await restoreModel("planning", ctx);
-			state = { ...state, phase: "planning", supervisorPaneId: null, approvalId: null, planVersion: nextVersion(ctx), latestDirection: arg, signedOffGoals: [], previousPlan: null };
-			planningContextPending = true;
-			resyncReason = null;
-			writePlan(ctx, "");
-			persist();
-			updateWidget(ctx);
-			// The drafting rules are sent ONCE, with the seed. v2 re-injected them every turn, which is
-			// why plan mode read as never-ending: every reply re-armed it. They come back only on a
-			// resync (session start / compaction), when the model has genuinely lost them.
-			const seed = arg
-				? `We're in plan mode. Objective: ${arg}\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`
-				: `We're in plan mode. Tell me what you want to plan.\n\n${planDrafting}\n\nWrite the plan to ${planPath(ctx)}.`;
-			pi.sendUserMessage(seed, { deliverAs: "followUp" });
-		},
-	});
-
-	// --- hooks --------------------------------------------------------------------------------------
-
-	/** Restore the complete plan once after session start or compaction. */
-	function dueInjection(ctx: ExtensionContext, plan: string): string | null {
-		if (state.phase === "planning" || !plan.trim() || !resyncReason) return null;
-		const why = resyncReason;
-		resyncReason = null;
-		return resync(plan, planRel(ctx), why);
+	function compatible() {
+		const tools = pi.getAllTools();
+		const properties = (name: string) => (tools.find((t) => t.name === name)?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties;
+		return properties("subagent")?.title && properties("subagent")?.agent && properties("subagent_resume")?.sessionFile && properties("subagent_kill")?.id;
 	}
-
-	// The phase snapshot enters context only when planning starts or context was lost.
-	pi.on("before_agent_start", async (_event, ctx) => {
-		const paused = pauseReason();
-		if (paused) return { systemPrompt: `${ctx.getSystemPrompt()}\n\nGoal work is paused: ${paused} Do not implement or sign off goals. Human input and read-only diagnosis remain available; wait for recovery before resuming autonomous work.` };
-		if (state.phase === "working") {
-			return {
-				systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are the implementation worker for ${planRel(ctx)}. Keep the full conversation and do the work directly. A stronger read-only supervisor watches this session through pi-intercom and can steer you. Commit your evidence before asking for sign-off; never commit or discard unrelated changes to satisfy the clean-worktree gate. The supervisor can explicitly accept an inspected unchanged dirty state with ApproveGoal force and a reason. Stop when a goal appears complete so the supervisor can inspect a settled worker view. Call CompleteGoal only after the supervisor says it recorded approval. -- PI[Kimi K3]`,
-			};
+	function send(content: string, triggerTurn = true) {
+		// sendMessage(triggerTurn:true) bypasses before_agent_start in Pi 0.85.1.
+		// A normal saved prompt prepares the current role before starting the turn.
+		if (triggerTurn) pi.sendUserMessage(`[pi-goals]\n${content}`, { deliverAs: "followUp" });
+		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "followUp", triggerTurn: false });
+	}
+	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
+		if (launchPending) { ctx.ui.notify("Worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
+		const stamp = generation;
+		const revision = workerRevision;
+		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
+		const choice = await ctx.ui.select(solo ? "Confirm all other writers for the current and target plans are stopped (inspect /subagents and their panes). A missing handle is not proof. Take over in this session?" : "Confirm no other supervisor owns this plan. Preserve any existing worker session and reconnect rather than starting another writer.", [confirmation, "Cancel"]);
+		if (stamp !== generation || revision !== workerRevision) return false;
+		if (choice !== confirmation) return false;
+		if (readFileSync(target, "utf8") !== text) { ctx.ui.notify("Plan changed during takeover; confirm again.", "warning"); return false; }
+		return true;
+	}
+	function enterSolo(ctx: ExtensionContext) {
+		state.mode = "solo"; state.workerStopped = true;
+		generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+		send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${soloNotice(state.plan!)}`);
+	}
+	const help = "/goals new [initial idea] | review | ready | status | stop | resume | solo | exit | attach <plan.md> [solo] | model <model>\n/subagents opens the worker controls. Stop/exit pause this plan locally; worker termination must be confirmed through subagent_kill or its pane. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
+	async function ready(ctx: ExtensionContext, menu: boolean) {
+		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
+		const text = planText();
+		const items = goals(text);
+		if (!items.length || new Set(items.map((g) => key(g.subject))).size !== items.length) {
+			ctx.ui.notify("Write a plan with distinct '- [ ] goal: ...' subjects before Ready.", "warning"); return;
 		}
-		if (!planningContextPending) return;
-		planningContextPending = false;
-		return { message: { customType: PLANNING_CONTEXT, content: planningState(planPath(ctx)), display: false } };
-	});
-
-	// PI: Working turns never see an obsolete planning snapshot. Auto-compaction retries skip
-	// before_agent_start, so context restores the planning snapshot exactly once in that path.
-	pi.on("context", async (event, ctx) => {
-		const messages = state.phase === "planning" ? event.messages : event.messages.filter((message) => (message as { customType?: string }).customType !== PLANNING_CONTEXT);
-		const removedPlanningContext = messages.length !== event.messages.length;
-		if (state.phase === "planning" && planningContextPending) {
-			planningContextPending = false;
-			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: planningState(planPath(ctx)) }], timestamp: Date.now() }] };
-		}
-		const text = dueInjection(ctx, readPlan(ctx));
-		if (!text) return removedPlanningContext ? { messages } : undefined;
-		return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() }] };
-	});
-
-	// PI: Human plan-mode replies are durable evidence of the interview, not model summaries.
-	pi.on("input", async (event, ctx) => {
-		if (event.source === "extension") return;
-		state = { ...state, latestDirection: event.text };
-		persist();
-		if (state.phase === "planning") writePlan(ctx, appendInterview(readPlan(ctx), event.text));
-	});
-
-	pi.on("agent_start", async (_event, ctx) => {
-		await publishWorkerView(ctx, "started");
-	});
-
-	pi.on("turn_end", async (_event, ctx) => {
-		updateWidget(ctx);
-		if (state.phase !== "working") return;
-		workerTurns++;
-		if (workerTurns < 50) return;
-		workerTurns = 0;
-		await publishWorkerView(ctx, "turns");
-	});
-
-	pi.on("tool_call", async (event, ctx) => {
-		const paused = pauseReason();
-		if (paused && !(["read", "grep", "find", "ls"].includes(event.toolName) || (event.toolName === "bash" && isPlanningReadOnlyCommand(String((event.input as { command?: string }).command))))) {
-			return { block: true, terminate: true, reason: `Goal work is paused: ${paused} Only read-only diagnosis is available.` };
-		}
-		if (state.phase === "planning") {
-			if (PLAN_MODE_BLOCKED_TOOLS.includes(event.toolName)) {
-				const target = (event.input as { path?: string }).path;
-				if (target && resolve(ctx.cwd, target) === resolve(planPath(ctx))) return;
-				return { block: true, reason: `Planning is read-only: only ${planRel(ctx)} may be written. Agree the plan, then choose Ready.` };
-			}
-			if (event.toolName === "bash" && !isPlanningReadOnlyCommand(String((event.input as { command?: string }).command))) {
-				return { block: true, reason: "Planning is read-only: inspect facts without writes or pipes, then put the change in the plan." };
-			}
-			return;
-		}
-	});
-
-	// A compaction loses context, so restore either the planning snapshot or the working plan once.
-	pi.on("session_compact", async () => {
-		if (state.phase === "planning") planningContextPending = true;
-		else resyncReason = "The session was just compacted.";
-	});
-
-	// PI: Print after Pi settles. agent_end is still streaming, so its message queues behind the menu.
-	pi.on("agent_settled", async (_event, ctx) => {
-		if (state.phase === "working") {
-			await publishWorkerView(ctx, "settled");
-			return;
-		}
-		if (state.phase !== "planning" || modelError || !ctx.hasUI) return;
-		const version = state.planVersion;
-		const planning = () => !intercom.ended && state.phase === "planning" && state.planVersion === version;
-		let printed = "";
-		while (true) {
-			if (!planning()) return;
-			const plan = readPlan(ctx);
-			if (scanGoals(plan).length === 0) {
-				if (plan.trim()) ctx.ui.notify(`The plan has no goal line. Revise ${planRel(ctx)} to add one.`, "warning");
-				return;
-			}
-			if (plan !== printed) {
-				printed = plan;
-				pi.sendMessage({ customType: "plan", content: plan, display: true });
-			}
-			const choice = await ctx.ui.select(`Plan drafted in ${planRel(ctx)}.`, ["Ready", "Refine", "Edit", "Cancel"]);
-			if (!planning()) return;
-			if (choice === "Refine") {
-				const notes = await ctx.ui.editor("What should change about the plan?", "");
-				if (!planning()) return;
-				if (!notes?.trim()) continue;
-				state = { ...state, latestDirection: notes };
-				persist();
-				writePlan(ctx, appendInterview(plan, notes));
-				planningContextPending = true;
-				pi.sendUserMessage(`Revise the plan at ${planPath(ctx)} using these human notes:\n\n${notes}\n\nKeep the same goal structure.`, { deliverAs: "followUp" });
-				return;
-			}
+		const stamp = generation;
+		if (menu) {
+			const choice = await ctx.ui.select(`Review ${state.plan}`, ["Ready", "Discuss", "Edit", "Cancel"]);
+			if (stamp !== generation || digest(planText()) !== digest(text)) { ctx.ui.notify("Plan changed during review. Review it again.", "warning"); return; }
+			if (choice === "Discuss") { send(discuss); return; }
 			if (choice === "Edit") {
-				const edited = await ctx.ui.editor("Edit the plan", plan);
-				if (!planning()) return;
-				if (edited !== undefined && edited !== plan) writePlan(ctx, edited);
-				continue;
-			}
-			if (choice === "Cancel") {
-				if (!(await stopSupervisor())) { ctx.ui.notify("Could not close the tracked supervisor; plan was not discarded.", "warning"); return; }
-				rmSync(planPath(ctx), { force: true });
-				models.leave();
-				state = { ...state, phase: null, supervisorPaneId: null, approvalId: null, planVersion: null };
-				persist();
-				updateWidget(ctx);
-				ctx.ui.notify("Plan discarded.", "info");
+				const edited = await ctx.ui.editor("Edit goal plan", text);
+				if (edited !== undefined && stamp === generation && planText() === text && state.plan) { writeFileSync(state.plan, edited); refresh(ctx); }
 				return;
 			}
 			if (choice !== "Ready") return;
-			const attempt = {};
-			readyAttempt = attempt;
-			const current = () => !intercom.ended && readyAttempt === attempt && state.planVersion === version;
-			const checkApprovedPlan = () => {
-				if (readPlan(ctx) !== plan) throw new Error("The plan changed after Ready was selected. Review the changed plan and select Ready again; the existing supervisor pane is retained.");
-			};
-			try {
-				checkApprovedPlan();
-				await startSupervisor(ctx, current);
-				if (!current()) return;
-				checkApprovedPlan();
-				await restoreModel("worker", ctx);
-				if (!current()) return;
-				checkApprovedPlan();
-				state = { ...state, phase: "working" };
-				resyncReason = "The plan was approved.";
-				persist();
-				intercom.markReady();
-				startWorkerTimers(ctx);
-				await publishWorkerView(ctx, "ready");
-				if (!current()) return;
-				checkApprovedPlan();
-				updateWidget(ctx);
-				ctx.ui.notify(`Visible supervisor opened in Herdr pane ${state.supervisorPaneId}.`, "info");
-				pi.sendUserMessage("The plan is approved. Begin implementation as the worker.");
-				readyAttempt = undefined;
-			} catch (error) {
-				if (!current()) return;
-				intercom.markNotReady();
-				stopWorkerTimers();
-				ctx.ui.notify(`Goal supervisor could not start: ${error instanceof Error ? error.message : String(error)} Use /goals reconnect to retry, or /goals restart to replace the tracked pane.`, "warning");
-				state = { ...state, phase: "planning" };
-				persist();
-				updateWidget(ctx);
-			}
-			return;
+		}
+		if (!compatible()) { ctx.ui.notify("Requires edxeth/pi-subagents 2.9.x, not nicobailon/pi-subagents. Draft preserved; /goals solo is available.", "error"); return; }
+		state.mode = "supervising"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+		send(`${checkIn(ctx)}\n\n${readyApproved(WORKER, state.plan!, state.worker?.sessionFile, text, ctx.sessionManager.getSessionId())}`);
+	}
+
+	pi.on("session_start", (_e, ctx) => restore(ctx));
+	pi.on("session_tree", (_e, ctx) => restore(ctx));
+	pi.on("session_shutdown", () => { generation++; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
+	pi.on("session_compact", () => { notice = true; });
+	pi.on("turn_end", (_event, ctx) => {
+		if (!["supervising", "solo"].includes(state.mode)) return;
+		const snapshot = readPlan();
+		if (snapshot.text === undefined) { notice = true; return; }
+		const workingSet = foldPlan(snapshot.text);
+		turnsStale = workingSet === lastWorkingSet ? turnsStale + 1 : 0;
+		lastWorkingSet = workingSet;
+		refresh(ctx);
+		if (turnsStale === 8 && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")) {
+			// Pi queues context-only messages until tool results are appended at turn_end.
+			// This reaches the next model call in a long run without triggering another run.
+			pi.sendMessage({ customType: "pi-goals-upkeep", content: upkeep(state.plan!), display: false }, { triggerTurn: false });
 		}
 	});
-
-	pi.on("session_start", async (_event, ctx) => {
-		const last = ctx.sessionManager
-			.getEntries()
-			.filter((e: { type?: string; customType?: string }) => e.type === "custom" && e.customType === STATE)
-			.pop() as { data?: PlanState } | undefined;
-		state = {
-			phase: last?.data?.phase ?? null,
-			supervisorModel: last?.data?.supervisorModel ?? null,
-			supervisorPaneId: last?.data?.supervisorPaneId ?? null,
-			approvalId: last?.data?.approvalId ?? null,
-			planVersion: last?.data?.planVersion ?? null,
-			latestDirection: last?.data?.latestDirection ?? "",
-			signedOffGoals: last?.data?.signedOffGoals ?? [],
-			previousPlan: last?.data?.previousPlan ?? null,
-		};
-		modelError = state.phase ? "Role model restoration is pending." : null;
-		planningContextPending = state.phase === "planning";
-		resyncReason = state.phase === "working" ? "New session." : null;
-		if (state.phase === "working" && state.approvalId) {
-			intercom.configure(state.approvalId, "worker", ctx, false);
-			startWorkerTimers(ctx);
-		}
+	pi.on("agent_end", (_e, ctx) => { refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
+	let proposedDraft = "";
+	let proposing = false;
+	pi.on("agent_settled", async (_e, ctx) => {
+		if (state.child || state.mode !== "planning" || !ctx.hasUI || proposing) return;
+		const text = planText();
+		const version = `${state.plan}:${digest(text)}`;
+		if (!goals(text).length || version === proposedDraft) return;
+		proposedDraft = version;
+		proposing = true;
 		try {
-			if (state.phase) await restoreModel(state.phase === "planning" ? "planning" : "worker", ctx);
-		} catch (error) {
-			if (!intercom.ended) ctx.ui.notify(`Goal work paused: ${String(error)} Use /model, then /goals reconnect.`, "warning");
+			pi.sendMessage({ customType: "goal-plan-proposal", content: text, display: true }, { triggerTurn: false });
+			await ready(ctx, true);
+		} finally { proposing = false; }
+	});
+	// No context hook. Historical message arrays, native checkpoints and model selection are untouched.
+	pi.on("before_agent_start", (event, ctx) => {
+		if (state.mode === "chat") return;
+		const snapshot = readPlan();
+		if (snapshot.text === undefined) {
+			notice = true; // Retry resync on the next turn; do not consume a failed snapshot.
+			return { systemPrompt: `${event.systemPrompt}\n\n${state.child ? childPlanRole : ""}\n${snapshot.error}` };
 		}
-		if (intercom.ended) return;
-		if (state.phase === "working" && state.approvalId && !modelError) {
-			intercom.markReady();
-			void intercom.waitReady().catch(error => {
-				if (!intercom.ended && state.phase === "working") ctx.ui.notify(`Goal work paused: ${String(error)} Use /goals reconnect or /goals restart.`, "warning");
-			});
-		}
-		updateWidget(ctx);
+		const role = state.child ? childPlanRole : state.mode === "supervising"
+			? supervisor(WORKER, state.plan!, ctx.sessionManager.getSessionId())
+			: state.mode === "planning" ? planning(state.plan!) : state.mode === "paused" ? pausedRole : soloRole;
+		const content = notice ? planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text)
+			: undefined;
+		if (content) turnsStale = 0;
+		notice = false;
+		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(content ? { message: { customType: "pi-goals-plan", content, display: false } } : {}) };
+	});
+	pi.on("tool_call", (event) => {
+		if (state.child || !["subagent", "subagent_resume"].includes(event.toolName)) return;
+		// Solo means this chat took over implementation: no concurrent writer may be delegated.
+		if (state.mode === "planning" || state.mode === "paused" || state.mode === "solo") return { block: true, reason: goalToolBlocked(state.mode) };
+		if (state.plan) { launchPending = true; state.workerStopped = false; workerRevision++; save(); }
+	});
+	pi.on("tool_result", (event) => {
+		if (state.child || !state.plan || !["subagent", "subagent_resume"].includes(event.toolName)) return;
+		launchPending = false;
+		if (event.isError) return;
+		const details = event.details as { id?: string; sessionFile?: string } | undefined;
+		if (details?.id && details.sessionFile) { state.worker = { id: details.id, sessionFile: details.sessionFile }; state.workerStopped = false; workerRevision++; save(); }
 	});
 
-	pi.on("session_shutdown", async () => {
-		stopWorkerTimers();
-	});
-
-	pi.registerTool({
-		name: "CompleteGoal",
-		label: "Goal signoff",
-		description: completeGoalDescription,
-		parameters: Type.Object({
-			goal: Type.String({ description: completeGoalParamDescription }),
-		}),
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (signal?.aborted) return result("Goal sign-off cancelled; no completion recorded.", true);
-			const binding = state.approvalId;
-			const version = state.planVersion;
-			if (state.phase !== "working") return result("Planning is not approved. Choose Ready before signing off a goal.", true);
-			if (pauseReason()) return result(`Goal sign-off blocked: ${pauseReason()}`, true);
-			if (!state.approvalId) return result("Goal sign-off blocked: no current supervisor review.", true);
-			const background = await backgroundState(pi);
-			if (signal?.aborted || intercom.ended || state.approvalId !== binding || state.planVersion !== version || state.phase !== "working") return result("Goal sign-off cancelled or superseded; no completion recorded.", true);
-			if (intercom.ended || !background.quiet || pauseReason()) return result(`Goal sign-off blocked: ${pauseReason() ?? background.description}`, true);
-			const plan = readPlan(ctx);
-			if (!plan.trim()) return result(`No plan file at ${planRel(ctx)}. Run /goals to draft one.`, true);
-			const block = goalBlock(plan, params.goal);
-			if (!block) return result(`No unique open goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
-			const approval = readApproval(approvalPath(ctx.cwd, ctx.sessionManager.getSessionId(), params.goal));
-			let repository: ReturnType<typeof repositoryState>;
+	pi.registerCommand("goals", {
+		description: "Goal plan actions: new, review, ready, status, stop, resume, solo, attach, model, exit",
+		getArgumentCompletions: (prefix) => ["new", "review", "ready", "status", "stop", "resume", "solo", "attach", "model", "exit", "help"].filter((verb) => verb.startsWith(prefix)).map((verb) => ({ value: verb, label: verb })),
+		handler: async (args, ctx) => {
 			try {
-				repository = repositoryState(ctx.cwd, Boolean(approval?.force));
-			} catch (error) {
-				return result(`Goal sign-off could not inspect the repository: ${error instanceof Error ? error.message : String(error)}`, true);
-			}
-			if (!repository.cleanWorktree && !approval?.force) return result("Goal sign-off blocked: worktree is dirty. Request supervisor inspection, not an unrelated cleanup commit.", true);
-			if (!approvalMatches(approval, {
-				approvalId: state.approvalId,
-				goal: params.goal,
-				planPath: planPath(ctx),
-				goalBlockHash: hashGoalBlock(block),
-				repoRoot: repository.repoRoot,
-				head: repository.head,
-				tree: repository.tree,
-				cleanWorktree: repository.cleanWorktree,
-				worktree: repository.worktree,
-			})) return result("Goal sign-off blocked: no matching supervisor approval checkpoint. Request a fresh supervisor review.", true);
-			const ticked = tickGoal(plan, params.goal);
-			if (!ticked) return result(`No unique exact goal line matched "${params.goal}" in ${planRel(ctx)}.`, true);
-			if (signal?.aborted) return result("Goal sign-off cancelled; no completion recorded.", true);
-			writePlan(ctx, appendLog(ticked, `${stamp()} mechanically signed off "${params.goal}" after matching supervisor approval`));
-			state = { ...state, signedOffGoals: [...state.signedOffGoals.filter(goal => goal !== goalKey(params.goal)), goalKey(params.goal)] };
-			persist();
-			updateWidget(ctx);
-			return result(`Sign-off accepted. Goal ticked [x] in ${planRel(ctx)}.`);
+				if (state.child) { ctx.ui.notify("This is the delegated worker. Goal approval belongs to its parent.", "info"); return; }
+				let command = args.trim();
+				if (!command) {
+					const actions = ["status — Show current plan", "new — New plan", "attach — Open an existing plan", "review — Review current plan", "ready — Approve draft", "stop — Pause work", "resume — Continue paused work", "solo — Work in this session", "model — Set worker model", "exit — Leave goal mode", "help — Show commands"];
+					const before = generation;
+					const choice = await ctx.ui.select("Goal plan actions", actions);
+					if (!choice || before !== generation) return;
+					command = choice.split(" — ")[0];
+					if (["attach", "model"].includes(command)) {
+						const value = await ctx.ui.editor(command === "attach" ? "Plan path (optional: solo)" : "Worker model (provider/model)", "");
+						if (!value?.trim() || before !== generation) return;
+						command += ` ${value.trim()}`;
+					}
+				}
+				if (command === "help") { ctx.ui.notify(help, "info"); return; }
+				if (command === "status") {
+					refresh(ctx);
+					ctx.ui.notify([
+						`Mode: ${state.mode}`,
+						`Plan: ${state.plan ?? "none"}`,
+						`Preferred worker model (plan): ${notedPlanValue("preferred worker model") ?? "not stated; use /goals model <model>"}`,
+						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
+						notedPlanValue("worker session") ? `Worker session noted in plan: ${notedPlanValue("worker session")}` : "",
+						`Hourly check-in: schedule_prompt job ${JSON.stringify(`goals-${ctx.sessionManager.getSessionId()}`)} (list/remove via schedule_prompt; plan-change reviews are the plan-watcher event hook)`,
+						"Liveness is owned by edxeth; inspect /subagents.",
+					].filter(Boolean).join("\n"), "info");
+					return;
+				}
+				if (command === "review" && state.mode === "supervising") { notice = true; send(manualReview(state.plan ?? "")); return; }
+				if (command === "review" || command === "ready") { await ready(ctx, command === "review"); return; }
+				if (command === "model" || command.startsWith("model ")) {
+					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
+					const ref = command.slice("model".length).trim();
+					if (!ref) { ctx.ui.notify("Use /goals model <provider/model>; no preference changed.", "info"); return; }
+					const lines = planText().split("\n");
+					const pref = `- preferred worker model: ${ref || "(none specified)"}`;
+					const found = lines.findIndex((line) => /^-\s*preferred worker model:/i.test(line));
+					if (found >= 0) lines[found] = pref;
+					else { const title = lines.findIndex((line) => /^#\s/.test(line)); lines.splice(title >= 0 ? title + 1 : 0, 0, pref); }
+					writeFileSync(state.plan, lines.join("\n"));
+					planHash = digest(planViews(planText()).short);
+					refresh(ctx);
+					ctx.ui.notify(ref ? `Preferred worker model set to ${ref} in plan preferences. The supervisor selects it at launch and verifies the resolved model; the worker pane's own model is chosen with /model in that pane.` : "Preferred worker model cleared.", "info");
+					return;
+				}
+				if (command === "attach" || command.startsWith("attach ")) {
+					const rest = command.slice("attach".length).trim();
+					const [raw, kind, extra] = rest.split(/\s+/);
+					const solo = kind === "solo";
+					if (extra || (kind && !solo)) { ctx.ui.notify("Use /goals attach <path-to-plan.md> [solo].", "warning"); return; }
+					if (!raw) { ctx.ui.notify("Use /goals attach <path-to-plan.md> [solo].", "info"); return; }
+					const target = isAbsolute(raw) ? raw : resolve(ctx.cwd, raw);
+					let text: string;
+					try { text = readFileSync(target, "utf8"); } catch { ctx.ui.notify(`Cannot read plan at ${target}.`, "error"); return; }
+					if (!goals(text).length) { ctx.ui.notify(`${target} has no '- [ ] goal:' lines; attach a judgeable plan.`, "warning"); return; }
+					if (!solo && ((state.worker && !state.workerStopped) || state.mode === "supervising")) { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
+					const noted = /^-\s*worker session:\s*(\S+)/im.exec(foldPlan(text))?.[1];
+					if (!(await confirmOwnership(ctx, target, text, solo))) return;
+					const retained = target === state.plan ? state.signoffs : {};
+					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
+					state = { mode: solo ? "solo" : "planning", plan: target, signoffs: retained, worker, workerStopped: solo || (!noted && state.workerStopped) };
+					generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					if (solo) enterSolo(ctx);
+					else send(attachNotice(target, false, noted));
+					return;
+				}
+				if (command === "stop" || command === "exit") {
+					if (state.mode === "planning") {
+						if (command === "stop") { ctx.ui.notify("A draft cannot pause; use /goals exit to leave planning with the draft preserved.", "warning"); return; }
+						// Planning exit must not get the model trapped re-planning or lose the draft.
+						state.mode = "chat"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+						ctx.ui.notify(`Planning exited; draft preserved at ${state.plan}. No implementation was approved or started. Reconnect with /goals attach ${state.plan}.`, "info");
+						return;
+					}
+					state.mode = command === "stop" ? "paused" : "chat"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${pauseExitNotice(state.worker, command === "exit")}`, Boolean(state.worker) || hasScheduleTool());
+					return;
+				}
+				if (command === "resume") {
+					if (state.mode !== "paused" || !state.plan) { ctx.ui.notify("Only a paused approved plan can resume. A draft needs Ready.", "warning"); return; }
+					if (!compatible()) { ctx.ui.notify("edxeth tools unavailable; plan remains paused.", "error"); return; }
+					state.mode = "supervising"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					send(`${checkIn(ctx)}\n\n${resumeNotice(WORKER, state.plan, state.worker)}`);
+					return;
+				}
+				if (command === "solo") {
+					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
+					if (!(await confirmOwnership(ctx, state.plan, planText()))) return;
+					enterSolo(ctx);
+					return;
+				}
+				if (command !== "new" && !command.startsWith("new ")) { ctx.ui.notify(`Unknown or incomplete command. ${help}`, "warning"); return; }
+				const objective = command.slice(4).trim();
+				if ((state.worker && !state.workerStopped) || state.mode === "supervising") { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
+				const path = join(ctx.cwd, ".pi", "plan", `${ctx.sessionManager.getSessionId()}-main.md`);
+				mkdirSync(dirname(path), { recursive: true });
+				// Never overwrite an earlier plan at this session path; the model can revise it after inspection.
+				try { writeFileSync(path, planDocument(objective), { flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+				send(planningSeed(objective, path));
+			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},
 	});
-}
-
-// --- helpers (module scope) --------------------------------------------------------------------
-
-// A compact changed span, not a second plan parser. Worker views bound its serialized size.
-function planDiff(before: string, after: string): string {
-	if (before === after) return "none";
-	const old = before.split("\n");
-	const next = after.split("\n");
-	let start = 0;
-	while (start < old.length && start < next.length && old[start] === next[start]) start++;
-	let oldEnd = old.length;
-	let nextEnd = next.length;
-	while (oldEnd > start && nextEnd > start && old[oldEnd - 1] === next[nextEnd - 1]) { oldEnd--; nextEnd--; }
-	return [`@@ from line ${start + 1} @@`, ...old.slice(start, oldEnd).map(line => `- ${line}`), ...next.slice(start, nextEnd).map(line => `+ ${line}`)].join("\n");
-}
-
-function result(text: string, isError = false) {
-	return { content: [{ type: "text" as const, text }], details: {}, isError };
-}
-
-function mutatingReadCommand(part: string): boolean {
-	return /(?:^|\s)--output(?:=|\s|$)|^find\b.*\s-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)(?:\s|$)/.test(part)
-		|| (/^git\s+branch\b/.test(part) && !/^git\s+branch(?:\s+(?:--show-current|--list|-a|--all|-r|--remotes|-v|-vv))*$/.test(part));
-}
-
-function isPlanningReadOnlyCommand(command: string): boolean {
-	if (/[|><`$\n\r]/.test(command)) return false;
-	return command.split(/&&|;/).every((raw) => {
-		const part = raw.trim();
-		return !mutatingReadCommand(part) && /^(?:cd\b|pwd|ls\b|git\s+(?:status|log|diff|show|branch)\b|rg\b|grep\b|find\b|head\b|tail\b|wc\b|stat\b|test\b)\b/.test(part);
+	pi.registerTool({
+		name: "AttachGoalPlan", label: "Attach delegated plan", description: attachGoalPlanDescription,
+		parameters: Type.Object({ path: Type.String() }),
+		async execute(_id, params, _signal, _update, ctx) {
+			if (!state.child) return result(messages.childAttachOnly);
+			try {
+				if (!isAbsolute(params.path) || !goals(readFileSync(params.path, "utf8")).length) return result(messages.invalidAttachment);
+			} catch { return result(messages.invalidAttachment); }
+			state.plan = params.path; generation++; notice = true; save(); refresh(ctx);
+			return result(childPlanAttached(params.path));
+		},
 	});
-}
-
-
-/** Local time, not UTC: agents freehand-stamp their manual ## Log lines from the local clock they
- *  see, so a UTC tool stamp made the trail read as two different afternoons (dogfood finding). */
-function stamp(): string {
-	const d = new Date();
-	const p = (n: number) => String(n).padStart(2, "0");
-	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-/** Tick the goal line whose subject exactly matches `goal` (trimmed, case-insensitive) to [x].
- *  Null when there is no unique exact match. Reuses GOAL_LINE and is deliberately not fuzzy. */
-export function tickGoal(plan: string, goal: string): string | null {
-	const lines = plan.split("\n");
-	const want = goal.trim().toLowerCase();
-	const hits = scanGoals(plan).filter(g => g.subject.toLowerCase() === want).map(g => g.line);
-	if (hits.length !== 1) return null;
-	lines[hits[0]] = lines[hits[0]].replace(/\[[ xX/-]\]/, "[x]");
-	return lines.join("\n");
-}
-
-/** Append one line under ## Log (creating the section at EOF if absent). */
-export function appendLog(text: string, entry: string): string {
-	const lines = text.split("\n");
-	const line = `- ${entry}`;
-	const header = lines.findIndex((l) => FOLD_LINE.test(l));
-	if (header === -1) return `${text.replace(/\n+$/, "")}\n\n## Log\n${line}\n`;
-	let insertAt = header + 1;
-	for (let i = header + 1; i < lines.length; i++) {
-		if (/^#{1,6}\s/.test(lines[i])) break;
-		if (/^\s*-\s+/.test(lines[i])) insertAt = i + 1;
-	}
-	lines.splice(insertAt, 0, line);
-	return lines.join("\n");
-}
-
-/** PI: Preserve human plan-mode answers verbatim below the fold. */
-export function appendInterview(text: string, answer: string): string {
-	const lines = text.split("\n");
-	const header = lines.findIndex((l) => /^##\s+Interview\s*$/i.test(l));
-	const entry = [`### ${stamp()}`, "", ...answer.split("\n").map((line) => `> ${line}`), ""];
-	if (header === -1) return `${text.replace(/\n+$/, "")}\n\n## Interview\n\n${entry.join("\n")}`;
-	let insertAt = header + 1;
-	while (insertAt < lines.length && !/^##\s+/.test(lines[insertAt])) insertAt++;
-	lines.splice(insertAt, 0, ...entry);
-	return lines.join("\n");
+	pi.registerTool({
+		name: "CompleteGoal", label: "Review goal evidence",
+		description: completeGoalDescription,
+		parameters: Type.Object({ goal: Type.String(), evidence: Type.Array(Type.String(), { minItems: 1 }), observation: Type.String({ minLength: 1 }) }),
+		async execute(_id, params, signal, _update, ctx) {
+			if (state.child || !["supervising", "solo"].includes(state.mode)) return result(messages.completionUnavailable);
+			if (signal?.aborted) return result(messages.cancelled);
+			const snapshot = readPlan();
+			if (snapshot.text === undefined) return result(snapshot.error!);
+			const text = snapshot.text;
+			const matches = goals(text).filter((g) => g.status !== "cancelled" && key(g.subject) === key(params.goal));
+			if (matches.length !== 1 || !state.plan) return result(messages.uniqueGoal);
+			const evidence = params.evidence.map((file) => isAbsolute(file) ? file : resolve(ctx.cwd, file));
+			try { for (const file of evidence) if (!readFileSync(file).length) throw new Error(emptyEvidence(file)); }
+			catch (error) { return result(evidenceUnavailable(error)); }
+			const lines = text.split("\n");
+			lines[matches[0].index] = lines[matches[0].index].replace(/\[[ xX/-]\]/, "[x]");
+			let log = lines.findIndex(line => /^##\s+Log\s*$/i.test(line));
+			if (log === -1) { lines.push("", "## Log"); log = lines.length - 1; }
+			lines.splice(log + 1, 0, "", completionLog(params.goal, params.observation, evidence, state.mode === "solo"));
+			writeFileSync(state.plan, `${lines.join("\n").trimEnd()}\n`);
+			state.signoffs[key(matches[0].subject)] = { evidence, observation: params.observation };
+			planHash = digest(planViews(planText()).short);
+			save(); refresh(ctx);
+			const remaining = goals(planText()).some((goal) => goal.status !== "cancelled" && (goal.status !== "done" || !state.signoffs[key(goal.subject)]));
+			return result(completionResult(matches[0].subject, ctx.sessionManager.getSessionId(), remaining, state.mode === "solo"));
+		},
+	});
 }

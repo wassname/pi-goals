@@ -44,6 +44,10 @@ The plan file looks like this:
 
 <one concrete sentence naming the final artifact or behavior the human will inspect>
 
+### Preferences
+
+- preferred worker model: <provider/model>
+
 ### User voice
 
 - │ "<the human's requirement, quoted in full word for word (with spelling fixes)>"
@@ -51,21 +55,21 @@ The plan file looks like this:
 ### Goals
 
 1. [ ] goal: <one short judgeable imperative outcome>
-- subtle failure mode: <a way this could look done but isn't>
-- discriminator: <the concrete observation that tells real success from that failure>
-- tasks:
-    1. [ ] <subtask>
-- evidence: (empty until sign-off)
+   - subtle failure mode: <a way this could look done but isn't>
+   - discriminator: <the concrete observation that tells real success from that failure>
+   - tasks:
+     1. [ ] <subtask>
+   - evidence: (empty until sign-off)
 
 ### Future work / out of scope
 
 ### Log
 
-### Interview
+### Interview (optional)
 
-### Learnings
+### Learnings (optional)
 
-### Papercuts - problems, gotchas, suggestions
+### Papercuts - problems, gotchas, suggestions (optional)
 ```
 
 ## Related work
@@ -77,29 +81,26 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Requires Herdr, [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. Remove the unrelated `npm:pi-subagents` package if installed.
+Requires Herdr. The package includes the worker, messaging and scheduled-prompt extensions. Remove separate installations of pi-subagents, pi-intercom and pi-schedule-prompt to avoid loading them twice.
 
 ```bash
-pi install git:github.com/edxeth/pi-subagents@v2.9.0
-pi install npm:pi-intercom
-pi install npm:pi-schedule-prompt
 pi install git:github.com/wassname/pi-goals@experiment/main-supervisor-edxeth
 ```
 
-Copy [`prototype/agents/goals-worker.md`](prototype/agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session.
+Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session.
 
 Or for development:
 
 ```bash
 git clone -b experiment/main-supervisor-edxeth https://github.com/wassname/pi-goals
 cd pi-goals && npm install
-pi -e ./src/prototype.ts
+pi -e ./src/index.ts
 ```
 
 ## Use
 
 ```
-/goals new CSV export for the report view
+/goals
 ```
 
 `/goals` opens the action menu. New plan enters plan mode and starts a conversation; the objective is an optional seed. From there:
@@ -120,7 +121,7 @@ main chat do the work after confirming other workers stopped; completion is then
 `/goals model <model-ref>` picks the worker model. `/schedule-prompt` manages check-ins.
 
 Stop workers before reloading the supervisor: the subagent package can otherwise crash it when a
-worker later exits. The scheduler deletes disabled jobs on reload. [Test results and recovery](slop/reviews/20260910_package-supervision-herdr.md).
+worker later exits. The scheduler deletes disabled jobs on reload. Restart the saved Pi session and reattach the plan.
 
 ## Prompts
 
@@ -129,12 +130,20 @@ You can read all the prompts in conversation order in [`src/prompts.ts`](src/pro
 ## Develop
 
 ```bash
-pi -e ./src/prototype.ts     # load locally; do not also load the installed copy
+pi -e ./src/index.ts     # load locally; do not also load the installed copy
 npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck
 npm run lint
 ```
+
+To measure recorded usage since the latest planning start:
+
+```bash
+node scripts/session-usage.mjs <supervisor.jsonl> <worker.jsonl>
+```
+
+This separates output, uncached input and repeated cached input. It excludes subprocess API calls. [Isolated Herdr test setup](scripts/prepare-trial.mjs).
 
 ## License
 

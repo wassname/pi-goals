@@ -1,1 +1,0 @@
-{"passed":true,"requests":3,"network":0,"contextHooks":0,"readyRole":"supervising","snapshotUnchanged":true,"scope":"Actual Pi SDK + copied native checkpoint, deterministic model; compaction notification simulated"}

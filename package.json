@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
   "version": "0.2.2",
-  "description": "Prototype: plan and supervise in the main chat with a visible edxeth Pi worker.",
+  "description": "Discuss a goal plan, then supervise a visible worker and verify its results.",
   "private": true,
   "author": "wassname",
   "license": "MIT",
@@ -29,7 +29,7 @@
   },
   "files": [
     "src",
-    "prototype",
+    "agents",
     "README.md"
   ],
   "publishConfig": {
@@ -45,10 +45,6 @@
     "lint": "biome check src/ test/",
     "lint:fix": "biome check --fix src/ test/"
   },
-  "dependencies": {
-    "@sting8k/pi-vcc": "0.5.0",
-    "pi-intercom": "^0.13.0"
-  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
     "@earendil-works/pi-coding-agent": "0.85.1",
@@ -60,8 +56,24 @@
   },
   "pi": {
     "extensions": [
-      "./src/prototype.ts"
+      "./src/index.ts",
+      "./node_modules/pi-subagents/src/index.ts",
+      "./node_modules/pi-intercom/index.ts",
+      "./node_modules/pi-schedule-prompt/src/index.ts"
     ],
-    "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"
-  }
+    "image": "https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f",
+    "skills": [
+      "./node_modules/pi-intercom/skills"
+    ]
+  },
+  "dependencies": {
+    "pi-subagents": "git+https://github.com/edxeth/pi-subagents.git#953c6f6d2fc7d8a5c956c30cd77c51bad697c2a4",
+    "pi-intercom": "0.13.0",
+    "pi-schedule-prompt": "0.4.1"
+  },
+  "bundledDependencies": [
+    "pi-subagents",
+    "pi-intercom",
+    "pi-schedule-prompt"
+  ]
 }

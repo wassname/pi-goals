@@ -1,2 +1,0 @@
-{"length":13,"hex":"68656c6c6f20776f726b65720a","bytes":[104,101,108,108,111,32,119,111,114,107,101,114,10]}
-PASS: full Buffer equality and length 13

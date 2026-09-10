@@ -1,7 +1,0 @@
-evidence/greeting-worker/exit-status.txt
-evidence/greeting-worker/run.sh
-evidence/greeting-worker/run.stderr.txt
-evidence/greeting-worker/run.stdout.txt
-evidence/greeting-worker/stderr.txt
-evidence/greeting-worker/stdout.txt
-evidence/greeting-worker/verify.mjs

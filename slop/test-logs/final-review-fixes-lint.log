@@ -1,5 +1,0 @@
-
-> @wassname2/pi-goals@0.2.2 lint
-> biome check src/ test/
-
-Checked 43 files in 41ms. No fixes applied.

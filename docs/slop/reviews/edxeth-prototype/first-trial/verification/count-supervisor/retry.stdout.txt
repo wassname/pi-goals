@@ -1,9 +1,0 @@
-PASS greeting
-PASS empty
-PASS unicode
-PASS binary
-PASS missing
-PASS extra
-PASS nonexistent
-PASS denied
-PASS all checks; evidence: evidence/count-supervisor/run-HD5Ge1

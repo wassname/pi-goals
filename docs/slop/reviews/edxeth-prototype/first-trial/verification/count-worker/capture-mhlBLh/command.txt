@@ -1,1 +1,0 @@
-node evidence/count-worker/verify.mjs
