@@ -1,0 +1,47 @@
+{
+  "fire": [
+    {
+      "type": "custom_message",
+      "customType": "scheduled_prompt",
+      "content": [],
+      "display": true,
+      "details": {
+        "jobId": "np-gHnDsp_",
+        "jobName": "goals-ui-probe",
+        "prompt": "Say TIMER-PROMPT-NEW, then list jobs and remove only goals-ui-probe owned by this session; no files/plans/workers/other jobs changed."
+      },
+      "id": "81809511",
+      "parentId": "7112d7c6",
+      "timestamp": "2026-09-10T04:47:38.495Z"
+    }
+  ],
+  "removed": {
+    "type": "message",
+    "id": "19e91aaf",
+    "parentId": "7ae72770",
+    "timestamp": "2026-09-10T04:47:44.939Z",
+    "message": {
+      "role": "toolResult",
+      "toolCallId": "call_e5726f051f5643efa7be5639",
+      "toolName": "schedule_prompt",
+      "content": [
+        {
+          "type": "text",
+          "text": "✓ Removed cron job \"goals-ui-probe\" (np-gHnDsp_)"
+        }
+      ],
+      "details": {
+        "action": "remove",
+        "jobs": [],
+        "jobId": "np-gHnDsp_",
+        "jobName": "goals-ui-probe"
+      },
+      "isError": false,
+      "timestamp": 1789015664939
+    }
+  },
+  "store": {
+    "jobs": [],
+    "version": 1
+  }
+}

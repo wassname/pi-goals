@@ -53,6 +53,35 @@ And it would only be a few output tokens.
 
 -- wassname (spelling and punctuation corrected by Pi/OpenAI)
 
+## Agreed package-based design, 2026-09-10
+
+> use the exdth subagent as they have a full herdr pane
+> use pi schedule prompt for check ins and goal plan loop on supervisor (unless it should be part of pi plan)
+> use pi-intercome for sending message between agent and supervisor where there is not great fit in this subagent package
+>
+> hopefully that gets me most of what I wanted in a simple, using existing packages, and even user visible way
+
+-- wassname (verbatim)
+
+Pi/OpenAI implementation scope:
+- Keep the short main-chat supervisor prototype and unmodified edxeth/pi-subagents. Workers use its full interactive Herdr pane and saved-session resume. Do not resume the abandoned runtime patch.
+- pi-goals owns the agreed plan, review notifications and supervisor role. Installed pi-schedule-prompt owns the visible hourly wake-up: one session-bound job, no model override, reminding the same supervisor to inspect the plan/progress and continue authorized work. Remove it on pause, exit or completion; do not build another timer or scheduler.
+- Use existing edxeth reports/resume where they fit. Use pi-intercom for live cross-session messages where needed; identify the actual worker session, preserve human drafts, and test delivery and auto-exit interaction before claiming compatibility. No custom message transport.
+- The supervisor may edit the plan and approve completion after inspecting actual results. It delegates implementation and must not weaken the agreed goal to accept worker output. Keep normal tools; express the division in editable prompts.
+- State the requested worker model in plan preferences; the supervisor selects it and checks the resolved model. Reuse existing usage displays before adding token-reporting code.
+- Keep all model-facing prompts in `src/prompts.ts`, in narrative order: planning/interview, Ready, supervision and plan upkeep, check-ins/messages, completion, pause/resume and solo. Make them easy for the user to review and edit.
+- Preserve useful features from `main`: plan widgets, progress/subtask visibility, plan-upkeep reminders, high-value planning questions and post-compaction plan context. Check which role needs each feature rather than copying the old supervisor runtime.
+- Scheduled loops must be visible, editable and removable using the scheduler's own UI. Explain whether each reminder is a scheduled job or an event hook; do not advertise a second timer that does not exist.
+- Keep an explicit recoverable solo mode: confirm any worker has stopped before allowing the main thread to take over implementation and plan edits. Solo completion is self-verification, not an independent supervisor review.
+
+On inexpensive testing:
+
+> try deepseek flash or glm flash for cheap tests. codex lunda on plan 2 are ok
+
+-- wassname (verbatim; model availability and exact provider IDs still need checking)
+
+These decisions supersede the older two-pane supervisor transport and approval mechanics described below, but retain the user's judgment, autonomy and visibility preferences. -- Pi/OpenAI
+
 ## Supervisor behavior preferences
 
 Recorded by Pi/OpenAI from wassname's instructions.

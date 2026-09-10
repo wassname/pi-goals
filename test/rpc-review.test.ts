@@ -85,7 +85,8 @@ describe("RPC review flow", () => {
 		], {
 			cwd,
 			env: {
-				...process.env,
+				// This fixture tests the MAIN extension, even when vitest runs in a delegated session.
+				...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PI_SUBAGENT_") && !name.startsWith("PI_GOALS_"))),
 				PI_CODING_AGENT_DIR: join(cwd, ".agent"),
 				PI_GOALS_OFFLINE_MODEL_URL: `http://127.0.0.1:${address.port}`,
 			},

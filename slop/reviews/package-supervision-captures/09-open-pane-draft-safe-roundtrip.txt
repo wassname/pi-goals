@@ -1,0 +1,59 @@
+{"type":"custom_message","customType":"intercom_message","content":"**From [goals-worker] Read-only draft-safe intercom probe** (/tmp/goals-edxeth-trial-HSahSm/project)\n\n_id bfee08a1-c796-4e98-b97b-f8c1aa21aa6e · seq 2 · sent 2026-09-10T04:37:58.372Z · broker delivered 2026-09-10T04:37:58.373Z · receiver received 2026-09-10T04:37:58.373Z · injected 2026-09-10T04:37:58.373Z_\n\nOPEN-PANE-ACK","display":true,"details":{"from":{"id":"003c8e70-9999-4920-8a5c-064172010188","endpointEpoch":"a9d0684f-b821-4982-980d-9cd0798ddb70","name":"[goals-worker] Read-only draft-safe intercom probe","runtimeFallbackAlias":false,"cwd":"/tmp/goals-edxeth-trial-HSahSm/project","model":"accounts/fireworks/models/deepseek-v4-flash-0731","pid":708378,"startedAt":1789014977644,"lastActivity":1789015078370,"status":"tool:intercom","trustedLocal":true,"contextPct":2,"contextTokens":23575,"contextWindow":1000000},"message":{"id":"bfee08a1-c796-4e98-b97b-f8c1aa21aa6e","timestamp":1789015078372,"senderSequence":2,"content":{"text":"OPEN-PANE-ACK"},"brokerReceivedAt":1789015078373,"brokerDeliveredAt":1789015078373,"receiverReceivedAt":1789015078373,"injectedAt":1789015078373},"bodyText":"OPEN-PANE-ACK"},"id":"0eaf9dc5","parentId":"c645b2a8","timestamp":"2026-09-10T04:37:58.375Z"}
+{"agent":"pi","agent_status":"idle","cwd":"/tmp/goals-edxeth-trial-HSahSm/project","focused":false,"foreground_cwd":"/tmp/goals-edxeth-trial-HSahSm/project","label":"goals trial — Fireworks","pane_id":"w8:p69","revision":4,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":57},"tab_id":"w8:t1","terminal_id":"term_65b1942e7d0586a","terminal_title":"π - project","terminal_title_stripped":"π - project","workspace_id":"w8"}
+   processed only the probe exchange). Neither pane closed;
+   the unsent draft in the worker editor remains untouched
+   (worker was instructed not to touch or submit it, and it
+   returned only the ack).
+
+ No file/plan changes, no scheduler job, no new sessions
+ created, no child-exit handling used (the worker stays open
+ by design — this is the OPEN-PANE test). Both supervisor
+ and worker panes remain open.
+
+ ✓ hello.txt exists in the project root, written by the
+ worker, containing exactly the UTF-8 byte sequence `hello
+ from the worker\n` (22 bytes, hex `68 65 6c 6c 6f 20 66 72
+ 6f 6d 20 74 68 65 20 77 6f 72 6b 65 72 0a`) with no
+ trailing extra characters or blank lines; and
+ evidence/hello.log exists in `evidence/` recording the
+ byte-level verification of that file
+ ● Agents · 1 running · 119.4s
+ └─ ◡ draft-safe-trial [goals-worker] · 4 tool uses · 2...
+      Read-only draft-safe intercom probe · fireworks/a...
+      Sent. Brief report:
+─────────────────────────────────────────────────────────────
+│
+│
+│
+│ accounts/fireworks/models/deepseek-v4-flash-0731  Fireworks
+─────────────────────────────────────────────────────────────
+ project on  main [?] 7.1%/1.0M | ↑209k ↓30k 󰆼 93.3%
+{"agent":"pi","agent_status":"idle","cwd":"/tmp/goals-edxeth-trial-HSahSm/project","focused":false,"foreground_cwd":"/tmp/goals-edxeth-trial-HSahSm/project","label":"[goals-worker] Read-only draft-safe intercom probe","pane_id":"w8:p6F","revision":4,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":57},"tab_id":"w8:t1","terminal_id":"term_65b198218cd1570","terminal_title":"π - [goals-worker] Read-only draft-safe intercom probe - project","terminal_title_stripped":"π - [goals-worker] Read-only draft-safe intercom probe - project","workspace_id":"w8"}
+
+
+ intercom send → 01a0898a
+   OPEN-PANE-ACK
+ ✓ Message sent to 01a0898a (bfee08a1)
+
+
+ Sent. Brief report:
+
+ Intercom send:
+ - Targeted: 01a0898a → resolves to supervisor
+   subagent-chat-01a0898a-3dde-7015 (unchanged from before)
+ - Message: OPEN-PANE-ACK via action=send
+ - Result: Message sent to 01a0898a — success ✓
+
+ No file changes, no editor text touched. Staying open in
+ this pane for further operator/supervisor interaction — no
+ exit, no shutdown.
+
+▸ Agent draft-safe-trial (goals-worker)
+────────────────────────────────────────────────────────────
+│
+│ UNSENT-OPEN-WORKER-DRAFT-KEEP
+│
+│ accounts/fireworks/models/deepseek-v4-flash-0731  Firework
+────────────────────────────────────────────────────────────
+ project in [goals-worker] Read-only… on  main [?]
+ 2.4%/1.0M | ↑43k ↓1.4k 󰆼 18.4%

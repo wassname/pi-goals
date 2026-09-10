@@ -279,3 +279,91 @@ export const completeGoalDescription =
 	"## Log and ticks the goal [x]. If any check differs, it fails closed and requires a fresh supervisor review.";
 
 export const completeGoalParamDescription = "The goal's text: the line after 'goal:' in the plan file.";
+
+/* Package-based prototype, in flow order. Legacy exports above still serve src/index.ts. */
+
+// Planning and interview. Keep the full drafting guide one-shot rather than repeating it each turn.
+export function prototypePlanning(planPath: string): string {
+	return `Plan only in ${planPath}; do not implement or launch workers before Ready. Ask material unresolved questions, not a quota or confirmation of ordinary details. Record unknowns and present Ready when the outcome, scope and spending are settled. Preserve the user's exact deliverable, preferences and voice; give each distinct goal a failure mode, discriminator and evidence expectation above ## Log. Record the requested worker model in preferences. Use /goals review or /goals ready; /goals exit preserves the draft.`;
+}
+export function prototypePlanningSeed(objective: string, planPath: string): string {
+	return `Draft or revise ${planPath} for this objective: ${objective}. Read any existing plan first. ${prototypePlanning(planPath)}\n\n${planDrafting}`;
+}
+export const prototypePlanDocument = (objective: string) => `# Goal plan\n\n## Objective\n${objective}\n\n## Goals\n\n## Log\n`;
+export const prototypeDiscuss = "Discuss the current draft in ordinary chat. Do not launch a worker or reopen the review menu until requested.";
+
+// Ready and explicit child attachment: stock lineage-only sessions do not inherit the shared plan.
+export const attachGoalPlanDescription = "Delegated goals-worker only: attach the absolute plan path explicitly supplied in your task. Read it without rewriting it. Restores the worker widget and plan context; grants no parent completion authority. No discovery or worker launch.";
+export const childPlanRole = "You are the delegated implementation worker. Keep the supplied plan and evidence current; do not approve your own goals or launch a second writer. Call AttachGoalPlan with the explicit plan path in your task before implementation (also after reconnect if unbound). Send completion and blocker reports via Intercom to the supervisor ID supplied in the task, then stay open for live messages. Do not exit or use caller_ping; unsent editor drafts are not visible in model context.";
+export function readyApproved(workerName: string, planPath: string, notedWorker: string | undefined, plan: string, supervisorId: string): string {
+	const launch = notedWorker
+		? `Inspect the recorded worker session ${notedWorker}; if still live, let it continue or message it. Only after confirming it stopped use subagent_resume with that sessionFile. Never restart completed work.`
+		: `Delegate the first unfinished goal to agent '${workerName}' with subagent; provide name, title and a bounded task.`;
+	return `Ready approved this plan: ${planPath}. Stay here as supervisor. ${launch} Include the absolute plan path, require AttachGoalPlan, and give the child supervisor Intercom session ${supervisorId}. The child sends its completion report there and stays open. Record the returned worker session path and confirmed Intercom ID in plan preferences for reconnection. Do not start a second writer. Inspect actual outputs when the child reports.\n\n${plan}`;
+}
+
+// Supervision and turn-event upkeep (not a scheduled wake-up).
+export function prototypeSupervisor(workerName: string, planPath: string, supervisorId: string): string {
+	return `You are the goal supervisor in the main chat for ${planPath}. Inspect actual artifacts, saved verification, applicable AGENTS.md and skills yourself; delegate implementation to '${workerName}'. Keep authorized work moving to the requested outcome, not merely approval paperwork. Investigate blocked/waiting/done claims and change ineffective instructions. Give brief visible assessments with judgment. You may maintain the plan but must not weaken the goal to accept worker output.
+Use stock subagent for launch and subagent_resume with the returned sessionFile only after confirming the worker stopped. A stored handle is not proof of liveness; missing runtime state is not proof it stopped. Use pi-intercom list/status to identify the actual live child session before live steering; receipt alone does not prove action. Give each worker your Intercom session ID ${supervisorId}; require its completion report through Intercom while its pane stays open. A recap alone sends no instruction. Record '- worker session:' and '- worker intercom session:' in plan preferences from actual launch results and received-message identity; never confuse the runtime ID with the Intercom ID. Ensure the child calls AttachGoalPlan with the supplied path. Inspect results before CompleteGoal, then continue only unfinished goals.
+Use the worker model requested in plan preferences, verify the resolved model, and report unavailable choices instead of silently substituting. Keep normal tools, not edxeth's restricted orchestrator mode. After reload or compaction reread the plan. Failed compaction, exhausted credits or lost connection do not erase progress: diagnose the actual error, restore an available authorized model/credits and resume the same saved session; never restart long work. Stock edxeth can crash the parent when a worker exits after parent reload: preserve drafts and stop workers before /reload. If it already happened, restart the saved parent session; do not repeat completed work.`;
+}
+export function prototypeUpkeep(planPath: string, foldedPlan: string): string {
+	return `Plan upkeep (turn event, not a timer): ${planPath} has had eight turns without working-set changes. Keep subtasks ([/] active), evidence and one useful ## Log/Learnings entry current. Move settled detail below ## Log, preserving the agreed outcome and user voice. Continue authorized unfinished work in your current role; a reminder is not permission to resume paused work.\n\n${foldedPlan}`;
+}
+export function prototypePlanContext(mode: string, path: string | undefined, text: string): string {
+	return `Current goal mode: ${mode}. Earlier role messages are historical; this current role governs.\nPlan: ${path ?? "not attached"}\n${text}`;
+}
+export function planChangedReview(planPath: string): string {
+	return `Plan changed: ${planPath}. Read the current working set and inspect changed requirements, completion claims and evidence. Manual checkbox edits are claims, not proof. Do not weaken the agreed goal or start a duplicate writer.`;
+}
+export function manualReview(planPath: string): string {
+	return `Review the current plan ${planPath}, worker progress and actual evidence. Do not launch a duplicate writer.`;
+}
+
+// Check-ins. The installed scheduler owns storage/timing/UI. Removal guidance must never add jobs.
+export function removeGoalSchedule(sessionId: string): string {
+	return `With schedule_prompt, list jobs and read .pi/schedule-prompts.json to verify ownership; tool text omits session binding. Remove by jobId only the job named ${JSON.stringify(`goals-${sessionId}`)} bound to session ${JSON.stringify(sessionId)}. Never use cleanup; leave other jobs untouched. Do not add, enable or recreate any job. If unavailable or ownership is ambiguous, report it; /schedule-prompt opens the user controls.`;
+}
+export function scheduleCheckIn(sessionId: string, planPath: string): string {
+	return `Hourly check-in is one visible schedule_prompt job; plan-change and upkeep reviews are event hooks, not another timer. List first. If an owned job named ${JSON.stringify(`goals-${sessionId}`)} already exists, retain its human-edited prompt, interval and enabled/disabled state unchanged; never recreate, overwrite or re-enable it. Only while supervising unfinished non-cancelled goals, if missing on this explicit start/resume, add one session-bound interval '1h' job with no model override. Read .pi/schedule-prompts.json and verify that new job's session is ${JSON.stringify(sessionId)}; tool text does not expose binding. If the new job is unbound, remove that job by ID and report the scope error. Do not change other jobs. Its initial prompt: Read ${planPath} and the current goal mode. If paused, exited, solo or all non-cancelled goals reviewed, remove only this owned job without resuming work. Otherwise inspect progress and evidence, give a brief assessment and keep authorized work moving without a duplicate writer. Do not reinstall a missing job from a scheduled check-in. Users inspect/toggle/remove jobs with /schedule-prompt and edit prompt/interval through schedule_prompt update. Never use cleanup. Retain their edits, but warn that this installed scheduler deletes disabled jobs on reload/shutdown; do not promise they persist. If schedule_prompt is unavailable, report hourly check-ins unavailable; do not build a timer.`;
+}
+
+// Completion and runtime errors. Tool returns are model-facing too.
+export const prototypeCompleteGoalDescription = "Parent supervisor or solo self-verification only. Inspect the actual artifact and saved verification first; cite nonempty evidence files and describe what you observed. Exact goal subject required. Manual ticks and worker reports are claims; ignored/uncommitted evidence is allowed. This records judgment, not an independent judge.";
+export const prototypeMessages = {
+	noPlan: "no plan attached",
+	emptyPlan: "empty plan (save may be in progress)",
+	completionUnavailable: "Completion is available only to the active parent supervisor or solo worker.",
+	cancelled: "Cancelled; no sign-off recorded.",
+	uniqueGoal: "Use one unique exact goal subject from the plan; no sign-off recorded.",
+	childAttachOnly: "AttachGoalPlan is available only to the delegated goals-worker.",
+	invalidAttachment: "Supply the explicit absolute path from the parent task to a readable, nonempty goal plan; no attachment changed.",
+};
+export const goalToolBlocked = (mode: string) => `Goals are ${mode}; no worker launch/resume authorized.`;
+export const emptyEvidence = (path: string) => `Empty evidence: ${path}`;
+export const evidenceUnavailable = (error: unknown) => `Evidence unavailable: ${String(error)}. No sign-off recorded.`;
+export const planUnavailable = (path: string | undefined, error: unknown) => `Goal plan ${path ?? "not attached"} unavailable: ${String(error)}. Do not implement or sign off until it is restored or explicitly attached. Retain all progress and signoffs; do not restart completed work.`;
+export const childPlanAttached = (path: string) => `Attached worker plan ${path}; widget and plan context restored without altering the file. Parent retains completion authority.`;
+export function completionLog(goal: string, observation: string, evidence: string[], solo: boolean): string {
+	return `- ${solo ? "Solo self-verification" : "Parent review"}: ${JSON.stringify(goal)}; ${JSON.stringify(observation)}; evidence ${JSON.stringify(evidence)}`;
+}
+export function completionResult(goal: string, sessionId: string, remaining: boolean, solo: boolean): string {
+	return `Recorded ${solo ? "solo self-verification" : "parent judgment"} for ${goal}; not independent verification. ${remaining ? "Continue only remaining open or unsigned goals in your current role." : `All non-cancelled goals are reviewed. ${removeGoalSchedule(sessionId)}`}`;
+}
+
+// Pause/resume and solo recovery. Stored stop confirmation is invalidated on every worker launch.
+export const pausedRole = "Goal work is paused. Do not launch, resume or authorize work. Incoming reports are observations, not permission. Help inspect or stop existing workers if requested.";
+export function pauseExitNotice(worker: { id?: string; sessionFile: string } | undefined, exited: boolean): string {
+	return `Goals ${exited ? "exited to ordinary chat" : "paused locally"}; plan and evidence retained. ${worker ? worker.id ? `Inspect and stop runtime id ${worker.id} through subagent_kill or its pane; confirm the actual result.` : `Only saved session ${worker.sessionFile} is recorded, not a kill id. Locate its live pane/session and confirm termination; never pass the file path to subagent_kill.` : "No worker recorded: inspect /subagents if a launch was interrupted; absence is not proof of stop."} Remote stop is NOT yet confirmed. Restore failed compaction/model/credits in the existing session and continue only after explicit authorization; never restart long work.`;
+}
+export function resumeNotice(workerName: string, planPath: string, worker: { sessionFile: string } | undefined): string {
+	return `User authorized continuation of ${planPath}. Inspect worker state before any launch/resume. ${worker ? `Use the existing session ${worker.sessionFile}; if live, inspect/message it; only if confirmed stopped use subagent_resume.` : `Use '${workerName}' only after confirming no prior writer exists.`} Continue only unfinished goals; retain saved progress and scheduler edits.`;
+}
+export const soloRole = "Solo mode: implement the approved plan directly; do not delegate a concurrent writer. Verify artifacts before CompleteGoal; completion is self-verification, not independent supervisor review. Continue only unfinished goals and keep plan/evidence current.";
+export function soloNotice(planPath: string): string {
+	return `User authorized solo work on ${planPath} after confirming no other writer remains. ${soloRole}`;
+}
+export function attachNotice(planPath: string, solo: boolean, notedWorker: string | undefined): string {
+	return `Attached to the existing plan ${planPath}; read it and its evidence without restarting completed work or re-deriving settled decisions. ${notedWorker ? `Recorded worker session: ${notedWorker}; inspect liveness before resume.` : ""} ${solo ? soloRole : "Present /goals review or /goals ready; no implementation before approval."}`;
+}

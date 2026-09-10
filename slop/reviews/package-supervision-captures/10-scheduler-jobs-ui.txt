@@ -1,0 +1,35 @@
+ - Initial prompt: Say TIMER-PROMPT-OLD, then remove only
+   the goals-ui-probe job. Do not change files, plans,
+─────────────────────────────────────────────────────────────
+ Jobs  —  ↑↓ select   a add   t toggle   s scope   x remove
+─────────────────────────────────────────────────────────────
+ ▶ ✓ goals-ui-probe      every 1h          Say TIMER-PROMPT-O
+─────────────────────────────────────────────────────────────
+ Selected: goals-ui-probe (P3Znb2bVxP)
+ Type: interval   Runs: 0
+ Prompt: Say TIMER-PROMPT-OLD, then remove only the goals-ui-
+─────────────────────────────────────────────────────────────
+ ✓ hello.txt exists in the project root, written by the
+ worker, containing exactly the UTF-8 byte sequence `hello
+ from the worker\n` (22 bytes, hex `68 65 6c 6c 6f 20 66 72
+ 6f 6d 20 74 68 65 20 77 6f 72 6b 65 72 0a`) with no
+ trailing extra characters or blank lines; and
+ evidence/hello.log exists in `evidence/` recording the
+ byte-level verification of that file
+ ● Agents · 1 running · 407.6s
+ └─ ◡ draft-safe-trial [goals-worker] · 4 tool uses · 2...
+      Read-only draft-safe intercom probe · fireworks/a...
+      Sent. Brief report:
+─────────────────────────────────────────────────────────────
+│
+│
+│
+│ accounts/fireworks/models/deepseek-v4-flash-0731  Fireworks
+─────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────
+ Scheduled Prompts (1 jobs)
+
+  ✓ goals-ui-probe  1h              Say TIMER-PROMPT-OLD,
+ ... -          never      0
+─────────────────────────────────────────────────────────────
+ project on  main [?] 7.2%/1.0M | ↑210k ↓30k 󰆼 99.6%
