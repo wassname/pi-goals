@@ -217,7 +217,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 		send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${soloNotice(state.plan!)}`);
 	}
-	const help = "/goals <objective> | review | ready | status | stop | resume | solo | exit | attach <plan.md> [solo] | model <model>\n/subagents opens edxeth's worker UI. Stop/exit pause this plan locally; worker termination must be confirmed through subagent_kill or its pane. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
+	const help = "/goals new [initial idea] | review | ready | status | stop | resume | solo | exit | attach <plan.md> [solo] | model <model>\n/subagents opens the worker controls. Stop/exit pause this plan locally; worker termination must be confirmed through subagent_kill or its pane. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
 	async function ready(ctx: ExtensionContext, menu: boolean) {
 		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
 		const text = planText();
@@ -254,14 +254,27 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		turnsStale = workingSet === lastWorkingSet ? turnsStale + 1 : 0;
 		lastWorkingSet = workingSet;
 		refresh(ctx);
-		if (turnsStale >= 8 && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")) {
+		if (turnsStale === 8 && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")) {
 			// Pi queues context-only messages until tool results are appended at turn_end.
 			// This reaches the next model call in a long run without triggering another run.
-			pi.sendMessage({ customType: "pi-goals-upkeep", content: prototypeUpkeep(state.plan!, workingSet), display: false }, { triggerTurn: false });
-			turnsStale = 0;
+			pi.sendMessage({ customType: "pi-goals-upkeep", content: prototypeUpkeep(state.plan!), display: false }, { triggerTurn: false });
 		}
 	});
 	pi.on("agent_end", (_e, ctx) => { refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
+	let proposedDraft = "";
+	let proposing = false;
+	pi.on("agent_settled", async (_e, ctx) => {
+		if (state.child || state.mode !== "planning" || !ctx.hasUI || proposing) return;
+		const text = planText();
+		const version = `${state.plan}:${digest(text)}`;
+		if (!goals(text).length || version === proposedDraft) return;
+		proposedDraft = version;
+		proposing = true;
+		try {
+			pi.sendMessage({ customType: "goal-plan-proposal", content: text, display: true }, { triggerTurn: false });
+			await ready(ctx, true);
+		} finally { proposing = false; }
+	});
 	// No context hook. Historical message arrays, native checkpoints and model selection are untouched.
 	pi.on("before_agent_start", (event, ctx) => {
 		if (state.mode === "chat") return;
@@ -294,12 +307,25 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("goals", {
-		description: "Prototype: plan here, supervise a visible edxeth worker",
+		description: "Goal plan actions: new, review, ready, status, stop, resume, solo, attach, model, exit",
+		getArgumentCompletions: (prefix) => ["new", "review", "ready", "status", "stop", "resume", "solo", "attach", "model", "exit", "help"].filter((verb) => verb.startsWith(prefix)).map((verb) => ({ value: verb, label: verb })),
 		handler: async (args, ctx) => {
 			try {
 				if (state.child) { ctx.ui.notify("This is the delegated worker. Goal approval belongs to its parent.", "info"); return; }
-				const command = args.trim();
-				if (!command || command === "help") { ctx.ui.notify(help, "info"); return; }
+				let command = args.trim();
+				if (!command) {
+					const actions = ["status — Show current plan", "new — New plan", "attach — Open an existing plan", "review — Review current plan", "ready — Approve draft", "stop — Pause work", "resume — Continue paused work", "solo — Work in this session", "model — Set worker model", "exit — Leave goal mode", "help — Show commands"];
+					const before = generation;
+					const choice = await ctx.ui.select("Goal plan actions", actions);
+					if (!choice || before !== generation) return;
+					command = choice.split(" — ")[0];
+					if (["attach", "model"].includes(command)) {
+						const value = await ctx.ui.editor(command === "attach" ? "Plan path (optional: solo)" : "Worker model (provider/model)", "");
+						if (!value?.trim() || before !== generation) return;
+						command += ` ${value.trim()}`;
+					}
+				}
+				if (command === "help") { ctx.ui.notify(help, "info"); return; }
 				if (command === "status") {
 					refresh(ctx);
 					ctx.ui.notify([
@@ -318,6 +344,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (command === "model" || command.startsWith("model ")) {
 					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
 					const ref = command.slice("model".length).trim();
+					if (!ref) { ctx.ui.notify("Use /goals model <provider/model>; no preference changed.", "info"); return; }
 					const lines = planText().split("\n");
 					const pref = `- preferred worker model: ${ref || "(none specified)"}`;
 					const found = lines.findIndex((line) => /^-\s*preferred worker model:/i.test(line));
@@ -331,9 +358,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				}
 				if (command === "attach" || command.startsWith("attach ")) {
 					const rest = command.slice("attach".length).trim();
-					const [raw, kind] = rest.split(/\s+/);
+					const [raw, kind, extra] = rest.split(/\s+/);
 					const solo = kind === "solo";
-					if (kind && !solo) { ctx.ui.notify("Use /goals attach <path-to-plan.md> [solo].", "warning"); return; }
+					if (extra || (kind && !solo)) { ctx.ui.notify("Use /goals attach <path-to-plan.md> [solo].", "warning"); return; }
 					if (!raw) { ctx.ui.notify("Use /goals attach <path-to-plan.md> [solo].", "info"); return; }
 					const target = isAbsolute(raw) ? raw : resolve(ctx.cwd, raw);
 					let text: string;
@@ -375,13 +402,15 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					enterSolo(ctx);
 					return;
 				}
+				if (command !== "new" && !command.startsWith("new ")) { ctx.ui.notify(`Unknown or incomplete command. ${help}`, "warning"); return; }
+				const objective = command.slice(4).trim();
 				if ((state.worker && !state.workerStopped) || state.mode === "supervising") { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
 				const path = join(ctx.cwd, ".pi", "plan", `${ctx.sessionManager.getSessionId()}-main.md`);
 				mkdirSync(dirname(path), { recursive: true });
 				// Never overwrite an earlier plan at this session path; the model can revise it after inspection.
-				try { writeFileSync(path, prototypePlanDocument(command), { flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+				try { writeFileSync(path, prototypePlanDocument(objective), { flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
 				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
-				send(prototypePlanningSeed(command, path));
+				send(prototypePlanningSeed(objective, path));
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},
 	});

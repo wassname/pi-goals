@@ -5,6 +5,8 @@ export function planViews(plan: string): { short: string; long: string } {
 	let omittedIndent: number | null = null;
 	let omittedHeading: number | null = null;
 	for (const line of long.split("\n")) {
+		// Pi/OpenAI: Worker identity bookkeeping is not a change to agreed requirements.
+		if (/^-\s*(?:active worker|worker session|worker intercom session):/i.test(line)) continue;
 		const heading = /^(#{1,6})\s+(.+)$/.exec(line);
 		if (heading) {
 			if (omittedHeading !== null && heading[1].length <= omittedHeading) omittedHeading = null;

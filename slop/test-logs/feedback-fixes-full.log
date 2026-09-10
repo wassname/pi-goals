@@ -1,0 +1,13 @@
+
+> @wassname2/pi-goals@0.2.2 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/code/.pi/agent/git/github.com/wassname/pi-goals
+
+
+ Test Files  23 passed (23)
+      Tests  174 passed (174)
+   Start at  18:09:15
+   Duration  5.31s (transform 7.14s, setup 0ms, import 12.81s, tests 16.70s, environment 3ms)
+

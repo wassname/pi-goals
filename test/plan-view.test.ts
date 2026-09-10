@@ -11,6 +11,15 @@ it("keeps outcome, preferences and discriminators without tasks or history", () 
 	expect(views.long).not.toContain("unapproved idea");
 });
 
+it("omits only named worker identity fields from review while retaining them in full context", () => {
+	const base = "# Plan\n- preferred worker model: provider/model\n- [ ] goal: result\n  - discriminator: exact bytes";
+	const metadata = "\n- Active worker: worker-1\n- worker session: /saved.jsonl\n- worker intercom session: uuid";
+	expect(planViews(base + metadata).short).toBe(planViews(base).short);
+	expect(planViews(base + metadata).long).toContain("/saved.jsonl");
+	expect(planViews(base.replace("exact bytes", "approximate match")).short).not.toBe(planViews(base).short);
+	expect(planViews(base.replace("[ ]", "[x]")).short).not.toBe(planViews(base).short);
+});
+
 it("stops at history and preserves a manual goal tick", () => {
 	const view = planViews("# Plan\n1. [x] goal: result\n## Log\n1. [ ] goal: historical");
 	expect(view.short).toContain("[x] goal: result");

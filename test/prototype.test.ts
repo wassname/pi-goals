@@ -22,7 +22,7 @@ function fixture(child = false) {
 	const cwd = mkdtempSync(join(tmpdir(), "goals-main-test-")); roots.push(cwd);
 	const entries: any[] = []; const hooks = new Map<string, any>(); const commands = new Map<string, any>(); const tools = new Map<string, any>();
 	const messages: any[] = [];
-	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only" }, ui: {
+	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only" }, hasUI: true, ui: {
 		theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async () => "Ready"), editor: vi.fn(),
 	} };
 	const pi = {
@@ -43,7 +43,7 @@ function fixture(child = false) {
 	const command = (value: string) => commands.get("goals").handler(value, ctx);
 	const path = join(cwd, ".pi/plan/copy-only-main.md");
 	const plan = "# Plan\n- [ ] goal: first output\n- [ ] goal: second output\n\n## Log\n";
-	const draft = async () => { await command("two outputs"); writeFileSync(path, plan); };
+	const draft = async () => { await command("new two outputs"); writeFileSync(path, plan); };
 	const shutdown = () => hooks.get("session_shutdown")();
 	shutdowns.push(shutdown);
 	const changed = () => messages.filter((m) => m.message?.content?.includes("Plan changed")).length;
@@ -53,8 +53,67 @@ function fixture(child = false) {
 		renameSync(tmp, path);
 		await delay(25);
 	};
-	return { ctx, pi, hooks, tools, messages, command, path, plan, draft, shutdown, changed, atomicWrite, entries };
+	return { ctx, pi, hooks, tools, commands, messages, command, path, plan, draft, shutdown, changed, atomicWrite, entries };
 }
+
+it("shows action choices and autocomplete without starting work", async () => {
+	const f = fixture();
+	f.ctx.ui.select.mockResolvedValueOnce(undefined as any);
+	await f.command("");
+	expect(f.ctx.ui.select).toHaveBeenCalledWith("Goal plan actions", expect.arrayContaining(["new — New plan", "resume — Continue paused work"]));
+	expect(f.messages).toHaveLength(0);
+	expect(f.commands.get("goals").getArgumentCompletions("res")).toEqual([{ value: "resume", label: "resume" }]);
+});
+
+it.each(["redy", "start", "two outputs", "status extra", "attach some.md solo extra"])("rejects %s without changing the plan or sending a model prompt", async (text) => {
+	const f = fixture(); await f.draft();
+	const before = readFileSync(f.path, "utf8");
+	const entries = f.entries.length; const messages = f.messages.length;
+	await f.command(text);
+	expect(readFileSync(f.path, "utf8")).toBe(before);
+	expect(f.entries).toHaveLength(entries);
+	expect(f.messages).toHaveLength(messages);
+});
+
+it("requires a model argument without clearing the preference", async () => {
+	const f = fixture(); await f.draft(); await f.command("model provider/model");
+	const before = readFileSync(f.path, "utf8");
+	await f.command("model");
+	expect(readFileSync(f.path, "utf8")).toBe(before);
+});
+
+it.each(["menu", "command"])("enters planning conversation through %s without an objective box or worker launch", async (route) => {
+	const f = fixture();
+	f.ctx.ui.select.mockResolvedValueOnce("new — New plan");
+	await f.command(route === "menu" ? "" : "new");
+	expect(f.entries.at(-1).data.mode).toBe("planning");
+	expect(f.ctx.ui.editor).not.toHaveBeenCalled();
+	expect(f.messages.at(-1).message.content).toContain("Ask what the user wants to achieve");
+	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
+});
+
+it("automatically proposes a changed settled draft once and preserves Discuss", async () => {
+	const f = fixture(); await f.draft();
+	f.ctx.ui.select.mockResolvedValueOnce("Discuss");
+	await f.hooks.get("agent_settled")({}, f.ctx);
+	expect(f.messages.some(m => m.message.customType === "goal-plan-proposal" && m.message.content === f.plan)).toBe(true);
+	expect(f.entries.at(-1).data.mode).toBe("planning");
+	const calls = f.ctx.ui.select.mock.calls.length;
+	await f.hooks.get("agent_settled")({}, f.ctx);
+	expect(f.ctx.ui.select).toHaveBeenCalledTimes(calls);
+	writeFileSync(f.path, f.plan.replace("first output", "revised output"));
+	f.ctx.ui.select.mockResolvedValueOnce("Ready");
+	await f.hooks.get("agent_settled")({}, f.ctx);
+	expect(f.entries.at(-1).data.mode).toBe("supervising");
+});
+
+it("does not propose an empty draft or a delegated worker's plan", async () => {
+	const f = fixture(); await f.command("new");
+	await f.hooks.get("agent_settled")({}, f.ctx);
+	expect(f.ctx.ui.select).not.toHaveBeenCalled();
+	const child = fixture(true); await child.hooks.get("agent_settled")({}, child.ctx);
+	expect(child.ctx.ui.select).not.toHaveBeenCalled();
+});
 
 it("keeps Ready in the same chat, sends saved notices and never installs a context hook", async () => {
 	const f = fixture(); await f.draft(); await f.command("review");
@@ -431,7 +490,10 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, resets on
 	f.hooks.get("turn_end")({}, f.ctx);
 	expect(reminders()).toHaveLength(1);
 	expect(reminders()[0].options).toEqual({ triggerTurn: false });
-	expect(reminders()[0].message.content).toContain("first output");
+	expect(reminders()[0].message.content).toContain(f.path);
+	expect(reminders()[0].message.content).not.toContain("first output");
+	for (let i = 0; i < 16; i++) f.hooks.get("turn_end")({}, f.ctx);
+	expect(reminders()).toHaveLength(1);
 	expect(reminders()[0].message.content).not.toContain("historical recap");
 	for (let i = 0; i < 7; i++) f.hooks.get("turn_end")({}, f.ctx);
 	writeFileSync(f.path, f.plan.replace("first output", "refined output"));
