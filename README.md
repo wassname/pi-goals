@@ -144,13 +144,13 @@ pi -e ./src/index.ts
 /goals
 ```
 
-`/goals` opens the action menu. New plan enters plan mode and starts a conversation;
+`/goals` shows actions for the current mode. Drafts offer Edit, Discuss and Approve. Quit (`exit` or `clear`) backs up the plan beside the original as a `.bak` file, removes this session's goal check-in, and clears goal state without a model call. Worker processes are unchanged; manage them through `/subagents`. New creates a separate draft without overwriting earlier plans.
 
 ## Context delivery
 
 Startup and successful compaction mark the plan for a fresh read at the next ordinary prompt (`before_agent_start`). Upkeep becomes due after eight unchanged turns, but waits for that same prompt boundary. A full plan refresh replaces pending upkeep; edits, pause, exit and session navigation invalidate obsolete reminders. Failed or cancelled compaction does not schedule another refresh or consume pending upkeep. Missing plans are retried without discarding progress.
 
-This is deliberately passive on Pi 0.85.1: tool-loop continuations, overflow retries and already-queued user messages keep Pi's existing role and compacted context, without an extra model turn just to repeat the plan. They do **not** receive a newly read plan until ordinary prompt preparation. Pi's `triggerTurn: false` mid-run path can save a message absent from the live request snapshot; steering can instead force an unwanted turn. We use neither path for upkeep. Passive pause/exit notices use `nextTurn`, with immediate UI feedback; stopping remains local and remote termination is unconfirmed.
+This is deliberately passive on Pi 0.85.1: tool-loop continuations, overflow retries and already-queued user messages keep Pi's existing role and compacted context, without an extra model turn just to repeat the plan. They do **not** receive a newly read plan until ordinary prompt preparation. Pi's `triggerTurn: false` mid-run path can save a message absent from the live request snapshot; steering can instead force an unwanted turn. We use neither path for upkeep. Passive pause notices use `nextTurn`, with immediate UI feedback; stopping remains local and remote termination is unconfirmed. Quit sends no model message.
 
 ## Prompts
 

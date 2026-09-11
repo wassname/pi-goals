@@ -1,8 +1,9 @@
 // Pi/OpenAI: Plan and supervise in the main chat; delegate implementation to a visible worker.
-import { createHash } from "node:crypto";
-import { type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CronStorage } from "pi-schedule-prompt/src/storage.js";
 import { Type } from "typebox";
 import { foldPlan, GOAL_LINE } from "./plan.js";
 import { planViews } from "./plan-view.js";
@@ -201,17 +202,17 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 		send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${soloNotice(state.plan!)}`);
 	}
-	const help = "/goals new [initial idea] | review | ready | status | stop | resume | solo | exit | attach <plan.md> [solo] | model <model>\n/subagents opens the worker controls. Stop/exit pause this plan locally; worker termination must be confirmed through subagent_kill or its pane. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
-	async function ready(ctx: ExtensionContext, menu: boolean) {
+	const help = "/goals new [initial idea] | edit | discuss | review | ready | status | stop | resume | solo | attach <plan.md> [solo] | model <model> | quit (exit/clear)\n/subagents opens the worker controls. Stop pauses work. Quit/exit/clear backs up the plan and clears goal state without a model call; worker processes are unchanged. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
+	async function ready(ctx: ExtensionContext, menu: boolean, edit = false) {
 		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
 		const text = planText();
 		const items = goals(text);
-		if (!items.length || new Set(items.map((g) => key(g.subject))).size !== items.length) {
+		if (!edit && (!items.length || new Set(items.map((g) => key(g.subject))).size !== items.length)) {
 			ctx.ui.notify("Write a plan with distinct '- [ ] goal: ...' subjects before Ready.", "warning"); return;
 		}
 		const stamp = generation;
-		if (menu) {
-			const choice = await ctx.ui.select(`Review ${state.plan}`, ["Ready", "Discuss", "Edit", "Cancel"]);
+		if (menu || edit) {
+			const choice = edit ? "Edit" : await ctx.ui.select(`Review ${state.plan}`, ["Ready", "Discuss", "Edit", "Cancel"]);
 			if (stamp !== generation || digest(planText()) !== digest(text)) { ctx.ui.notify("Plan changed during review. Review it again.", "warning"); return; }
 			if (choice === "Discuss") { send(discuss); return; }
 			if (choice === "Edit") {
@@ -313,14 +314,24 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("goals", {
-		description: "Goal plan actions: new, review, ready, status, stop, resume, solo, attach, model, exit",
-		getArgumentCompletions: (prefix) => ["new", "review", "ready", "status", "stop", "resume", "solo", "attach", "model", "exit", "help"].filter((verb) => verb.startsWith(prefix)).map((verb) => ({ value: verb, label: verb })),
+		description: "Goal plan actions: new, edit, discuss, review, ready, status, stop, resume, solo, attach, model, quit (exit/clear)",
+		getArgumentCompletions: (prefix) => ["new", "attach", "edit", "discuss", "review", "ready", "status", "stop", "resume", "solo", "model", "help", "exit", "clear", "quit"].filter((verb) => verb.startsWith(prefix)).map((verb) => ({ value: verb, label: verb })),
 		handler: async (args, ctx) => {
 			try {
 				if (state.child) { ctx.ui.notify("This is the delegated worker. Goal approval belongs to its parent.", "info"); return; }
 				let command = args.trim();
 				if (!command) {
-					const actions = ["status — Show current plan", "new — New plan", "attach — Open an existing plan", "review — Review current plan", "ready — Approve draft", "stop — Pause work", "resume — Continue paused work", "solo — Work in this session", "model — Set worker model", "exit — Leave goal mode", "help — Show commands"];
+					const actions = [
+						...({
+							chat: ["new — New plan", "attach — Open plan…"],
+							planning: ["edit — Edit plan…", "discuss — Discuss changes to the plan", "ready — Approve draft"],
+							supervising: ["review — Check progress", "stop — Pause work"],
+							paused: ["resume — Resume work"],
+							solo: ["stop — Pause work"],
+						})[state.mode],
+						...(["planning", "supervising", "paused"].includes(state.mode) ? ["model — Settings: worker model"] : []),
+						"help — Show commands", "quit — Exit and clear goals (back up plan)",
+					];
 					const before = generation;
 					const choice = await ctx.ui.select("Goal plan actions", actions);
 					if (!choice || before !== generation) return;
@@ -331,6 +342,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						command += ` ${value.trim()}`;
 					}
 				}
+				if (command === "quit" || command === "clear") command = "exit";
 				if (command === "help") { ctx.ui.notify(help, "info"); return; }
 				if (command === "status") {
 					refresh(ctx);
@@ -346,8 +358,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					].filter(Boolean).join("\n"), "info");
 					return;
 				}
+				if (command === "discuss") {
+					if (state.mode !== "planning") { ctx.ui.notify("Discuss applies to a draft.", "warning"); return; }
+					send(discuss); return;
+				}
 				if (command === "review" && state.mode === "supervising") { notice = true; send(manualReview(state.plan ?? "")); return; }
-				if (command === "review" || command === "ready") { await ready(ctx, command === "review"); return; }
+				if (command === "edit" || command === "review" || command === "ready") { await ready(ctx, command === "review", command === "edit"); return; }
 				if (command === "model" || command.startsWith("model ")) {
 					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
 					const ref = command.slice("model".length).trim();
@@ -384,16 +400,24 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					else send(attachNotice(target, false, noted));
 					return;
 				}
-				if (command === "stop" || command === "exit") {
-					if (state.mode === "planning") {
-						if (command === "stop") { ctx.ui.notify("A draft cannot pause; use /goals exit to leave planning with the draft preserved.", "warning"); return; }
-						// Planning exit must not get the model trapped re-planning or lose the draft.
-						state.mode = "chat"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
-						ctx.ui.notify(`Planning exited; draft preserved at ${state.plan}. No implementation was approved or started. Reconnect with /goals attach ${state.plan}.`, "info");
-						return;
+				if (command === "exit") {
+					const backup = state.plan && existsSync(state.plan) ? `${state.plan}.${randomUUID()}.bak` : undefined;
+					if (backup) writeFileSync(backup, readFileSync(state.plan!), { flag: "wx" });
+					const storage = new CronStorage(ctx.cwd);
+					const session = ctx.sessionManager.getSessionId();
+					for (const job of storage.getAllJobs().filter(j => j.name === `goals-${session}` && j.session === session)) {
+						storage.removeJob(job.id); // Scheduler re-reads storage before firing; removed jobs cannot prompt.
+						pi.events.emit("cron:change", { type: "remove", jobId: job.id });
 					}
-					state.mode = command === "stop" ? "paused" : "chat"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
-					const pause = pauseExitNotice(state.worker, command === "exit");
+					state = initial(); generation++; workerRevision++; pendingLaunches = 0; pendingUpkeep = undefined; notice = true;
+					save(); refresh(ctx); watchPlan(ctx);
+					ctx.ui.notify(`Goals cleared.${backup ? ` Plan backed up to ${backup}.` : ""}`, "info");
+					return;
+				}
+				if (command === "stop") {
+					if (state.mode === "planning") { ctx.ui.notify("A draft cannot pause; use /goals quit to back up and clear it.", "warning"); return; }
+					state.mode = "paused"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					const pause = pauseExitNotice(state.worker, false);
 					const requestCleanup = Boolean(state.worker) || hasScheduleTool();
 					if (!requestCleanup) ctx.ui.notify(pause, "info"); // Visible now; passive model context waits for a prompt.
 					send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${pause}`, requestCleanup);
@@ -415,10 +439,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (command !== "new" && !command.startsWith("new ")) { ctx.ui.notify(`Unknown or incomplete command. ${help}`, "warning"); return; }
 				const objective = command.slice(4).trim();
 				if ((state.worker && !state.workerStopped) || state.mode === "supervising") { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
-				const path = join(ctx.cwd, ".pi", "plan", `${ctx.sessionManager.getSessionId()}-main.md`);
+				let path = join(ctx.cwd, ".pi", "plan", `${ctx.sessionManager.getSessionId()}-main.md`);
 				mkdirSync(dirname(path), { recursive: true });
-				// Never overwrite an earlier plan at this session path; the model can revise it after inspection.
-				try { writeFileSync(path, planDocument(objective), { flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+				try { writeFileSync(path, planDocument(objective), { flag: "wx" }); } catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+					path = join(dirname(path), `${ctx.sessionManager.getSessionId()}-${randomUUID()}.md`);
+					writeFileSync(path, planDocument(objective), { flag: "wx" });
+				}
 				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, helpers: state.helpers, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 				send(planningSeed(objective, path));
 			} catch (error) { ctx.ui.notify(String(error), "error"); }

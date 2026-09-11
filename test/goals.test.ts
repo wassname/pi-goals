@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -23,7 +23,7 @@ function fixture(child = false) {
 	const entries: any[] = []; const hooks = new Map<string, any>(); const commands = new Map<string, any>(); const tools = new Map<string, any>();
 	const messages: any[] = [];
 	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only" }, hasUI: true, ui: {
-		theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async () => "Ready"), editor: vi.fn(),
+		theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async (_title: string, _options: string[]) => "Ready"), editor: vi.fn(),
 	} };
 	const pi = {
 		on: (event: string, hook: any) => hooks.set(event, hook),
@@ -32,6 +32,7 @@ function fixture(child = false) {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		sendMessage: (message: any, options: any) => messages.push({ message, options }),
 		sendUserMessage: (content: string, options: any) => messages.push({ message: { content }, options, savedPrompt: true }),
+		events: { emit: vi.fn() },
 		getAllTools: vi.fn(() => [
 			{ name: "subagent", parameters: { properties: { agent: {}, title: {} } } },
 			{ name: "subagent_resume", parameters: { properties: { sessionFile: {} } } },
@@ -56,12 +57,25 @@ function fixture(child = false) {
 	return { ctx, pi, hooks, tools, commands, messages, command, path, plan, draft, shutdown, changed, atomicWrite, entries };
 }
 
-it("shows action choices and autocomplete without starting work", async () => {
+it.each([
+	["chat", ["new", "attach", "help", "quit"]],
+	["planning", ["edit", "discuss", "ready", "model", "help", "quit"]],
+	["supervising", ["review", "stop", "model", "help", "quit"]],
+	["paused", ["resume", "model", "help", "quit"]],
+	["solo", ["stop", "help", "quit"]],
+])("shows only applicable %s actions without starting work", async (mode, expected) => {
 	const f = fixture();
+	if (mode !== "chat") await f.draft();
+	if (mode === "supervising" || mode === "paused") await f.command("ready");
+	if (mode === "paused") await f.command("stop");
+	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
+	const before = f.messages.length;
 	f.ctx.ui.select.mockResolvedValueOnce(undefined as any);
 	await f.command("");
-	expect(f.ctx.ui.select).toHaveBeenCalledWith("Goal plan actions", expect.arrayContaining(["new — New plan", "resume — Continue paused work"]));
-	expect(f.messages).toHaveLength(0);
+	const actions = f.ctx.ui.select.mock.calls.at(-1)![1];
+	expect(actions.map(action => action.split(" — ")[0])).toEqual(expected);
+	expect(actions.at(-1)).toBe("quit — Exit and clear goals (back up plan)");
+	expect(f.messages).toHaveLength(before);
 	expect(f.commands.get("goals").getArgumentCompletions("res")).toEqual([{ value: "resume", label: "resume" }]);
 });
 
@@ -90,6 +104,59 @@ it.each(["menu", "command"])("enters planning conversation through %s without an
 	expect(f.ctx.ui.editor).not.toHaveBeenCalled();
 	expect(f.messages.at(-1).message.content).toContain("Ask what the user wants to achieve");
 	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
+});
+
+it("edits even an empty draft directly without a model call", async () => {
+	const f = fixture(); await f.command("new"); const before = f.messages.length;
+	f.ctx.ui.editor.mockResolvedValueOnce(f.plan);
+	f.ctx.ui.select.mockResolvedValueOnce("edit — Edit plan…"); await f.command("");
+	expect(readFileSync(f.path, "utf8")).toBe(f.plan);
+	expect(f.entries.at(-1).data.mode).toBe("planning");
+	expect(f.messages).toHaveLength(before);
+});
+
+it("clear backs up the plan, drops stale bindings and allows a separate new draft", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	f.hooks.get("tool_result")({ toolName: "subagent", details: { id: "stale", sessionFile: "/tmp/old-worker.jsonl" } });
+	const jobs = [
+		{ id: "owned", name: "goals-copy-only", session: "copy-only", enabled: true },
+		{ id: "older", name: "older-plan", session: "copy-only", enabled: true },
+		{ id: "foreign", name: "goals-copy-only", session: "other", enabled: true },
+		{ id: "unbound", name: "goals-copy-only", enabled: true },
+	];
+	const schedule = join(f.ctx.cwd, ".pi/schedule-prompts.json"); writeFileSync(schedule, JSON.stringify({ version: 1, jobs }));
+	const before = f.messages.length; await f.command("clear");
+	expect(f.messages).toHaveLength(before);
+	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
+	expect(JSON.parse(readFileSync(schedule, "utf8")).jobs).toEqual(jobs.slice(1));
+	expect(f.pi.events.emit).toHaveBeenCalledWith("cron:change", { type: "remove", jobId: "owned" });
+	const directory = join(f.ctx.cwd, ".pi/plan");
+	const backup = readdirSync(directory).find(name => name.endsWith(".bak"))!;
+	expect(readFileSync(join(directory, backup), "utf8")).toBe(f.plan);
+	await f.command("new a different objective");
+	const next = f.entries.at(-1).data;
+	expect(next.mode).toBe("planning"); expect(next.worker).toBeUndefined(); expect(next.plan).not.toBe(f.path);
+	expect(readFileSync(next.plan, "utf8")).toContain("a different objective");
+	expect(readFileSync(next.plan, "utf8")).not.toContain("first output");
+	expect(readFileSync(f.path, "utf8")).toBe(f.plan);
+});
+
+it.each(["missing", "empty"])("clear resets a %s plan without a model call", async kind => {
+	const f = fixture(); await f.draft(); const before = f.messages.length;
+	if (kind === "missing") rmSync(f.path); else writeFileSync(f.path, "");
+	await f.command("clear");
+	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
+	expect(f.messages).toHaveLength(before);
+});
+
+it("discusses plan changes only during planning", async () => {
+	const f = fixture(); await f.command("discuss"); expect(f.messages).toHaveLength(0);
+	await f.draft();
+	f.ctx.ui.select.mockResolvedValueOnce("discuss — Discuss changes to the plan"); await f.command("");
+	expect(f.messages.at(-1).message.content).toContain("Discuss the current draft");
+	expect(f.entries.at(-1).data.mode).toBe("planning");
+	await f.command("ready"); const before = f.messages.length;
+	await f.command("discuss"); expect(f.messages).toHaveLength(before);
 });
 
 it("automatically proposes a changed settled draft once and preserves Discuss", async () => {
@@ -241,7 +308,7 @@ it("does not retrigger a review for its own CompleteGoal plan write", async () =
 	f.shutdown();
 });
 
-it("gives pause/exit the session-bound scheduler job removal guidance", async () => {
+it("gives pause scheduler guidance but clears on exit without a model prompt", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.command("stop");
 	const stop = f.messages.at(-1).message.content;
@@ -250,9 +317,10 @@ it("gives pause/exit the session-bound scheduler job removal guidance", async ()
 	expect(stop).not.toContain("interval '1h'");
 	expect(stop).toContain("Remote stop is NOT yet confirmed");
 	await f.command("resume");
+	const before = f.messages.length;
 	await f.command("exit");
-	expect(f.messages.at(-1).message.content).toContain('goals-copy-only"');
-	expect(f.entries.at(-1).data.mode).toBe("chat");
+	expect(f.messages).toHaveLength(before);
+	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
 });
 
 it("tells the model to remove only its own job after the final review", async () => {
@@ -350,13 +418,15 @@ it("rejects attaching a missing or goal-less file", async () => {
 	expect(f.entries).toEqual([]); // nothing saved: the session was not attached
 });
 
-it("exits planning with the draft preserved and nothing implemented", async () => {
+it.each(["exit", "quit", "clear", "menu"])("%s exits planning with the draft preserved and nothing implemented", async command => {
 	const f = fixture(); await f.draft();
 	await f.command("stop");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("A draft cannot pause"), "warning");
 	const before = f.messages.length;
-	await f.command("exit");
+	if (command === "menu") f.ctx.ui.select.mockResolvedValueOnce("quit — Exit and clear goals (back up plan)");
+	await f.command(command === "menu" ? "" : command);
 	expect(f.entries.at(-1).data.mode).toBe("chat");
+	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", undefined);
 	expect(readFileSync(f.path, "utf8")).toContain("first output");
 	expect(f.messages.length).toBe(before); // notify only, no model turn started
 	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");
@@ -687,10 +757,10 @@ it("coalesces pending upkeep with a repaired post-compaction plan, retaining the
 	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
 });
 
-it.each(["stop", "exit"])("passive %s is visible immediately while its model notice waits safely for the next prompt", async command => {
+it("passive pause is visible immediately while its model notice waits safely for the next prompt", async () => {
 	const f = fixture(); await f.draft();
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
-	await f.command(command);
+	await f.command("stop");
 	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Remote stop is NOT yet confirmed"), "info");
 });
