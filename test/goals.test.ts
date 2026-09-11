@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { scheduleCheckIn, upkeep } from "../src/prompts.js";
+import { scheduleCheckIn, upkeep, upkeepNudges } from "../src/prompts.js";
 
 const roots: string[] = [];
 const shutdowns: Array<() => void> = [];
@@ -635,7 +635,7 @@ it.each(["supervising", "solo"])("%s repeats upkeep every eight unchanged turns 
 	f.hooks.get("session_compact")();
 	expect(prepare().message.customType).toBe("pi-goals-plan");
 	const sent = f.messages.length;
-	for (let round = 0; round < 7; round++) {
+	for (let round = 0; round <= upkeepNudges.length; round++) {
 		for (let turn = 0; turn < 7; turn++) f.hooks.get("turn_end")({}, f.ctx);
 		expect(prepare().message).toBeUndefined();
 		f.hooks.get("turn_end")({}, f.ctx);

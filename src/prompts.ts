@@ -155,13 +155,25 @@ Use stock subagent for launch and subagent_resume with the returned sessionFile 
 Use the worker model requested in plan preferences, verify the resolved model, and report unavailable choices instead of silently substituting. Keep normal tools, not edxeth's restricted orchestrator mode. After reload or compaction reread the plan. Failed compaction, exhausted credits or lost connection do not erase progress: diagnose the actual error, restore an available authorized model/credits and resume the same saved session; never restart long work. Stock edxeth can crash the parent when a worker exits after parent reload: preserve drafts and stop workers before /reload. If it already happened, restart the saved parent session; do not repeat completed work.`;
 }
 // Pi/OpenAI: user nudges plus quotes/attributions from https://github.com/wassname/ml-debug/blob/main/fortune.txt.
-const upkeepNudges = [
+export const upkeepNudges = [
 	"is the worker stuck? (or are you)",
 	"Insufficient skepticism doesn't feel like insufficient skepticism from the inside. It just feels like doing research. -- Neel Nanda",
 	"take a breath, use a kamoji, how it going?",
 	"Don't let your instruments overwhelm your system. -- David J. Agans, *Debugging: The 9 Indispensable Rules*",
 	"is the worker being cheeky, does it need sheperding",
 	"The first step is just making time to stop and ask yourself: do I endorse what I'm doing, and could I be doing something better? -- Neel Nanda",
+	"It seems important to really commit yourself to always investigate whenever you notice confusion. -- Dan Rahtz",
+	"How reliable is my experiment? Ask yourself: How surprised would I be if it turned out to be complete bullshit due to a bug, error, noise, misunderstanding, etc.? Investigate the most uncertain bits. -- Neel Nanda",
+	"If it doesn't work, assume there's a bug. Spend a lot of effort searching for bugs before you resort to tweaking hyperparameters: usually it's a bug. -- Josh Achiam",
+	"You can't find typos in your own writing without a great deal of effort because you know what it's supposed to say. -- Gwern Branwen",
+	"Even a single anomaly, apparently trivial in itself, can indicate the everyday mental model is not just a little bit wrong, but fundamentally wrong. -- Gwern Branwen",
+	"The default state of the world is that your research is false, because doing research is hard. -- Neel Nanda",
+	"If you're new to RL, writing things from scratch is the most catastrophically self-sabotaging thing you can do. -- Andy Jones",
+	"QUIT THINKING AND LOOK. -- David J. Agans, *Debugging: The 9 Indispensable Rules*",
+	"Excitement is evidence of bullshit: generally, most true results are not exciting, but a fair amount of false results are. -- Neel Nanda",
+	"Read your data. Often, the quality of the data is a crucial driver of the results of your experiments. Often, it is quite bad. -- Neel Nanda",
+	"Visualize the model in action. Directly observing the machine learning model performing its task will help determine whether the quantitative performance numbers it achieves seem reasonable. -- Goodfellow, Bengio and Courville",
+	"The unambiguously correct place to visualize your data is immediately before y_hat = model(x). This is the only source of truth. -- Andrej Karpathy",
 ];
 export function upkeep(planPath: string, supervisorRound?: number): string {
 	const nudge = supervisorRound === undefined ? "" : `${upkeepNudges[supervisorRound % upkeepNudges.length]}\n\n`;
