@@ -154,8 +154,18 @@ Take uncertainty as an invitation to investigate, not something to hide. Have ro
 Use stock subagent for launch and subagent_resume with the returned sessionFile only after confirming the worker stopped. A stored handle is not proof of liveness; missing runtime state is not proof it stopped. Use pi-intercom list/status to identify the actual live child session before live steering; receipt alone does not prove action. Give each worker your Intercom session ID ${supervisorId}; require its completion report through Intercom while its pane stays open. A recap alone sends no instruction. Record '- worker session:' and '- worker intercom session:' in plan preferences from actual launch results and received-message identity; never confuse the runtime ID with the Intercom ID. Ensure the child calls AttachGoalPlan with the supplied path. Inspect results before CompleteGoal, then continue only unfinished goals.
 Use the worker model requested in plan preferences, verify the resolved model, and report unavailable choices instead of silently substituting. Keep normal tools, not edxeth's restricted orchestrator mode. After reload or compaction reread the plan. Failed compaction, exhausted credits or lost connection do not erase progress: diagnose the actual error, restore an available authorized model/credits and resume the same saved session; never restart long work. Stock edxeth can crash the parent when a worker exits after parent reload: preserve drafts and stop workers before /reload. If it already happened, restart the saved parent session; do not repeat completed work.`;
 }
-export function upkeep(planPath: string): string {
-	return `Plan upkeep: update task ticks, evidence and Log in ${planPath} when you have new progress to record. Preserve agreed goals and discriminators. If already reviewing evidence, finish that review rather than repeat a status recap. This turn-event reminder does not resume paused work.`;
+// Pi/OpenAI: user nudges plus quotes/attributions from https://github.com/wassname/ml-debug/blob/main/fortune.txt.
+const upkeepNudges = [
+	"is the worker stuck? (or are you)",
+	"Insufficient skepticism doesn't feel like insufficient skepticism from the inside. It just feels like doing research. -- Neel Nanda",
+	"take a breath, use a kamoji, how it going?",
+	"Don't let your instruments overwhelm your system. -- David J. Agans, *Debugging: The 9 Indispensable Rules*",
+	"is the worker being cheeky, does it need sheperding",
+	"The first step is just making time to stop and ask yourself: do I endorse what I'm doing, and could I be doing something better? -- Neel Nanda",
+];
+export function upkeep(planPath: string, supervisorRound?: number): string {
+	const nudge = supervisorRound === undefined ? "" : `${upkeepNudges[supervisorRound % upkeepNudges.length]}\n\n`;
+	return `${nudge}Plan upkeep: update task ticks, evidence and Log in ${planPath} when you have new progress to record. Preserve agreed goals and discriminators. If already reviewing evidence, finish that review rather than repeat a status recap. This turn-event reminder does not resume paused work.`;
 }
 export function planContext(mode: string, path: string | undefined, text: string): string {
 	return `Current goal mode: ${mode}. Earlier role messages are historical; this current role governs.\nPlan: ${path ?? "not attached"}\n${text}`;

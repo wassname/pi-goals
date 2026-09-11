@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { planDrafting } from "../src/prompts.js";
+import { planDrafting, upkeep } from "../src/prompts.js";
+
+it("cycles six curated supervisor nudges without changing the shared upkeep instructions", () => {
+	const base = upkeep("/plan.md");
+	const variants = Array.from({ length: 6 }, (_, round) => upkeep("/plan.md", round));
+	expect(new Set(variants).size).toBe(6);
+	for (const text of variants) expect(text.endsWith(base)).toBe(true);
+	expect(upkeep("/plan.md", 6)).toBe(variants[0]);
+	expect(base.startsWith("Plan upkeep:")).toBe(true);
+});
 
 describe("planning prompt", () => {
 	it("requires fact finding or a focused question before a goal", () => {

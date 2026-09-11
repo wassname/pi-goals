@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { scheduleCheckIn } from "../src/prompts.js";
+import { scheduleCheckIn, upkeep } from "../src/prompts.js";
 
 const roots: string[] = [];
 const shutdowns: Array<() => void> = [];
@@ -623,6 +623,29 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, and joins
 	await f.command("stop");
 	for (let i = 0; i < 10; i++) f.hooks.get("turn_end")({}, f.ctx);
 	expect(reminders()).toHaveLength(0);
+});
+
+it.each(["supervising", "solo"])("%s repeats upkeep every eight unchanged turns and rotates only delivered supervisor nudges", async mode => {
+	const f = fixture(); await f.draft();
+	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
+	else await f.command("ready");
+	const prepare = () => f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	prepare();
+	for (let i = 0; i < 9; i++) f.hooks.get("turn_end")({}, f.ctx);
+	f.hooks.get("session_compact")();
+	expect(prepare().message.customType).toBe("pi-goals-plan");
+	const sent = f.messages.length;
+	for (let round = 0; round < 7; round++) {
+		for (let turn = 0; turn < 7; turn++) f.hooks.get("turn_end")({}, f.ctx);
+		expect(prepare().message).toBeUndefined();
+		f.hooks.get("turn_end")({}, f.ctx);
+		expect(f.messages).toHaveLength(sent);
+		expect(prepare().message).toMatchObject({
+			customType: "pi-goals-upkeep",
+			content: upkeep(f.path, mode === "supervising" ? round : undefined),
+		});
+		expect(prepare().message).toBeUndefined();
+	}
 });
 
 it("extra subagent launches are recorded as helpers and never steal the implementation identity", async () => {

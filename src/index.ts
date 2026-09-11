@@ -91,6 +91,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		return snapshot.text;
 	};
 	let turnsStale = 0;
+	let upkeepRound = 0;
 	let lastWorkingSet = "";
 	let pendingUpkeep: { generation: number; workingSet: string } | undefined;
 	const checkIn = (ctx: ExtensionContext) => scheduleCheckIn(ctx.sessionManager.getSessionId(), state.plan ?? "");
@@ -170,6 +171,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		state.helpers ??= []; // sessions persisted before helper bookkeeping
 		notice = true;
 		turnsStale = 0;
+		upkeepRound = 0;
 		lastWorkingSet = "";
 		pendingUpkeep = undefined;
 		refresh(ctx);
@@ -280,8 +282,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text), display: false }
 			: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
 				&& ["supervising", "solo"].includes(state.mode) && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")
-				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!), display: false } : undefined;
-		if (notice) turnsStale = 0;
+				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, state.mode === "supervising" ? upkeepRound : undefined), display: false } : undefined;
+		if (message?.customType === "pi-goals-upkeep" && state.mode === "supervising") upkeepRound++;
+		if (message) turnsStale = 0;
 		notice = false;
 		pendingUpkeep = undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(message ? { message } : {}) };
