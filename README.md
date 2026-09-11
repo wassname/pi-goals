@@ -125,7 +125,7 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. 
 
 ```bash
-pi install git:github.com/wassname/pi-goals@experiment/main-supervisor-edxeth
+pi install git:github.com/wassname/pi-goals
 ```
 
 Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session.
@@ -133,9 +133,9 @@ Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents
 Or for development:
 
 ```bash
-git clone -b experiment/main-supervisor-edxeth https://github.com/wassname/pi-goals
+git clone https://github.com/wassname/pi-goals
 cd pi-goals && npm install
-pi -e ./src/index.ts
+pi -e .
 ```
 
 ## Use
@@ -159,7 +159,7 @@ You can read all the prompts in conversation order in [`src/prompts.ts`](src/pro
 ## Develop
 
 ```bash
-pi -e ./src/index.ts     # load locally; do not also load the installed copy
+pi -e .                     # load locally; do not also load the installed copy
 npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck
