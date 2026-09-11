@@ -480,7 +480,22 @@ it("cancelled goals do not prevent final cleanup, and solo writes self-verificat
 	expect(text).toContain("Preserved context");
 });
 
-it("lineage-only child attaches its plan with goal-only widget, retains task context, and cannot complete", async () => {
+it("prefixes single and batch launch titles with the project without changing handles or duplicating prefixes", () => {
+	const f = fixture();
+	const single = { name: "report-worker", title: "Restore PCA" };
+	const event = { toolName: "subagent", input: single };
+	f.hooks.get("tool_call")(event, f.ctx);
+	const expected = `${f.ctx.cwd.split("/").at(-1)} · Restore PCA`;
+	expect(single).toEqual({ name: "report-worker", title: expected });
+	f.hooks.get("tool_call")(event, f.ctx);
+	expect(single.title).toBe(expected);
+	const children = [{ name: "test-worker", title: "Check results" }, { ...single }];
+	f.hooks.get("tool_call")({ toolName: "subagent", input: { children } }, f.ctx);
+	expect(children[0].title).toBe(`${f.ctx.cwd.split("/").at(-1)} · Check results`);
+	expect(children[1]).toEqual(single);
+});
+
+it("lineage-only child attaches its plan without a widget, retains task context, and cannot complete", async () => {
 	const f = fixture(true);
 	const supplied = join(f.ctx.cwd, "supplied.md");
 	const text = "- [/] goal: exact file\n  - [ ] verify bytes\n## Log\n  - [ ] archived task\n";
@@ -491,10 +506,10 @@ it("lineage-only child attaches its plan with goal-only widget, retains task con
 	await attach.execute("a", { path: "supplied.md" }, undefined, undefined, f.ctx);
 	expect(f.entries.at(-1).data.plan).toBeUndefined(); // no cwd heuristics
 	await attach.execute("a", { path: supplied }, undefined, undefined, f.ctx);
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["▸ exact file"]);
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1].join("\n")).not.toContain("archived task");
+	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", undefined);
 	expect(readFileSync(supplied, "utf8")).toBe(text);
 	f.hooks.get("session_start")({}, f.ctx);
+	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", undefined);
 	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message.content).toContain("exact file");
 	const completion = await f.tools.get("CompleteGoal").execute("c", { goal: "exact file", evidence: [], observation: "claim" }, undefined, undefined, f.ctx);
 	expect(completion.content[0].text).toContain("only to the active parent");

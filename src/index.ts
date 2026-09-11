@@ -1,7 +1,7 @@
 // Pi/OpenAI: Plan and supervise in the main chat; delegate implementation to a visible worker.
 import { createHash } from "node:crypto";
 import { type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { foldPlan, GOAL_LINE } from "./plan.js";
@@ -100,7 +100,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		return m?.[1]?.trim() ?? null;
 	};
 	function refresh(ctx: ExtensionContext) {
-		if (state.mode === "chat") { ctx.ui.setStatus("goals", undefined); ctx.ui.setWidget("goals", undefined); return; }
+		if (state.child || state.mode === "chat") { ctx.ui.setStatus("goals", undefined); ctx.ui.setWidget("goals", undefined); return; }
 		const snapshot = readPlan();
 		if (snapshot.text === undefined) {
 			ctx.ui.setStatus("goals", snapshot.error);
@@ -274,7 +274,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		notice = false;
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(content ? { message: { customType: "pi-goals-plan", content, display: false } } : {}) };
 	});
-	pi.on("tool_call", (event) => {
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName === "subagent" && event.input) {
+			const prefix = `${basename(ctx.cwd)} · `;
+			const launches = Array.isArray(event.input.children) ? event.input.children : [event.input];
+			for (const launch of launches) {
+				if (launch && typeof launch.title === "string" && !launch.title.startsWith(prefix)) launch.title = prefix + launch.title;
+			}
+		}
 		if (state.child || !["subagent", "subagent_resume"].includes(event.toolName)) return;
 		// Solo means this chat took over implementation: no concurrent writer may be delegated.
 		if (state.mode === "planning" || state.mode === "paused" || state.mode === "solo") return { block: true, reason: goalToolBlocked(state.mode) };
