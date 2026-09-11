@@ -91,6 +91,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	};
 	let turnsStale = 0;
 	let lastWorkingSet = "";
+	let pendingUpkeep: { generation: number; workingSet: string } | undefined;
 	const checkIn = (ctx: ExtensionContext) => scheduleCheckIn(ctx.sessionManager.getSessionId(), state.plan ?? "");
 	const hasScheduleTool = () => pi.getAllTools().some((tool) => tool.name === "schedule_prompt");
 	const notedPlanValue = (prefix: string) => {
@@ -169,6 +170,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		notice = true;
 		turnsStale = 0;
 		lastWorkingSet = "";
+		pendingUpkeep = undefined;
 		refresh(ctx);
 		watchPlan(ctx);
 	}
@@ -181,7 +183,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		// sendMessage(triggerTurn:true) bypasses before_agent_start in Pi 0.85.1.
 		// A normal saved prompt prepares the current role before starting the turn.
 		if (triggerTurn) pi.sendUserMessage(`[pi-goals]\n${content}`, { deliverAs: "followUp" });
-		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "followUp", triggerTurn: false });
+		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
 		if (pendingLaunches > 0) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
@@ -227,6 +229,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.on("session_start", (_e, ctx) => restore(ctx));
 	pi.on("session_tree", (_e, ctx) => restore(ctx));
 	pi.on("session_shutdown", () => { generation++; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
+	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
+	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
 	pi.on("session_compact", () => { notice = true; });
 	pi.on("turn_end", (_event, ctx) => {
 		if (!["supervising", "solo"].includes(state.mode)) return;
@@ -237,9 +241,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		lastWorkingSet = workingSet;
 		refresh(ctx);
 		if (turnsStale === 8 && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")) {
-			// Pi queues context-only messages until tool results are appended at turn_end.
-			// This reaches the next model call in a long run without triggering another run.
-			pi.sendMessage({ customType: "pi-goals-upkeep", content: upkeep(state.plan!), display: false }, { triggerTurn: false });
+			// In Pi 0.85.1 triggerTurn:false updates saved history, not the live loop snapshot.
+			// Queue intent locally until ordinary prompt preparation, never force another turn.
+			pendingUpkeep = { generation, workingSet };
 		}
 	});
 	pi.on("agent_end", (_e, ctx) => { refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
@@ -268,11 +272,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const role = state.child ? childPlanRole : state.mode === "supervising"
 			? supervisor(WORKER, state.plan!, ctx.sessionManager.getSessionId())
 			: state.mode === "planning" ? planning(state.plan!) : state.mode === "paused" ? pausedRole : soloRole;
-		const content = notice ? planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text)
-			: undefined;
-		if (content) turnsStale = 0;
+		// Returned messages enter both Pi's prompt snapshot and saved history together.
+		// Unlike nextTurn, retaining intent here lets a fresh plan resync supersede upkeep,
+		// and drops obsolete reminders after edits, takeover, pause or session navigation.
+		const message = notice
+			? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text), display: false }
+			: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
+				&& ["supervising", "solo"].includes(state.mode) && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")
+				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!), display: false } : undefined;
+		if (notice) turnsStale = 0;
 		notice = false;
-		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(content ? { message: { customType: "pi-goals-plan", content, display: false } } : {}) };
+		pendingUpkeep = undefined;
+		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(message ? { message } : {}) };
 	});
 	pi.on("tool_call", (event, ctx) => {
 		if (event.toolName === "subagent" && event.input) {
@@ -382,7 +393,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						return;
 					}
 					state.mode = command === "stop" ? "paused" : "chat"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
-					send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${pauseExitNotice(state.worker, command === "exit")}`, Boolean(state.worker) || hasScheduleTool());
+					const pause = pauseExitNotice(state.worker, command === "exit");
+					const requestCleanup = Boolean(state.worker) || hasScheduleTool();
+					if (!requestCleanup) ctx.ui.notify(pause, "info"); // Visible now; passive model context waits for a prompt.
+					send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${pause}`, requestCleanup);
 					return;
 				}
 				if (command === "resume") {

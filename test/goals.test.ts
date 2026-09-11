@@ -525,7 +525,7 @@ it.each(["solo", "supervising"])("%s widget omits long tasks without altering th
 	expect(readFileSync(f.path, "utf8")).toBe(text);
 });
 
-it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, resets on working-set edits, and never starts a turn", async mode => {
+it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, and joins the next ordinary prompt once", async mode => {
 	const f = fixture(); await f.draft();
 	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
 	else await f.command("ready");
@@ -538,20 +538,21 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, resets on
 	}
 	expect(reminders()).toHaveLength(0);
 	f.hooks.get("turn_end")({}, f.ctx);
-	expect(reminders()).toHaveLength(1);
-	expect(reminders()[0].options).toEqual({ triggerTurn: false });
-	expect(reminders()[0].message.content).toContain(f.path);
-	expect(reminders()[0].message.content).not.toContain("first output");
 	for (let i = 0; i < 16; i++) f.hooks.get("turn_end")({}, f.ctx);
-	expect(reminders()).toHaveLength(1);
-	expect(reminders()[0].message.content).not.toContain("historical recap");
-	for (let i = 0; i < 7; i++) f.hooks.get("turn_end")({}, f.ctx);
+	expect(reminders()).toHaveLength(0); // No direct send, even after the run would finish.
+	const reminder = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
+	expect(reminder.customType).toBe("pi-goals-upkeep");
+	expect(reminder.content).toContain(f.path);
+	expect(reminder.content).not.toContain("first output");
+	expect(reminder.content).not.toContain("historical recap");
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
 	writeFileSync(f.path, f.plan.replace("first output", "refined output"));
 	f.hooks.get("turn_end")({}, f.ctx);
-	expect(reminders()).toHaveLength(1);
+	for (let i = 0; i < 7; i++) f.hooks.get("turn_end")({}, f.ctx);
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
 	await f.command("stop");
 	for (let i = 0; i < 10; i++) f.hooks.get("turn_end")({}, f.ctx);
-	expect(reminders()).toHaveLength(1);
+	expect(reminders()).toHaveLength(0);
 });
 
 it("extra subagent launches are recorded as helpers and never steal the implementation identity", async () => {
@@ -650,4 +651,46 @@ it("keeps interactive workers open and supplies the supervisor identity for Inte
 	expect(role).toContain("your Intercom session ID copy-only");
 	expect(role).toContain("stop workers before /reload");
 	expect(role).not.toContain("Reports arrive automatically");
+});
+
+it.each(["stop", "exit", "edit", "session_tree"])("discards pending upkeep after %s instead of reviving stale work", async change => {
+	const f = fixture(); await f.draft();
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
+	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	for (let i = 0; i < 9; i++) f.hooks.get("turn_end")({}, f.ctx);
+	if (change === "edit") writeFileSync(f.path, f.plan.replace("first output", "changed requirement"));
+	else if (change === "session_tree") f.hooks.get("session_tree")({}, f.ctx);
+	else await f.command(change);
+	const prepared = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	expect(prepared?.message?.customType).not.toBe("pi-goals-upkeep");
+	if (change === "stop") expect(prepared.systemPrompt).toContain("Goal work is paused");
+	if (change === "exit") expect(prepared).toBeUndefined();
+	expect(f.messages.filter(m => m.message.customType === "pi-goals-upkeep")).toHaveLength(0);
+});
+
+it("coalesces pending upkeep with a repaired post-compaction plan, retaining the user's latest requirements", async () => {
+	const f = fixture(); await f.draft();
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
+	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	for (let i = 0; i < 9; i++) f.hooks.get("turn_end")({}, f.ctx);
+	f.hooks.get("session_compact")();
+	rmSync(f.path);
+	const unavailable = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	expect(unavailable.message).toBeUndefined();
+	expect(unavailable.systemPrompt).toContain("unavailable");
+	const repaired = f.plan.replace("first output", "the human's latest exact result");
+	writeFileSync(f.path, repaired);
+	const ready = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	expect(ready.message).toMatchObject({ customType: "pi-goals-plan" });
+	expect(ready.message.content).toContain(repaired);
+	expect(ready.message.content).not.toContain("Plan upkeep:");
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
+});
+
+it.each(["stop", "exit"])("passive %s is visible immediately while its model notice waits safely for the next prompt", async command => {
+	const f = fixture(); await f.draft();
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
+	await f.command(command);
+	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Remote stop is NOT yet confirmed"), "info");
 });
