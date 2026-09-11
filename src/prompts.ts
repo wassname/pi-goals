@@ -164,7 +164,7 @@ export const upkeepNudges = [
 	"The first step is just making time to stop and ask yourself: do I endorse what I'm doing, and could I be doing something better? -- Neel Nanda",
 	"It seems important to really commit yourself to always investigate whenever you notice confusion. -- Dan Rahtz",
 	"How reliable is my experiment? Ask yourself: How surprised would I be if it turned out to be complete bullshit due to a bug, error, noise, misunderstanding, etc.? Investigate the most uncertain bits. -- Neel Nanda",
-	"If it doesn't work, assume there's a bug. Spend a lot of effort searching for bugs before you resort to tweaking hyperparameters: usually it's a bug. -- Josh Achiam",
+	"If it doesn’t work, assume there’s a bug. Spend a lot of effort searching for bugs before you resort to tweaking hyperparameters: usually it’s a bug. Bad hyperparameters can significantly degrade RL performance, but if you’re using hyperparameters similar to the ones in papers and standard implementations, those will probably not be the issue. -- Josh Achiam",
 	"You can't find typos in your own writing without a great deal of effort because you know what it's supposed to say. -- Gwern Branwen",
 	"Even a single anomaly, apparently trivial in itself, can indicate the everyday mental model is not just a little bit wrong, but fundamentally wrong. -- Gwern Branwen",
 	"The default state of the world is that your research is false, because doing research is hard. -- Neel Nanda",
@@ -174,6 +174,8 @@ export const upkeepNudges = [
 	"Read your data. Often, the quality of the data is a crucial driver of the results of your experiments. Often, it is quite bad. -- Neel Nanda",
 	"Visualize the model in action. Directly observing the machine learning model performing its task will help determine whether the quantitative performance numbers it achieves seem reasonable. -- Goodfellow, Bengio and Courville",
 	"The unambiguously correct place to visualize your data is immediately before y_hat = model(x). This is the only source of truth. -- Andrej Karpathy",
+	"Your misconfigured neural net will throw exceptions only if you're lucky; most of the time it will train but silently work a bit worse. -- Andrej Karpathy",
+	"The first step to training a neural net is to not touch any neural net code at all and instead begin by thoroughly inspecting your data. -- Andrej Karpathy",
 ];
 export function upkeep(planPath: string, supervisorRound?: number): string {
 	const nudge = supervisorRound === undefined ? "" : `${upkeepNudges[supervisorRound % upkeepNudges.length]}\n\n`;
