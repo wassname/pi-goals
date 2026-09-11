@@ -74,7 +74,7 @@ it.each([
 	await f.command("");
 	const actions = f.ctx.ui.select.mock.calls.at(-1)![1];
 	expect(actions.map(action => action.split(" — ")[0])).toEqual(expected);
-	expect(actions.at(-1)).toBe("quit — Exit and clear goals (back up plan)");
+	expect(actions.at(-1)).toBe("quit — Exit and clear goals");
 	expect(f.messages).toHaveLength(before);
 	expect(f.commands.get("goals").getArgumentCompletions("res")).toEqual([{ value: "resume", label: "resume" }]);
 });
@@ -423,7 +423,7 @@ it.each(["exit", "quit", "clear", "menu"])("%s exits planning with the draft pre
 	await f.command("stop");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("A draft cannot pause"), "warning");
 	const before = f.messages.length;
-	if (command === "menu") f.ctx.ui.select.mockResolvedValueOnce("quit — Exit and clear goals (back up plan)");
+	if (command === "menu") f.ctx.ui.select.mockResolvedValueOnce("quit — Exit and clear goals");
 	await f.command(command === "menu" ? "" : command);
 	expect(f.entries.at(-1).data.mode).toBe("chat");
 	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", undefined);

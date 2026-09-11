@@ -330,7 +330,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 							solo: ["stop — Pause work"],
 						})[state.mode],
 						...(["planning", "supervising", "paused"].includes(state.mode) ? ["model — Settings: worker model"] : []),
-						"help — Show commands", "quit — Exit and clear goals (back up plan)",
+						"help — Show commands", "quit — Exit and clear goals",
 					];
 					const before = generation;
 					const choice = await ctx.ui.select("Goal plan actions", actions);
