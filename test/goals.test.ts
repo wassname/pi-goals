@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,8 +42,15 @@ function fixture(child = false) {
 	};
 	goalsExtension(pi as unknown as ExtensionAPI);
 	hooks.get("session_start")({}, ctx);
-	const command = (value: string) => commands.get("goals").handler(value, ctx);
-	const path = join(cwd, ".pi/plan/copy-only-main.md");
+	let path = "";
+	const command = async (value: string) => {
+		await commands.get("goals").handler(value, ctx);
+		const planDir = join(cwd, ".pi", "plan");
+		if (!path && existsSync(planDir)) {
+			const firstPlan = readdirSync(planDir).find(name => name.endsWith(".md"));
+			if (firstPlan) path = join(planDir, firstPlan);
+		}
+	};
 	const plan = "# Plan\n- [ ] goal: first output\n- [ ] goal: second output\n\n## Log\n";
 	const draft = async () => { await command("new two outputs"); writeFileSync(path, plan); };
 	const shutdown = () => hooks.get("session_shutdown")();
@@ -61,7 +68,7 @@ function fixture(child = false) {
 		start(details.id, { agent, title: "Work", sessionFile: details.sessionFile }, toolName);
 		finish(details.id, details, toolName);
 	};
-	return { ctx, pi, hooks, tools, commands, messages, command, path, plan, draft, shutdown, changed, atomicWrite, entries, start, finish, launch };
+	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, entries, start, finish, launch };
 }
 
 it.each([
@@ -267,17 +274,39 @@ it("requires actual nonempty evidence, distinguishes manual ticks, and retains s
 	f.shutdown();
 });
 
-it("reviews a plan replaced atomically, and ignores writes that keep the same content", async () => {
-	const f = fixture(); await f.draft(); await f.command("ready");
-	await f.atomicWrite(f.plan.replace("## Log", "- discriminator: changed requirement\n## Log"));
+it("reviews a plan replaced atomically with direct short context, and ignores writes that keep the same content", async () => {
+	const f = fixture(); await f.draft();
+	const plan = `# Context title
+
+A short introduction for ordinary reminders.
+
+## User-visible result
+A visible artifact.
+
+## User voice
+- > "The full requirement must survive resync."
+
+## Goals
+- [ ] goal: produce the artifact
+  - tasks:
+    - [ ] run the detailed check
+
+## Log
+old progress`;
+	writeFileSync(f.path, plan); await f.command("ready");
+	const revised = plan.replace("A visible artifact.", "A revised visible artifact.");
+	await f.atomicWrite(revised);
 	await waitFor(() => f.changed() === 1);
 	const review = f.messages.find((m) => m.message.content.includes("Plan changed"))?.message.content;
-	expect(review).toContain("Plan changed: ");
+	expect(review).toContain("A short introduction for ordinary reminders.");
+	expect(review).toContain("A revised visible artifact.");
 	expect(review).toContain(f.path);
-	await f.atomicWrite(f.plan.replace("## Log", "- discriminator: same requirement again\n## Log"));
+	expect(review).not.toContain("The full requirement must survive resync.");
+	expect(review).not.toContain("run the detailed check");
+	await f.atomicWrite(revised.replace("A revised", "A second revised"));
 	await waitFor(() => f.changed() === 2);
 	// Rewriting identical bytes must not retrigger the review event hook.
-	const same = f.plan.replace("## Log", "- discriminator: same requirement again\n## Log");
+	const same = revised.replace("A revised", "A second revised");
 	writeFileSync(f.path, same); await delay(300);
 	expect(f.changed()).toBe(2);
 	f.shutdown();
@@ -343,11 +372,26 @@ it("tells the model to remove only its own job after the final review", async ()
 	f.shutdown();
 });
 
-it("restores context after compaction without reinstalling or overriding scheduler jobs", async () => {
-	const f = fixture(); await f.draft(); await f.command("ready");
+it("restores the complete plan document after session restore", async () => {
+	const f = fixture(); await f.draft();
+	const plan = `${f.plan.replace("## Log", "## User voice\n- > \"Keep the user voice after restore.\"\n## Log")}old progress`;
+	writeFileSync(f.path, plan); await f.command("ready");
+	f.hooks.get("session_start")({}, f.ctx);
+	const restored = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	expect(restored.message.content).toContain("Keep the user voice after restore.");
+	expect(restored.message.content).toContain("old progress");
+});
+
+it("restores the complete plan document after compaction without reinstalling or overriding scheduler jobs", async () => {
+	const f = fixture(); await f.draft();
+	const plan = `${f.plan.replace("## Log", "## User voice\n- > \"Keep this exact requirement.\"\n  - task detail\n## Log")}old progress`;
+	writeFileSync(f.path, plan); await f.command("ready");
 	f.hooks.get("session_compact")();
 	const result = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
 	expect(result.systemPrompt).not.toContain("add one session-bound");
+	expect(result.message.content).toContain("Keep this exact requirement.");
+	expect(result.message.content).toContain("task detail");
+	expect(result.message.content).toContain("old progress");
 	expect(result.message.content).toContain(f.path);
 });
 
@@ -621,7 +665,7 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, and joins
 	const reminder = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
 	expect(reminder.customType).toBe("pi-goals-upkeep");
 	expect(reminder.content).toContain(f.path);
-	expect(reminder.content).not.toContain("first output");
+	expect(reminder.content).toContain("first output");
 	expect(reminder.content).not.toContain("historical recap");
 	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
 	writeFileSync(f.path, f.plan.replace("first output", "refined output"));
@@ -631,6 +675,39 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, and joins
 	await f.command("stop");
 	for (let i = 0; i < 10; i++) f.hooks.get("turn_end")({}, f.ctx);
 	expect(reminders()).toHaveLength(0);
+});
+
+it("injects medium direct context after the bounded unchanged-turn reminder", async () => {
+	const f = fixture(); await f.draft();
+	const plan = `# Context title
+
+A short introduction.
+
+## User-visible result
+A visible artifact.
+
+## User voice
+- > "Keep this exact user requirement."
+
+## Goals
+- [/] goal: produce the artifact
+  - tasks:
+    - [ ] run the detailed check
+  - evidence: proof.log
+
+## Log
+old progress`;
+	writeFileSync(f.path, plan); await f.command("ready");
+	// Consume startup full context before observing the medium reminder. -- PI/gpt-5.6-terra
+	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	for (let i = 0; i < 9; i++) f.hooks.get("turn_end")({}, f.ctx);
+	const reminder = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
+	expect(reminder.customType).toBe("pi-goals-upkeep");
+	expect(reminder.content).toContain("Keep this exact user requirement.");
+	expect(reminder.content).toContain("goal: produce the artifact");
+	expect(reminder.content).not.toContain("run the detailed check");
+	expect(reminder.content).not.toContain("proof.log");
+	expect(reminder.content).not.toContain("old progress");
 });
 
 it.each(["supervising", "solo"])("%s repeats upkeep every eight unchanged turns and rotates only delivered supervisor nudges", async mode => {
@@ -650,7 +727,7 @@ it.each(["supervising", "solo"])("%s repeats upkeep every eight unchanged turns 
 		expect(f.messages).toHaveLength(sent);
 		expect(prepare().message).toMatchObject({
 			customType: "pi-goals-upkeep",
-			content: upkeep(f.path, mode === "supervising" ? round : undefined),
+			content: upkeep(f.path, f.plan, mode === "supervising" ? round : undefined),
 		});
 		expect(prepare().message).toBeUndefined();
 	}

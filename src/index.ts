@@ -73,6 +73,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let workerRevision = 0;
 	const pendingLaunches = new Map<string, { plan: string; generation: number; launches: { agent?: string; sessionFile?: string }[] }>();
 	let notice = true;
+	let fullPlanContextDue = true;
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
 	let planHash = "";
@@ -155,7 +156,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (hash === planHash) return;
 				planHash = hash;
 				notice = true;
-				send(planChangedReview(state.plan!));
+				send(planChangedReview(state.plan!, snapshot.text));
 			}, 150);
 		});
 		planWatcher.on("error", (error) => { planWatcher?.close(); planWatcher = undefined; ctx.ui.notify(`Plan monitoring failed: ${error.message}`, "error"); });
@@ -179,6 +180,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		upkeepRound = 0;
 		lastWorkingSet = "";
 		pendingUpkeep = undefined;
+		fullPlanContextDue = true;
 		refresh(ctx);
 		watchPlan(ctx);
 	}
@@ -239,7 +241,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => { generation++; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
 	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
-	pi.on("session_compact", () => { notice = true; });
+	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
 	pi.on("turn_end", (_event, ctx) => {
 		if (!["supervising", "solo"].includes(state.mode)) return;
 		const snapshot = readPlan();
@@ -284,13 +286,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		// Unlike nextTurn, retaining intent here lets a fresh plan resync supersede upkeep,
 		// and drops obsolete reminders after edits, takeover, pause or session navigation.
 		const message = notice
-			? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text), display: false }
+			? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text, fullPlanContextDue ? "full" : "short"), display: false }
 			: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
 				&& ["supervising", "solo"].includes(state.mode) && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")
-				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, state.mode === "supervising" ? upkeepRound : undefined), display: false } : undefined;
+				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, snapshot.text, state.mode === "supervising" ? upkeepRound : undefined), display: false } : undefined;
 		if (message?.customType === "pi-goals-upkeep" && state.mode === "supervising") upkeepRound++;
 		if (message) turnsStale = 0;
 		notice = false;
+		fullPlanContextDue = false;
 		pendingUpkeep = undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(message ? { message } : {}) };
 	});
@@ -379,7 +382,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (state.mode !== "planning") { ctx.ui.notify("Discuss applies to a draft.", "warning"); return; }
 					send(discuss); return;
 				}
-				if (command === "review" && state.mode === "supervising") { notice = true; send(manualReview(state.plan ?? "")); return; }
+				if (command === "review" && state.mode === "supervising") { notice = true; send(manualReview(state.plan ?? "", planText())); return; }
 				if (command === "edit" || command === "review" || command === "ready") { await ready(ctx, command === "review", command === "edit"); return; }
 				if (command === "model" || command.startsWith("model ")) {
 					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
@@ -459,12 +462,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (command !== "new" && !command.startsWith("new ")) { ctx.ui.notify(`Unknown or incomplete command. ${help}`, "warning"); return; }
 				const objective = command.slice(4).trim();
 				if ((state.worker && !state.workerStopped) || state.mode === "supervising") { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
-				let path = join(ctx.cwd, ".pi", "plan", `${ctx.sessionManager.getSessionId()}-main.md`);
-				mkdirSync(dirname(path), { recursive: true });
-				try { writeFileSync(path, planDocument(objective), { flag: "wx" }); } catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-					path = join(dirname(path), `${ctx.sessionManager.getSessionId()}-${randomUUID()}.md`);
-					writeFileSync(path, planDocument(objective), { flag: "wx" });
+				const planDir = join(ctx.cwd, ".pi", "plan");
+				mkdirSync(planDir, { recursive: true });
+				const timestamp = new Date().toISOString().replace("T", "-").replace(/:/g, "").replace(/\.\d{3}Z$/, "Z");
+				const slug = (objective.toLowerCase().normalize("NFKD").replace(/[^\w\s-]/g, "").replace(/[\s_]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "goal-plan");
+				let version = 1;
+				let path: string;
+				for (;;) {
+					path = join(planDir, `${timestamp}-${slug}-v${version}.md`);
+					try { writeFileSync(path, planDocument(objective), { flag: "wx" }); break; } catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+						version++;
+					}
 				}
 				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, helpers: state.helpers, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 				send(planningSeed(objective, path));

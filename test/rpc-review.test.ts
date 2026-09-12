@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { describe, expect, it } from "vitest";
 import { foldPlan } from "../src/plan.js";
@@ -73,8 +73,12 @@ describe("RPC review flow", () => {
 		const server = createServer(async (request, response) => {
 			let body = "";
 			for await (const chunk of request) body += chunk;
-			requests.push(JSON.parse(body));
+			const modelRequest = JSON.parse(body) as ModelRequest;
+			requests.push(modelRequest);
 			if (requests.length === 1) {
+				const pathMatch = systemText(modelRequest).match(/Plan only in (.+?);/);
+				if (!pathMatch) throw new Error("Planning prompt did not name its plan file");
+				planPath = pathMatch[1];
 				streamResponse(response, {
 					tool_calls: [{
 						index: 0, id: "write-plan", type: "function",
@@ -106,14 +110,10 @@ describe("RPC review flow", () => {
 		const client = new RpcClient(pi);
 		const exited = once(pi, "exit");
 		try {
-			client.send({ type: "get_state", id: "state" });
-			const state = await client.waitFor((message) => message.type === "response" && message.id === "state");
-			const sessionId = (state.data as { sessionId: string }).sessionId;
-			planPath = join(cwd, ".pi", "plan", `${sessionId}-main.md`);
-
 			client.send({ type: "prompt", id: "goals", message: "/goals new work out the thing" });
 			const review = await client.waitFor(isSelect);
 			expect(review.options).toEqual(["Ready", "Discuss", "Edit", "Cancel"]);
+			expect(basename(planPath)).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}Z-work-out-the-thing-v1\.md$/);
 			expect(review.title).toContain(planPath);
 			const proposal = client.messages.find(message => message.type === "message_end" && (message.message as { customType?: string })?.customType === "goal-plan-proposal");
 			expect(proposal?.message).toMatchObject({ content: plan, display: true });

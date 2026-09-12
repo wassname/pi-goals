@@ -1,5 +1,5 @@
 // Pi/OpenAI: Planning, approval, supervision, reminders, completion and recovery.
-import { foldPlan } from "./plan.js";
+import { foldPlan, planContextView } from "./plan.js";
 
 export const planDrafting = `\
 You are in plan mode. Help the user express what they want this project to achieve in a short judgeable plan. Seek to understand their underlying goals, infer ordinary details, and use their applicable AGENTS.md instructions, relevant skills, and project context to interpret the request correctly. Do not silently substitute your own goals or expand the agreed scope.
@@ -180,18 +180,18 @@ export const upkeepNudges = [
 	"The first step to training a neural net is to not touch any neural net code at all and instead begin by thoroughly inspecting your data. -- Andrej Karpathy",
 	"Write multiple competing hypotheses: consider the most likely failure but also some of: a subtle failure, a perverse failure, a possible bug, and an unknown. Put a rough credence on each. Finally write down what you expect to see differently for success vs each possibility and brainstorm the cheapest tests that may narrow them down. -- wassname",
 ];
-export function upkeep(planPath: string, supervisorRound?: number): string {
+export function upkeep(planPath: string, text: string, supervisorRound?: number): string {
 	const nudge = supervisorRound === undefined ? "" : `${upkeepNudges[supervisorRound % upkeepNudges.length]}\n\n`;
-	return `${nudge}Plan upkeep: update task ticks, evidence and Log in ${planPath} when you have new progress to record. Preserve agreed goals and discriminators. If already reviewing evidence, finish that review rather than repeat a status recap. This turn-event reminder does not resume paused work.`;
+	return `${nudge}Plan upkeep: update task ticks, evidence and Log when you have new progress to record. Preserve agreed goals and discriminators. If already reviewing evidence, finish that review rather than repeat a status recap. This turn-event reminder does not resume paused work.\n\n${planContextView(text, "medium")}\n\nPlan file (audit or edit link): ${planPath}`;
 }
-export function planContext(mode: string, path: string | undefined, text: string): string {
-	return `Current goal mode: ${mode}. Earlier role messages are historical; this current role governs.\nPlan: ${path ?? "not attached"}\n${foldPlan(text)}\n\nRead historical Log entries from the plan file when needed.`;
+export function planContext(mode: string, path: string | undefined, text: string, tier: "short" | "medium" | "full" = "full"): string {
+	return `Current goal mode: ${mode}. Earlier role messages are historical; this current role governs.\n${planContextView(text, tier)}\n\nPlan file (audit or edit link): ${path ?? "not attached"}`;
 }
-export function planChangedReview(planPath: string): string {
-	return `${supervisorJob}\nPlan changed: ${planPath}. Read the current working set and inspect changed requirements, completion claims and evidence. Manual checkbox edits are claims, not proof. Do not weaken the agreed goal or start a duplicate writer.`;
+export function planChangedReview(planPath: string, text: string): string {
+	return `${supervisorJob}\nPlan changed. Inspect changed requirements, completion claims and evidence.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Manual checkbox edits are claims, not proof. Do not weaken the agreed goal or start a duplicate writer.`;
 }
-export function manualReview(planPath: string): string {
-	return `${supervisorJob}\nReview the current plan ${planPath}, worker progress and actual evidence. Do not launch a duplicate writer.`;
+export function manualReview(planPath: string, text: string): string {
+	return `${supervisorJob}\nReview the current plan, worker progress and actual evidence.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Do not launch a duplicate writer.`;
 }
 
 // Check-ins. The installed scheduler owns storage/timing/UI. Removal guidance must never add jobs.
