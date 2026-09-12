@@ -243,7 +243,12 @@ it.each(["FIRST OUTPUT", "renamed output", "duplicate", "historical"])("completi
 	const history = "## Log\n- [ ] goal: first output\n";
 	writeFileSync(f.path, "- [ ] goal: first output\n  - [ ] unrelated task\n" + suffix + history);
 	const before = readFileSync(f.path, "utf8");
-	await f.tools.get("CompleteGoal").execute("c", { goal: subject === "duplicate" || subject === "historical" ? "first output" : subject, evidence: [evidence], observation: "Read actual output" }, undefined, undefined, f.ctx);
+	const params = { goal: subject === "duplicate" || subject === "historical" ? "first output" : subject, evidence: [evidence], observation: "Read actual output" };
+	const first = await f.tools.get("CompleteGoal").execute("c", params, undefined, undefined, f.ctx);
+	if (first.content[0].text.includes("Final review queued")) {
+		f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+		await f.tools.get("CompleteGoal").execute("c", params, undefined, undefined, f.ctx);
+	}
 	const after = readFileSync(f.path, "utf8");
 	if (subject === "renamed output" || subject === "duplicate") expect(after).toBe(before);
 	else { expect(after).toContain("- [x] goal: first output"); expect(after.split("## Log")[1]).toContain("\n- [ ] goal: first output\n"); expect(after).toContain("- [ ] unrelated task"); }
@@ -359,16 +364,55 @@ it("gives pause scheduler guidance but clears on exit without a model prompt", a
 	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
 });
 
-it("tells the model to remove only its own job after the final review", async () => {
-	const f = fixture(); await f.draft(); await f.command("ready");
+it("requires a full-plan review turn before recording the final goal", async () => {
+	const f = fixture(); await f.draft();
+	const plan = `# Final review fixture
+- [ ] goal: first output
+  - discriminator: first output has exact saved bytes
+- [ ] goal: second output
+  - discriminator: second output has exact saved bytes
+
+## Log
+- worker evidence: keep this history in the final review`;
+	writeFileSync(f.path, plan); await f.command("ready");
 	mkdirSync(join(f.ctx.cwd, "evidence")); writeFileSync(join(f.ctx.cwd, "evidence/pass.log"), "bytes\n");
-	let finalText = "";
-	for (const goal of ["first output", "second output"]) {
-		finalText = (await f.tools.get("CompleteGoal").execute("t", { goal, evidence: ["evidence/pass.log"], observation: "inspected" }, undefined, undefined, f.ctx)).content[0].text;
-	}
+	const complete = (goal: string) => f.tools.get("CompleteGoal").execute("t", { goal, evidence: ["evidence/pass.log"], observation: "inspected" }, undefined, undefined, f.ctx);
+	await complete("first output");
+	const queued = await complete("second output");
+	expect(queued.content[0].text).toContain("Final review queued");
+	expect(readFileSync(f.path, "utf8")).toContain("- [ ] goal: second output");
+	const direct = f.messages.at(-1);
+	expect(direct.savedPrompt).toBe(true);
+	expect(direct.message.content).toContain("second output has exact saved bytes");
+	expect(direct.message.content).toContain("worker evidence: keep this history");
+	const review = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
+	expect(review).toMatchObject({ customType: "pi-goals-final-review" });
+	expect(review.content).toContain("first output has exact saved bytes");
+	expect(review.content).toContain("worker evidence: keep this history");
+	const finalText = (await complete("second output")).content[0].text;
 	expect(finalText).toContain("All non-cancelled goals are reviewed.");
 	expect(finalText).toContain('job named "goals-copy-only"');
 	expect(finalText).toContain("leave other jobs untouched");
+	f.shutdown();
+});
+
+it("recovers a queued final review and invalidates it when the plan changes", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	writeFileSync(join(f.ctx.cwd, "proof.log"), "PASS\n");
+	const complete = (goal: string) => f.tools.get("CompleteGoal").execute("t", { goal, evidence: ["proof.log"], observation: "inspected" }, undefined, undefined, f.ctx);
+	await complete("first output");
+	await complete("second output");
+	f.hooks.get("session_start")({}, f.ctx);
+	const recovered = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
+	expect(recovered).toMatchObject({ customType: "pi-goals-final-review" });
+	expect(recovered.content).toContain("- [ ] goal: second output");
+	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("second output", "revised second output"));
+	const invalidated = await complete("revised second output");
+	expect(invalidated.content[0].text).toContain("plan changed since the final review");
+	const changed = await complete("revised second output");
+	expect(changed.content[0].text).toContain("Final review queued");
+	expect(readFileSync(f.path, "utf8")).toContain("- [ ] goal: revised second output");
+	expect(f.messages.at(-1).message.content).toContain("revised second output");
 	f.shutdown();
 });
 
@@ -585,7 +629,11 @@ it("cancelled goals do not prevent final cleanup, and solo writes self-verificat
 	writeFileSync(f.path, f.plan.replace("[ ] goal: second", "[-] goal: second") + "\n## Appendix\nPreserved context\n");
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
 	writeFileSync(join(f.ctx.cwd, "proof.log"), "PASS\n");
-	const done = await f.tools.get("CompleteGoal").execute("c", { goal: "first output", evidence: ["proof.log"], observation: "Exact bytes observed" }, undefined, undefined, f.ctx);
+	const params = { goal: "first output", evidence: ["proof.log"], observation: "Exact bytes observed" };
+	const queued = await f.tools.get("CompleteGoal").execute("c", params, undefined, undefined, f.ctx);
+	expect(queued.content[0].text).toContain("Final review queued");
+	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	const done = await f.tools.get("CompleteGoal").execute("c", params, undefined, undefined, f.ctx);
 	expect(done.content[0].text).toContain("All non-cancelled goals are reviewed");
 	const text = readFileSync(f.path, "utf8");
 	expect(text).toContain("Solo self-verification:");

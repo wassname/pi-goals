@@ -193,6 +193,9 @@ export function planChangedReview(planPath: string, text: string): string {
 export function manualReview(planPath: string, text: string): string {
 	return `${supervisorJob}\nReview the current plan, worker progress and actual evidence.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Do not launch a duplicate writer.`;
 }
+export function finalReview(planPath: string, text: string): string {
+	return `Final completion review. The preceding CompleteGoal request did not record approval. Read the complete embedded plan, including goal requirements, evidence and Log. Inspect the cited artifacts yourself. Only after this review, call CompleteGoal again with the exact remaining goal and evidence; if the plan changed, inspect the changed plan instead.\n\n${planContextView(text, "full")}\n\nPlan file (audit or edit link): ${planPath}.`;
+}
 
 // Check-ins. The installed scheduler owns storage/timing/UI. Removal guidance must never add jobs.
 export function removeGoalSchedule(sessionId: string): string {
@@ -203,7 +206,7 @@ export function scheduleCheckIn(sessionId: string, planPath: string): string {
 }
 
 // Completion and runtime errors. Tool returns are model-facing too.
-export const completeGoalDescription = "Parent supervisor or solo self-verification only. Inspect the actual artifact and saved verification first; cite nonempty evidence files and describe what you observed. Exact goal subject required. Manual ticks and worker reports are claims; ignored/uncommitted evidence is allowed. This records judgment, not an independent judge.";
+export const completeGoalDescription = "Parent supervisor or solo self-verification only. Inspect the actual artifact and saved verification first; cite nonempty evidence files and describe what you observed. Exact goal subject required. The final remaining goal first queues a full-plan review; call CompleteGoal again from that review to record it. Manual ticks and worker reports are claims; ignored/uncommitted evidence is allowed. This records judgment, not an independent judge.";
 export const messages = {
 	noPlan: "no plan attached",
 	emptyPlan: "empty plan (save may be in progress)",
@@ -221,6 +224,10 @@ export const childPlanAttached = (path: string) => `Attached worker plan ${path}
 export function completionLog(goal: string, observation: string, evidence: string[], solo: boolean): string {
 	return `- ${solo ? "Solo self-verification" : "Parent review"}: ${JSON.stringify(goal)}; ${JSON.stringify(observation)}; evidence ${JSON.stringify(evidence)}`;
 }
+export function finalReviewQueued(goal: string): string {
+	return `Final review queued for ${goal}; no sign-off recorded. Read the complete embedded plan and actual evidence in that review turn, then call CompleteGoal again with the exact goal and evidence.`;
+}
+export const finalReviewInvalidated = "The plan changed since the final review was queued; no sign-off recorded. Inspect the current plan and request completion again to queue a new final review.";
 export function completionResult(goal: string, sessionId: string, remaining: boolean, solo: boolean): string {
 	return `Recorded ${solo ? "solo self-verification" : "parent judgment"} for ${goal}; not independent verification. ${remaining ? "Continue only remaining open or unsigned goals in your current role." : `All non-cancelled goals are reviewed. ${removeGoalSchedule(sessionId)}`}`;
 }

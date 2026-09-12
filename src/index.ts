@@ -18,6 +18,9 @@ import {
 	discuss,
 	emptyEvidence,
 	evidenceUnavailable,
+	finalReview,
+	finalReviewInvalidated,
+	finalReviewQueued,
 	goalToolBlocked,
 	manualReview,
 	messages,
@@ -52,6 +55,7 @@ interface State {
 	workerStopped?: boolean;
 	pausedFrom?: "solo" | "supervising";
 	signoffs: Record<string, { evidence: string[]; observation: string; signature: string }>;
+	finalReview?: { planDigest: string };
 	child?: boolean;
 }
 const initial = (): State => ({ mode: "chat", helpers: [], signoffs: {} });
@@ -71,6 +75,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let state = initial();
 	let generation = 0;
 	let workerRevision = 0;
+	let finalReviewTurnDigest: string | undefined;
 	const pendingLaunches = new Map<string, { plan: string; generation: number; launches: { agent?: string; sessionFile?: string }[] }>();
 	let notice = true;
 	let fullPlanContextDue = true;
@@ -92,6 +97,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const snapshot = readPlan();
 		if (snapshot.text === undefined) throw new Error(snapshot.error);
 		return snapshot.text;
+	};
+	const clearChangedFinalReview = (text: string) => {
+		if (!state.finalReview || state.finalReview.planDigest === digest(text)) return false;
+		state.finalReview = undefined;
+		save();
+		return true;
 	};
 	let turnsStale = 0;
 	let upkeepRound = 0;
@@ -151,6 +162,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (stamp !== generation || state.mode !== "supervising") return;
 				const snapshot = readPlan();
 				if (snapshot.text === undefined) { ctx.ui.notify(snapshot.error!, "warning"); return; }
+				clearChangedFinalReview(snapshot.text);
 				refresh(ctx);
 				const hash = digest(planViews(snapshot.text).notify);
 				if (hash === planHash) return;
@@ -180,6 +192,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		upkeepRound = 0;
 		lastWorkingSet = "";
 		pendingUpkeep = undefined;
+		finalReviewTurnDigest = undefined;
 		fullPlanContextDue = true;
 		refresh(ctx);
 		watchPlan(ctx);
@@ -238,11 +251,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_e, ctx) => restore(ctx));
 	pi.on("session_tree", (_e, ctx) => restore(ctx));
-	pi.on("session_shutdown", () => { generation++; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
+	pi.on("session_shutdown", () => { generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
 	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
 	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
 	pi.on("turn_end", (_event, ctx) => {
+		finalReviewTurnDigest = undefined;
 		if (!["supervising", "solo"].includes(state.mode)) return;
 		const snapshot = readPlan();
 		if (snapshot.text === undefined) { notice = true; return; }
@@ -279,15 +293,20 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			notice = true; // Retry resync on the next turn; do not consume a failed snapshot.
 			return { systemPrompt: `${event.systemPrompt}\n\n${state.child ? childPlanRole : ""}\n${snapshot.error}` };
 		}
+		clearChangedFinalReview(snapshot.text);
 		const role = state.child ? childPlanRole : state.mode === "supervising"
 			? supervisor(WORKER, state.plan!, ctx.sessionManager.getSessionId())
 			: state.mode === "planning" ? planning(state.plan!) : state.mode === "paused" ? pausedRole : soloRole;
+		const pendingFinalReview = state.finalReview;
+		if (pendingFinalReview) finalReviewTurnDigest = pendingFinalReview.planDigest;
 		// Returned messages enter both Pi's prompt snapshot and saved history together.
 		// Unlike nextTurn, retaining intent here lets a fresh plan resync supersede upkeep,
 		// and drops obsolete reminders after edits, takeover, pause or session navigation.
-		const message = notice
-			? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text, fullPlanContextDue ? "full" : "short"), display: false }
-			: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
+		const message = pendingFinalReview
+			? { customType: "pi-goals-final-review", content: finalReview(state.plan!, snapshot.text), display: false }
+			: notice
+				? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text, fullPlanContextDue ? "full" : "short"), display: false }
+				: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
 				&& ["supervising", "solo"].includes(state.mode) && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")
 				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, snapshot.text, state.mode === "supervising" ? upkeepRound : undefined), display: false } : undefined;
 		if (message?.customType === "pi-goals-upkeep" && state.mode === "supervising") upkeepRound++;
@@ -514,6 +533,21 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				const evidence = params.evidence.map((file) => isAbsolute(file) ? file : resolve(ctx.cwd, file));
 				try { for (const file of evidence) if (!readFileSync(file).length) throw new Error(emptyEvidence(file)); }
 				catch (error) { return result(evidenceUnavailable(error)); }
+				const subject = key(matches[0].subject);
+				const othersAccepted = goals(text).every((goal) => goal.status === "cancelled" || key(goal.subject) === subject || (goal.status === "done" && state.signoffs[key(goal.subject)]));
+				if (othersAccepted && !(matches[0].status === "done" && state.signoffs[subject])) {
+					if (clearChangedFinalReview(text)) return result(finalReviewInvalidated);
+					if (finalReviewTurnDigest !== digest(text)) {
+						if (!state.finalReview) {
+							state.finalReview = { planDigest: digest(text) };
+							notice = true;
+							fullPlanContextDue = true;
+							save();
+							send(finalReview(path, text));
+						}
+						return result(finalReviewQueued(matches[0].subject));
+					}
+				}
 				const lines = text.split("\n");
 				lines[matches[0].index] = lines[matches[0].index].replace(/\[[ xX/-]\]/, "[x]");
 				let log = lines.findIndex(line => FOLD_LINE.test(line));
@@ -521,6 +555,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				lines.splice(log + 1, 0, "", completionLog(params.goal, params.observation, evidence, state.mode === "solo"));
 				writeFileSync(path, `${lines.join("\n").trimEnd()}\n`);
 				state.signoffs[key(matches[0].subject)] = { evidence, observation: params.observation, signature: goalAcceptanceSignature(text, matches[0].subject)! };
+				state.finalReview = undefined;
+				finalReviewTurnDigest = undefined;
 				planHash = digest(planViews(planText()).notify);
 				save(); refresh(ctx);
 				const remaining = goals(planText()).some((goal) => goal.status !== "cancelled" && (goal.status !== "done" || !state.signoffs[key(goal.subject)]));
