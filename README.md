@@ -128,14 +128,19 @@ Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-suba
 pi install git:github.com/wassname/pi-goals
 ```
 
-Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session.
+Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session. Use one pi-goals installation and disable separately installed copies of its bundled companions; duplicate scheduler instances send duplicate prompts.
 
-Or for development:
+The bundled pi-schedule-prompt 0.4.1 reads project schedules even when Pi project trust is declined. Until that upstream issue is fixed, use this bundle only in repositories you trust.
+
+For development, register the checkout so workers also discover its extensions:
 
 ```bash
 git clone https://github.com/wassname/pi-goals
 cd pi-goals && npm install
-pi -e .
+pi install .
+mkdir -p ~/.pi/agent/agents
+cp agents/goals-worker.md ~/.pi/agent/agents/
+pi
 ```
 
 ## Use
@@ -148,7 +153,7 @@ pi -e .
 
 ## Context delivery
 
-Startup and successful compaction mark the plan for a fresh read at the next ordinary prompt (`before_agent_start`). Upkeep becomes due after each eight unchanged turns, but waits for that same prompt boundary. Supervisor upkeep cycles through curated nudges, advancing only when delivered; the editable hourly prompt is unchanged. A full plan refresh replaces pending upkeep; edits, pause, exit and session navigation invalidate obsolete reminders. Failed or cancelled compaction does not schedule another refresh or consume pending upkeep. Missing plans are retried without discarding progress.
+Startup and successful compaction refresh the current plan above the Log at the next ordinary prompt (`before_agent_start`); history stays in the file for reading when needed. A Log heading at any Markdown heading level starts history. Other headings, such as Interview, do not end the current plan. Compaction uses Pi's configured threshold; this plugin does not set a separate 150k limit. Upkeep becomes due after each eight unchanged turns, but waits for that same prompt boundary. Supervisor upkeep cycles through curated nudges, advancing only when delivered; the editable hourly prompt is unchanged. A full plan refresh replaces pending upkeep; edits, pause, exit and session navigation invalidate obsolete reminders. Failed or cancelled compaction does not schedule another refresh or consume pending upkeep. Missing plans are retried without discarding progress.
 
 This is deliberately passive on Pi 0.85.1: tool-loop continuations, overflow retries and already-queued user messages keep Pi's existing role and compacted context, without an extra model turn just to repeat the plan. They do **not** receive a newly read plan until ordinary prompt preparation. Pi's `triggerTurn: false` mid-run path can save a message absent from the live request snapshot; steering can instead force an unwanted turn. We use neither path for upkeep. Passive pause notices use `nextTurn`, with immediate UI feedback; stopping remains local and remote termination is unconfirmed. Quit sends no model message.
 
@@ -159,7 +164,7 @@ You can read all the prompts in conversation order in [`src/prompts.ts`](src/pro
 ## Develop
 
 ```bash
-pi -e .                     # load locally; do not also load the installed copy
+pi                          # use the registered checkout above; do not add a duplicate -e
 npm test                    # all unit, flow, and Pi RPC tests
 npm run test:rpc            # Pi RPC review flow with a local offline model
 npm run typecheck

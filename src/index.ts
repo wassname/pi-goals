@@ -2,10 +2,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { CronStorage } from "pi-schedule-prompt/src/storage.js";
 import { Type } from "typebox";
-import { foldPlan, GOAL_LINE } from "./plan.js";
+import { FOLD_LINE, foldPlan, GOAL_LINE, goalAcceptanceSignature } from "./plan.js";
 import { planViews } from "./plan-view.js";
 import {
 	attachGoalPlanDescription,
@@ -49,7 +49,8 @@ interface State {
 	worker?: { id?: string; sessionFile: string };
 	helpers: { id?: string; sessionFile: string }[];
 	workerStopped?: boolean;
-	signoffs: Record<string, { evidence: string[]; observation: string }>;
+	pausedFrom?: "solo" | "supervising";
+	signoffs: Record<string, { evidence: string[]; observation: string; signature: string }>;
 	child?: boolean;
 }
 const initial = (): State => ({ mode: "chat", helpers: [], signoffs: {} });
@@ -69,13 +70,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let state = initial();
 	let generation = 0;
 	let workerRevision = 0;
-	let pendingLaunches = 0;
+	const pendingLaunches = new Map<string, { plan: string; generation: number; launches: { agent?: string; sessionFile?: string }[] }>();
 	let notice = true;
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
 	let planHash = "";
 	const childEnvironment = process.env.PI_SUBAGENT_AGENT === WORKER;
-	const save = () => pi.appendEntry(STATE, state);
+	const save = () => pi.appendEntry(STATE, structuredClone(state));
 	// Missing, empty and failed reads are unavailable snapshots, never an empty authoritative plan.
 	const readPlan = () => {
 		try {
@@ -111,10 +112,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			return;
 		}
 		const items = goals(snapshot.text);
-		// Reopened/deleted/ambiguous goal identities lose their sign-off. Manual ticks remain claims.
+		// Pi/OpenAI: approval belongs to the reviewed requirements, not only the title.
 		for (const subject of Object.keys(state.signoffs)) {
 			const matches = items.filter((g) => key(g.subject) === subject);
-			if (matches.length !== 1 || matches[0].status !== "done") { delete state.signoffs[subject]; save(); }
+			if (matches.length !== 1 || matches[0].status !== "done" || state.signoffs[subject].signature !== goalAcceptanceSignature(snapshot.text, subject)) { delete state.signoffs[subject]; save(); }
 		}
 		const accepted = items.filter((g) => g.status === "done" && state.signoffs[key(g.subject)]).length;
 		ctx.ui.setStatus("goals", `goals: ${state.child ? "worker" : state.mode} | ${accepted}/${items.length} reviewed`);
@@ -189,7 +190,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
-		if (pendingLaunches > 0) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
+		if (pendingLaunches.size > 0) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
 		const stamp = generation;
 		const revision = workerRevision;
 		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
@@ -209,7 +210,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
 		const text = planText();
 		const items = goals(text);
-		if (!edit && (!items.length || new Set(items.map((g) => key(g.subject))).size !== items.length)) {
+		if (!edit && (!items.length || items.some(g => !g.subject) || new Set(items.map((g) => key(g.subject))).size !== items.length)) {
 			ctx.ui.notify("Write a plan with distinct '- [ ] goal: ...' subjects before Ready.", "warning"); return;
 		}
 		const stamp = generation;
@@ -297,23 +298,32 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (launch && typeof launch.title === "string" && !launch.title.startsWith(prefix)) launch.title = prefix + launch.title;
 			}
 		}
-		if (state.child || !["subagent", "subagent_resume"].includes(event.toolName)) return;
+		if (state.child || (event.toolName !== "subagent" && event.toolName !== "subagent_resume")) return;
 		// Solo means this chat took over implementation: no concurrent writer may be delegated.
 		if (state.mode === "planning" || state.mode === "paused" || state.mode === "solo") return { block: true, reason: goalToolBlocked(state.mode) };
-		if (state.plan) { pendingLaunches++; state.workerStopped = false; workerRevision++; save(); }
+		if (state.plan) {
+			const input = event.input as { agent?: string; sessionFile?: string; children?: { agent?: string; sessionFile?: string }[] };
+			const launches = input.children ?? [input];
+			pendingLaunches.set(event.toolCallId, { plan: state.plan, generation, launches: launches.map(launch => ({ agent: launch.agent, sessionFile: launch.sessionFile })) });
+			state.workerStopped = false; workerRevision++; save();
+		}
 	});
-	pi.on("tool_result", (event) => {
-		if (state.child || !state.plan || !["subagent", "subagent_resume"].includes(event.toolName)) return;
-		pendingLaunches = Math.max(0, pendingLaunches - 1);
-		if (event.isError) return;
-		const details = event.details as { id?: string; sessionFile?: string } | undefined;
-		if (!details?.id || !details.sessionFile) return;
-		const record = { id: details.id, sessionFile: details.sessionFile };
-		if (state.worker?.sessionFile === record.sessionFile) state.worker = record;
-		else if (!state.worker) state.worker = record;
-		// Extra launches stay recorded as helpers; the implementation binding never moves silently.
-		else state.helpers = [...(state.helpers ?? []).filter((h) => h.sessionFile !== record.sessionFile), record];
-		state.workerStopped = false; workerRevision++; save();
+	pi.on("tool_execution_end", (event) => {
+		const pending = pendingLaunches.get(event.toolCallId);
+		pendingLaunches.delete(event.toolCallId);
+		if (!pending || state.child || pending.plan !== state.plan || pending.generation !== generation || event.isError) return;
+		type ChildResult = { id?: string; sessionFile?: string; agent?: string };
+		const details = (event.result as { details?: ChildResult & { children?: ChildResult[] } }).details;
+		if (!details) return;
+		for (const [index, child] of (details.children ?? [details]).entries()) {
+			if (!child.id || !child.sessionFile) continue;
+			const record = { id: child.id, sessionFile: child.sessionFile };
+			const launch = pending.launches[index];
+			const implementation = (child.agent ?? launch?.agent) === WORKER || launch?.sessionFile === state.worker?.sessionFile && Boolean(state.worker);
+			if (state.worker?.sessionFile === record.sessionFile || !state.worker && implementation) state.worker = record;
+			else state.helpers = [...state.helpers.filter(h => h.sessionFile !== record.sessionFile), record];
+		}
+		workerRevision++; save();
 	});
 
 	pi.registerCommand("goals", {
@@ -391,7 +401,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					const target = isAbsolute(raw) ? raw : resolve(ctx.cwd, raw);
 					let text: string;
 					try { text = readFileSync(target, "utf8"); } catch { ctx.ui.notify(`Cannot read plan at ${target}.`, "error"); return; }
-					if (!goals(text).length) { ctx.ui.notify(`${target} has no '- [ ] goal:' lines; attach a judgeable plan.`, "warning"); return; }
+					if (!goals(text).length || goals(text).some(g => !g.subject)) { ctx.ui.notify(`${target} has no '- [ ] goal:' lines with valid subjects; attach a judgeable plan.`, "warning"); return; }
 					if (!solo && ((state.worker && !state.workerStopped) || state.mode === "supervising")) { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
 					const noted = /^-\s*worker session:\s*(\S+)/im.exec(foldPlan(text))?.[1];
 					if (!(await confirmOwnership(ctx, target, text, solo))) return;
@@ -412,13 +422,15 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						storage.removeJob(job.id); // Scheduler re-reads storage before firing; removed jobs cannot prompt.
 						pi.events.emit("cron:change", { type: "remove", jobId: job.id });
 					}
-					state = initial(); generation++; workerRevision++; pendingLaunches = 0; pendingUpkeep = undefined; notice = true;
+					state = initial(); generation++; workerRevision++; pendingLaunches.clear(); pendingUpkeep = undefined; notice = true;
 					save(); refresh(ctx); watchPlan(ctx);
 					ctx.ui.notify(`Goals cleared.${backup ? ` Plan backed up to ${backup}.` : ""}`, "info");
 					return;
 				}
 				if (command === "stop") {
 					if (state.mode === "planning") { ctx.ui.notify("A draft cannot pause; use /goals quit to back up and clear it.", "warning"); return; }
+					if (state.mode !== "solo" && state.mode !== "supervising") return;
+					state.pausedFrom = state.mode;
 					state.mode = "paused"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 					const pause = pauseExitNotice(state.worker, false);
 					const requestCleanup = Boolean(state.worker) || hasScheduleTool();
@@ -428,13 +440,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				}
 				if (command === "resume") {
 					if (state.mode !== "paused" || !state.plan) { ctx.ui.notify("Only a paused approved plan can resume. A draft needs Ready.", "warning"); return; }
+					if (state.pausedFrom === "solo") { enterSolo(ctx); return; }
 					if (!compatible()) { ctx.ui.notify("edxeth tools unavailable; plan remains paused.", "error"); return; }
 					state.mode = "supervising"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
 					send(`${checkIn(ctx)}\n\n${resumeNotice(WORKER, state.plan, state.worker)}`);
 					return;
 				}
 				if (command === "solo") {
-					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
+					if (!state.plan || !goals(planText()).length || goals(planText()).some(g => !g.subject)) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
 					if (!(await confirmOwnership(ctx, state.plan, planText()))) return;
 					enterSolo(ctx);
 					return;
@@ -460,7 +473,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _update, ctx) {
 			if (!state.child) return result(messages.childAttachOnly);
 			try {
-				if (!isAbsolute(params.path) || !goals(readFileSync(params.path, "utf8")).length) return result(messages.invalidAttachment);
+				if (!isAbsolute(params.path)) return result(messages.invalidAttachment);
+				const items = goals(readFileSync(params.path, "utf8"));
+				if (!items.length || items.some(g => !g.subject)) return result(messages.invalidAttachment);
 			} catch { return result(messages.invalidAttachment); }
 			state.plan = params.path; generation++; notice = true; save(); refresh(ctx);
 			return result(childPlanAttached(params.path));
@@ -469,29 +484,35 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "CompleteGoal", label: "Review goal evidence",
 		description: completeGoalDescription,
-		parameters: Type.Object({ goal: Type.String(), evidence: Type.Array(Type.String(), { minItems: 1 }), observation: Type.String({ minLength: 1 }) }),
+		parameters: Type.Object({ goal: Type.String({ minLength: 1 }), evidence: Type.Array(Type.String(), { minItems: 1 }), observation: Type.String({ minLength: 1 }) }),
 		async execute(_id, params, signal, _update, ctx) {
-			if (state.child || !["supervising", "solo"].includes(state.mode)) return result(messages.completionUnavailable);
-			if (signal?.aborted) return result(messages.cancelled);
-			const snapshot = readPlan();
-			if (snapshot.text === undefined) return result(snapshot.error!);
-			const text = snapshot.text;
-			const matches = goals(text).filter((g) => g.status !== "cancelled" && key(g.subject) === key(params.goal));
-			if (matches.length !== 1 || !state.plan) return result(messages.uniqueGoal);
-			const evidence = params.evidence.map((file) => isAbsolute(file) ? file : resolve(ctx.cwd, file));
-			try { for (const file of evidence) if (!readFileSync(file).length) throw new Error(emptyEvidence(file)); }
-			catch (error) { return result(evidenceUnavailable(error)); }
-			const lines = text.split("\n");
-			lines[matches[0].index] = lines[matches[0].index].replace(/\[[ xX/-]\]/, "[x]");
-			let log = lines.findIndex(line => /^##\s+Log\s*$/i.test(line));
-			if (log === -1) { lines.push("", "## Log"); log = lines.length - 1; }
-			lines.splice(log + 1, 0, "", completionLog(params.goal, params.observation, evidence, state.mode === "solo"));
-			writeFileSync(state.plan, `${lines.join("\n").trimEnd()}\n`);
-			state.signoffs[key(matches[0].subject)] = { evidence, observation: params.observation };
-			planHash = digest(planViews(planText()).notify);
-			save(); refresh(ctx);
-			const remaining = goals(planText()).some((goal) => goal.status !== "cancelled" && (goal.status !== "done" || !state.signoffs[key(goal.subject)]));
-			return result(completionResult(matches[0].subject, ctx.sessionManager.getSessionId(), remaining, state.mode === "solo"));
+			if (state.child || !state.plan || !["supervising", "solo"].includes(state.mode)) return result(messages.completionUnavailable);
+			const path = state.plan;
+			const stamp = generation;
+			return withFileMutationQueue(path, async () => {
+				if (stamp !== generation || path !== state.plan || state.child || !["supervising", "solo"].includes(state.mode)) return result(messages.completionUnavailable);
+				if (signal?.aborted) return result(messages.cancelled);
+				if (!params.goal.trim()) return result(messages.uniqueGoal);
+				const snapshot = readPlan();
+				if (snapshot.text === undefined) return result(snapshot.error!);
+				const text = snapshot.text;
+				const matches = goals(text).filter((g) => g.status !== "cancelled" && key(g.subject) === key(params.goal));
+				if (matches.length !== 1 || !state.plan) return result(messages.uniqueGoal);
+				const evidence = params.evidence.map((file) => isAbsolute(file) ? file : resolve(ctx.cwd, file));
+				try { for (const file of evidence) if (!readFileSync(file).length) throw new Error(emptyEvidence(file)); }
+				catch (error) { return result(evidenceUnavailable(error)); }
+				const lines = text.split("\n");
+				lines[matches[0].index] = lines[matches[0].index].replace(/\[[ xX/-]\]/, "[x]");
+				let log = lines.findIndex(line => FOLD_LINE.test(line));
+				if (log === -1) { lines.push("", "## Log"); log = lines.length - 1; }
+				lines.splice(log + 1, 0, "", completionLog(params.goal, params.observation, evidence, state.mode === "solo"));
+				writeFileSync(path, `${lines.join("\n").trimEnd()}\n`);
+				state.signoffs[key(matches[0].subject)] = { evidence, observation: params.observation, signature: goalAcceptanceSignature(text, matches[0].subject)! };
+				planHash = digest(planViews(planText()).notify);
+				save(); refresh(ctx);
+				const remaining = goals(planText()).some((goal) => goal.status !== "cancelled" && (goal.status !== "done" || !state.signoffs[key(goal.subject)]));
+				return result(completionResult(matches[0].subject, ctx.sessionManager.getSessionId(), remaining, state.mode === "solo"));
+			});
 		},
 	});
 }

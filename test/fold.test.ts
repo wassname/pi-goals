@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { foldPlan } from "../src/plan.js";
+import { foldPlan, goalAcceptanceSignature } from "../src/plan.js";
 
 const plan = `# Plan
 
@@ -28,7 +28,7 @@ const plan = `# Plan
 ## Appendix (context, not approved)
 ${"filler line\n".repeat(200)}`;
 
-describe("foldPlan (current goals are above ## Log; durable memory is below it)", () => {
+describe("foldPlan (current goals are above Log; durable memory is below it)", () => {
 	it("keeps the title, user voice and goals", () => {
 		const folded = foldPlan(plan);
 		expect(folded).toContain("keep it under 50 lines");
@@ -44,8 +44,54 @@ describe("foldPlan (current goals are above ## Log; durable memory is below it)"
 		expect(folded.length).toBeLessThan(plan.length / 4);
 	});
 
-	it("returns the whole plan when there is no ## Log yet (a fresh draft)", () => {
+	it.each(["# Log", "## Log", "### Log", "###### Log", "### LOG\r"])("accepts the %s history boundary", heading => {
+		expect(foldPlan(`- [ ] goal: current\n${heading}\n- [ ] goal: archived`)).toBe("- [ ] goal: current");
+	});
+
+	it("returns the whole plan when there is no Log yet (a fresh draft)", () => {
 		const draft = "# Plan\n\n## Goals\n\n1. [ ] goal: do the thing\n";
 		expect(foldPlan(draft)).toBe(draft.trimEnd());
 	});
+});
+
+const acceptancePlan = `# Plan
+## User-visible result
+Produce a verified result.
+- preferred worker model: provider/model
+- worker session: /worker.jsonl
+## Goals
+1. [ ] goal: first
+  - discriminator: exact bytes
+  - tasks:
+    - [ ] write output
+  - evidence:
+    - proof.log
+2. [ ] goal: second
+  - discriminator: correct total
+## Log
+Old progress
+`;
+
+it.each([
+	["[ ] goal: first", "[x] goal: first"],
+	["[ ] write output", "[x] write output"],
+	["proof.log", "new-proof.log"],
+	["goal: second", "goal: changed second"],
+	["provider/model", "provider/other"],
+	["/worker.jsonl", "/resumed.jsonl"],
+	["Old progress", "More history"],
+])("approval ignores maintenance change %s", (before, after) => {
+	expect(goalAcceptanceSignature(acceptancePlan.replace(before, after), "first")).toBe(goalAcceptanceSignature(acceptancePlan, "first"));
+});
+
+it.each([
+	["exact bytes", "a different acceptance criterion"],
+	["Produce a verified result.", "Produce two verified results."],
+])("approval changes when requirement %s changes", (before, after) => {
+	expect(goalAcceptanceSignature(acceptancePlan.replace(before, after), "first")).not.toBe(goalAcceptanceSignature(acceptancePlan, "first"));
+});
+
+it("does not give a signature to missing or duplicate goals", () => {
+	expect(goalAcceptanceSignature(acceptancePlan, "missing")).toBeUndefined();
+	expect(goalAcceptanceSignature(acceptancePlan.replace("goal: second", "goal: first"), "first")).toBeUndefined();
 });

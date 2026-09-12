@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { describe, expect, it } from "vitest";
+import { foldPlan } from "../src/plan.js";
 
 type RpcMessage = { type: string; id?: string; method?: string; [key: string]: unknown };
 type ModelRequest = { messages: Array<{ role: string; content: unknown }> };
@@ -152,7 +153,7 @@ describe("RPC review flow", () => {
 			const supervisor = requests.at(-1)!;
 			expect(systemText(supervisor)).toContain("You are the goal supervisor in the main chat");
 			expect(systemText(supervisor)).not.toContain("Plan only in");
-			expect(JSON.stringify(supervisor.messages)).toContain(JSON.stringify(approvedPlan).slice(1, -1));
+			expect(JSON.stringify(supervisor.messages)).toContain(JSON.stringify(foldPlan(approvedPlan)).slice(1, -1));
 			expect(client.messages.filter(message => message.type === "tool_execution_start").map(message => message.toolName)).toEqual(["write"]);
 			expect(client.messages.filter(message => message.type === "extension_error")).toEqual([]);
 			console.log(`RPC ${choice}: visible automatic proposal; ${choice === "Edit" ? "editor saved exact plan without model call" : "discussion retained planning role without editor"}; Ready request used supervisor role; only write executed.`);
