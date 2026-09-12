@@ -121,7 +121,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const accepted = items.filter((g) => g.status === "done" && state.signoffs[key(g.subject)]).length;
 		ctx.ui.setStatus("goals", `👀 ${accepted}/${items.length} goals`);
 		const mark = (status: GoalStatus) => status === "done" ? "✔" : status === "active" ? "◼" : status === "cancelled" ? "✗" : "◻";
-		const lines = items.slice(0, WIDGET_GOAL_LIMIT).map((g, index) => `${mark(g.status)} G${index + 1}: ${g.subject}`);
+		const priority: Record<GoalStatus, number> = { active: 0, open: 1, done: 2, cancelled: 3 };
+		const visible = [...items].sort((a, b) => priority[a.status] - priority[b.status]).slice(0, WIDGET_GOAL_LIMIT);
+		const lines = visible.map((g) => `${mark(g.status)} G${items.indexOf(g) + 1}: ${g.subject}`);
+		const hidden = items.length - visible.length;
+		if (hidden) lines.push(`… ${hidden} more goal${hidden === 1 ? "" : "s"}`);
 		ctx.ui.setWidget("goals", lines);
 	}
 	function watchPlan(ctx: ExtensionContext) {

@@ -585,11 +585,11 @@ it("lineage-only child attaches its plan without a widget, retains task context,
 	expect(completion.content[0].text).toContain("only to the active parent");
 });
 
-it("shows only the first three goals in the widget", async () => {
+it("prioritizes unfinished goals and says when the widget list is truncated", async () => {
 	const f = fixture(); await f.draft();
-	writeFileSync(f.path, "- [ ] goal: one\n- [ ] goal: two\n- [ ] goal: three\n- [ ] goal: four\n");
+	writeFileSync(f.path, "- [x] goal: completed one\n- [x] goal: completed two\n- [/] goal: active work\n- [ ] goal: open one\n- [ ] goal: open two\n");
 	await f.command("ready");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◻ G1: one", "◻ G2: two", "◻ G3: three"]);
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◼ G3: active work", "◻ G4: open one", "◻ G5: open two", "… 2 more goals"]);
 	f.shutdown();
 });
 
