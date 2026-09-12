@@ -259,11 +259,11 @@ it("requires actual nonempty evidence, distinguishes manual ticks, and retains s
 	await complete("first output", ["evidence/pass.log"]);
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[ ] goal: second", "[x] goal: second"));
 	f.hooks.get("session_start")({}, f.ctx);
-	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "goals: supervising | 1/2 reviewed");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toContain("? = completion claim; parent review still required");
+	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 1/2 goals");
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toContain("✔ G1: first output");
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[x] goal: first", "[ ] goal: first"));
 	f.hooks.get("agent_end")({}, f.ctx);
-	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "goals: supervising | 0/2 reviewed");
+	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 0/2 goals");
 	f.shutdown();
 });
 
@@ -585,13 +585,21 @@ it("lineage-only child attaches its plan without a widget, retains task context,
 	expect(completion.content[0].text).toContain("only to the active parent");
 });
 
+it("shows only the first three goals in the widget", async () => {
+	const f = fixture(); await f.draft();
+	writeFileSync(f.path, "- [ ] goal: one\n- [ ] goal: two\n- [ ] goal: three\n- [ ] goal: four\n");
+	await f.command("ready");
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◻ G1: one", "◻ G2: two", "◻ G3: three"]);
+	f.shutdown();
+});
+
 it.each(["solo", "supervising"])("%s widget omits long tasks without altering the plan", async mode => {
 	const f = fixture(); await f.draft();
 	const text = "- [/] goal: first output\n  - [ ] a long task that should never take widget space\n- [ ] goal: second output\n## Log\n";
 	writeFileSync(f.path, text);
 	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
 	else await f.command("ready");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["▸ first output", "○ second output"]);
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◼ G1: first output", "◻ G2: second output"]);
 	expect(readFileSync(f.path, "utf8")).toBe(text);
 });
 

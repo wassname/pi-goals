@@ -41,6 +41,7 @@ import {
 
 const STATE = "pi-goals-main-supervisor-v1";
 const WORKER = "goals-worker";
+const WIDGET_GOAL_LIMIT = 3;
 type Mode = "chat" | "planning" | "supervising" | "paused" | "solo";
 type GoalStatus = "open" | "active" | "done" | "cancelled";
 interface State {
@@ -118,10 +119,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (matches.length !== 1 || matches[0].status !== "done" || state.signoffs[subject].signature !== goalAcceptanceSignature(snapshot.text, subject)) { delete state.signoffs[subject]; save(); }
 		}
 		const accepted = items.filter((g) => g.status === "done" && state.signoffs[key(g.subject)]).length;
-		ctx.ui.setStatus("goals", `goals: ${state.child ? "worker" : state.mode} | ${accepted}/${items.length} reviewed`);
-		const mark = (status: GoalStatus, signed: boolean) => status === "done" ? (signed ? "✓" : "?") : status === "active" ? "▸" : status === "cancelled" ? "✗" : "○";
-		const lines: string[] = items.map((g) => `${mark(g.status, Boolean(state.signoffs[key(g.subject)]))} ${g.subject}`);
-		if (items.some((g) => g.status === "done" && !state.signoffs[key(g.subject)])) lines.push("? = completion claim; parent review still required");
+		ctx.ui.setStatus("goals", `👀 ${accepted}/${items.length} goals`);
+		const mark = (status: GoalStatus) => status === "done" ? "✔" : status === "active" ? "◼" : status === "cancelled" ? "✗" : "◻";
+		const lines = items.slice(0, WIDGET_GOAL_LIMIT).map((g, index) => `${mark(g.status)} G${index + 1}: ${g.subject}`);
 		ctx.ui.setWidget("goals", lines);
 	}
 	function watchPlan(ctx: ExtensionContext) {
