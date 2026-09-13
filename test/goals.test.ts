@@ -31,6 +31,8 @@ function fixture(child = false) {
 		appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition),
 		registerTool: (definition: any) => tools.set(definition.name, definition),
+		registerMarkdownTransformer: vi.fn(),
+		registerEntryRenderer: vi.fn(),
 		sendMessage: (message: any, options: any) => messages.push({ message, options }),
 		sendUserMessage: (content: string, options: any) => messages.push({ message: { content }, options, savedPrompt: true }),
 		events: { emit: vi.fn() },
@@ -68,7 +70,7 @@ function fixture(child = false) {
 		start(details.id, { agent, title: "Work", sessionFile: details.sessionFile }, toolName);
 		finish(details.id, details, toolName);
 	};
-	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, entries, start, finish, launch };
+	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, finish, launch };
 }
 
 it.each([
@@ -905,10 +907,12 @@ it("real SessionManager preserves historical state and restores draft authority 
 	f.pi.appendEntry = (type: string, data: unknown) => { session.appendCustomEntry(type, data); return 0; };
 	f.ctx.sessionManager.getBranch = () => session.getBranch();
 	await f.draft();
-	const planned = session.getLeafEntry() as any;
+	const latestState = () => session.getBranch().filter(entry => entry.type === "custom" && entry.customType === "pi-goals-main-supervisor-v1").at(-1) as any;
+	const planned = latestState();
 	await f.command("ready");
 	expect(planned.data.mode).toBe("planning");
-	expect((session.getLeafEntry() as any).data).not.toBe(planned.data);
+	expect(latestState().data).not.toBe(planned.data);
+	expect(latestState().data.mode).toBe("supervising");
 	session.branch(planned.id);
 	f.hooks.get("session_tree")({ newLeafId: planned.id }, f.ctx);
 	expect(f.start("after-tree")?.block).toBe(true);

@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import { foldPlan } from "../src/plan.js";
 
 type RpcMessage = { type: string; id?: string; method?: string; [key: string]: unknown };
-type ModelRequest = { messages: Array<{ role: string; content: unknown }> };
+type ModelRequest = { messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
+const messageText = (content: ModelRequest["messages"][number]["content"]) => typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("\n");
 
 class RpcClient {
 	readonly messages: RpcMessage[] = [];
@@ -156,6 +157,13 @@ describe("RPC review flow", () => {
 			expect(JSON.stringify(supervisor.messages)).toContain(JSON.stringify(foldPlan(approvedPlan)).slice(1, -1));
 			expect(client.messages.filter(message => message.type === "tool_execution_start").map(message => message.toolName)).toEqual(["write"]);
 			expect(client.messages.filter(message => message.type === "extension_error")).toEqual([]);
+			const notices = client.messages.filter(message => message.type === "entry_appended" && (message.entry as { customType?: string })?.customType === "pi-goals-notice");
+			expect(notices.length).toBeGreaterThanOrEqual(2);
+			for (const notice of notices) {
+				const content = (notice.entry as { data: { content: string } }).data.content;
+				expect(client.messages.some(event => event.type === "message_end" && (event.message as any)?.role === "user" && (event.message as any)?.content[0]?.text === content)).toBe(true);
+				expect(supervisor.messages.filter(message => message.role === "user" && messageText(message.content) === content)).toHaveLength(1);
+			}
 			console.log(`RPC ${choice}: visible automatic proposal; ${choice === "Edit" ? "editor saved exact plan without model call" : "discussion retained planning role without editor"}; Ready request used supervisor role; only write executed.`);
 		} finally {
 			pi.kill();

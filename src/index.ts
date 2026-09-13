@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { CronStorage } from "pi-schedule-prompt/src/storage.js";
 import { Type } from "typebox";
+import { noticeDisplay } from "./notice-display.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE, goalAcceptanceSignature } from "./plan.js";
 import { planViews } from "./plan-view.js";
 import {
@@ -72,6 +73,7 @@ function goals(text: string) {
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 export default function mainSupervisor(pi: ExtensionAPI) {
+	const notices = noticeDisplay(pi);
 	let state = initial();
 	let generation = 0;
 	let workerRevision = 0;
@@ -175,6 +177,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		} catch (error) { ctx.ui.notify(`Plan monitoring unavailable: ${String(error)}`, "error"); }
 	}
 	function restore(ctx: ExtensionContext) {
+		notices.restore(ctx);
 		generation++;
 		state = initial();
 		for (const entry of ctx.sessionManager.getBranch()) {
@@ -205,8 +208,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	function send(content: string, triggerTurn = true) {
 		// sendMessage(triggerTurn:true) bypasses before_agent_start in Pi 0.85.1.
 		// A normal saved prompt prepares the current role before starting the turn.
-		if (triggerTurn) pi.sendUserMessage(`[pi-goals]\n${content}`, { deliverAs: "followUp" });
-		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
+		if (triggerTurn) {
+			const prompt = `[pi-goals]\n${content}`;
+			notices.mirror(prompt);
+			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+		} else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
 		if (pendingLaunches.size > 0) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
