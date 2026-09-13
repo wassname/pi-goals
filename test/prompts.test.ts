@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { manualReview, planChangedReview, planContext, readyApproved, upkeep, upkeepNudges } from "../src/prompts.js";
+import { manualReview, planChangedReview, planContext, planning, planningSeed, readyApproved, upkeep, upkeepNudges } from "../src/prompts.js";
 
 const plan = `# Keep the user context
 
@@ -19,6 +19,20 @@ A concrete artifact the user can read.
 
 ## Log
 old progress report`;
+
+it("keeps hindsight-judged user outcomes in initial and recurring planning instructions", () => {
+	const seed = planningSeed("Make search useful", "/plan.md");
+	for (const prompt of [seed, planning("/plan.md")]) {
+		expect(prompt).toContain('"I know it when I see it"');
+		expect(prompt).toContain("actual results in hindsight");
+		expect(prompt).toContain("do not invent numerical gates to replace judgment");
+	}
+	expect(seed).toContain("goal: <short, recognizable user outcome>");
+	expect(seed).toContain("what distinguishes it from merely looking done");
+	expect(seed).toContain("not stricter assistant-invented requirements");
+	expect(seed).toContain("by the user or justified by existing evidence");
+	expect(seed).not.toContain("imperative outcome");
+});
 
 it("cycles the curated supervisor nudges without changing the direct medium reminder", () => {
 	const base = upkeep("/plan.md", plan);

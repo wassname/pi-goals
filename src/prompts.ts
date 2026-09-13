@@ -41,10 +41,17 @@ Detail that doesn't change a goal or a discriminator belongs in the appendix, no
 Right-size it:
 - One goal per distinct judgeable outcome. Group related goals when it helps judge them together
   and readability. The count flows from the outcomes.
-- Describe outcomes in qualitative terms the supervisor and user can discriminate.
-	- Use the users language or more precise don't transform "MV" into "knob" as it looses precision and is overloaded
-	- Don't invent metrics or thresholds for problems you haven't explored yet - the supervisor should know it when it sees the outcome.
-  	- Quantitative gates are fine only when you are certain they survive contact with reality.
+- Write each visible goal as a short user outcome that stands alone, not an implementation task.
+  Use "I know it when I see it": an outcome the supervisor can recognize from actual results in
+  hindsight. Explain underneath what distinguishes it from merely looking done. Exercise judgment
+  against the user's intent, not stricter assistant-invented requirements.
+  - Name what becomes possible, what works differently, or what the user can learn. Use an artifact
+    as the goal only when producing that artifact is itself the requested outcome.
+  - Not "Implement embeddings", but "New posts become searchable by meaning without rebuilding
+    the index" when that matches the user's request.
+  - Use the user's language or more precise terms; don't transform "MV" into "knob".
+  - Do not invent numerical gates to replace judgment. Preserve numerical requirements supplied
+    by the user or justified by existing evidence.
 - Subtasks are the steps inside a goal; add them when a goal has 3+ distinct steps, skip otherwise.
 - Two goals that share one discriminator are one goal. Merge them.
 - Keep the goal subject short. Put its important scope, failure modes, discriminator, tasks, and evidence in the indented block beneath it. The supervisor reads the whole block and the whole plan.
@@ -71,7 +78,7 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
 
 ## Goals
 
-1. [ ] goal: <one short jugable imperative outcome>
+1. [ ] goal: <short, recognizable user outcome>
   - subtle failure mode: <a way this could look done but isn't>
   - discriminator: <the concrete observation that tells real success from that failure>
   - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not
@@ -127,7 +134,7 @@ When the goals are drafted, present them and say the plan is final. Do not begin
 
 // Planning and interview. Keep the full drafting guide one-shot rather than repeating it each turn.
 export function planning(planPath: string): string {
-	return `Plan only in ${planPath}; do not implement or launch workers before Ready. Ask material unresolved questions, not a quota or confirmation of ordinary details. Record unknowns and present Ready when the outcome, scope and spending are settled. Preserve the user's exact deliverable, preferences and voice; give each distinct goal a failure mode, discriminator and evidence expectation above ## Log. Record the requested worker model in preferences. When your drafted plan is ready for human review, finish your turn; the interface displays the draft and approval choices automatically. Do not ask the user to type a command to see the proposal. /goals review reopens it on request; /goals exit preserves the draft.`;
+	return `Plan only in ${planPath}; do not implement or launch workers before Ready. Ask material unresolved questions, not a quota or confirmation of ordinary details. Record unknowns and present Ready when the outcome, scope and spending are settled. Preserve the user's exact deliverable, preferences and voice. Write each visible goal as a recognizable user outcome, not a task label: "I know it when I see it" from actual results in hindsight. Put constraints, failure modes, discriminators and evidence expectations beneath it, above ## Log; do not invent numerical gates to replace judgment. Record the requested worker model in preferences. When your drafted plan is ready for human review, finish your turn; the interface displays the draft and approval choices automatically. Do not ask the user to type a command to see the proposal. /goals review reopens it on request; /goals exit preserves the draft.`;
 }
 export function planningSeed(objective: string, planPath: string): string {
 	return `Enter a planning conversation focused on the user's goals. ${objective ? `Initial idea: ${objective}.` : "Ask what the user wants to achieve; they do not need to supply a finished objective."} Read any existing plan at ${planPath} first, then discuss and draft it with the user. Do not infer approval to implement from starting this conversation. ${planning(planPath)}\n\n${planDrafting}`;
