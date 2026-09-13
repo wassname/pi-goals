@@ -26,8 +26,12 @@ it("keeps hindsight-judged user outcomes in initial and recurring planning instr
 		expect(prompt).toContain('"I know it when I see it"');
 		expect(prompt).toContain("actual results in hindsight");
 		expect(prompt).toContain("do not invent numerical gates to replace judgment");
+		expect(prompt).toContain("technical deliverable nouns and verbs");
+		expect(prompt).not.toContain("not an implementation task");
+		expect(prompt).not.toContain("not a task label");
 	}
-	expect(seed).toContain("goal: <short, recognizable user outcome>");
+	expect(seed).toContain("goal: <short, concrete requested outcome>");
+	expect(seed).toContain("Put observable examples under verification");
 	expect(seed).toContain("what distinguishes it from merely looking done");
 	expect(seed).toContain("not stricter assistant-invented requirements");
 	expect(seed).toContain("by the user or justified by existing evidence");
@@ -75,6 +79,13 @@ it("puts direct short context in plan-change and manual-review messages", () => 
 		expect(text).not.toContain("Preserve this requirement word for word.");
 		expect(text).not.toContain("run the full check");
 	}
+});
+
+it("keeps approved work moving after evidence review without overriding pauses or scope approval", () => {
+	const text = planChangedReview("/plan.md", plan);
+	expect(text).toContain("Evidence-only edits do not revoke execution approval");
+	expect(text).toContain("continue unfinished authorized implementation rather than another recap");
+	expect(text).toContain("respect explicit pauses and do not assume approval for changed scope");
 });
 
 it("keeps the current working set in the ready message but omits history", () => {

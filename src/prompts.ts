@@ -41,14 +41,15 @@ Detail that doesn't change a goal or a discriminator belongs in the appendix, no
 Right-size it:
 - One goal per distinct judgeable outcome. Group related goals when it helps judge them together
   and readability. The count flows from the outcomes.
-- Write each visible goal as a short user outcome that stands alone, not an implementation task.
+- Write each visible goal as a short, concrete requested deliverable or behavior that stands alone.
+  Preserve the user's technical deliverable nouns and verbs. Do not rename concrete technical goals
+  into vague benefit or readiness phrases when clarifying acceptance.
   Use "I know it when I see it": an outcome the supervisor can recognize from actual results in
-  hindsight. Explain underneath what distinguishes it from merely looking done. Exercise judgment
-  against the user's intent, not stricter assistant-invented requirements.
-  - Name what becomes possible, what works differently, or what the user can learn. Use an artifact
-    as the goal only when producing that artifact is itself the requested outcome.
-  - Not "Implement embeddings", but "New posts become searchable by meaning without rebuilding
-    the index" when that matches the user's request.
+  hindsight. Put observable examples under verification; explain
+  what distinguishes it from merely looking done. Preparing for similarity search does not deliver
+  working similarity search. Exercise judgment against the user's intent, not stricter assistant-invented requirements.
+  - Keep Rust conversion, embeddings, and functioning similarity search/keyword clusters explicit
+    when requested; do not replace them with "familiar reader" or "ready for similarity search".
   - Use the user's language or more precise terms; don't transform "MV" into "knob".
   - Do not invent numerical gates to replace judgment. Preserve numerical requirements supplied
     by the user or justified by existing evidence.
@@ -78,7 +79,7 @@ Write the plan file in roughly this shape -- the file is read directly by the hu
 
 ## Goals
 
-1. [ ] goal: <short, recognizable user outcome>
+1. [ ] goal: <short, concrete requested outcome>
   - subtle failure mode: <a way this could look done but isn't>
   - discriminator: <the concrete observation that tells real success from that failure>
   - verify: <optional shell command that exits 0 only when the discriminator passes; omit if not
@@ -134,7 +135,7 @@ When the goals are drafted, present them and say the plan is final. Do not begin
 
 // Planning and interview. Keep the full drafting guide one-shot rather than repeating it each turn.
 export function planning(planPath: string): string {
-	return `Plan only in ${planPath}; do not implement or launch workers before Ready. Ask material unresolved questions, not a quota or confirmation of ordinary details. Record unknowns and present Ready when the outcome, scope and spending are settled. Preserve the user's exact deliverable, preferences and voice. Write each visible goal as a recognizable user outcome, not a task label: "I know it when I see it" from actual results in hindsight. Put constraints, failure modes, discriminators and evidence expectations beneath it, above ## Log; do not invent numerical gates to replace judgment. Record the requested worker model in preferences. When your drafted plan is ready for human review, finish your turn; the interface displays the draft and approval choices automatically. Do not ask the user to type a command to see the proposal. /goals review reopens it on request; /goals exit preserves the draft.`;
+	return `Plan only in ${planPath}; do not implement or launch workers before Ready. Ask material unresolved questions, not a quota or confirmation of ordinary details. Record unknowns and present Ready when the outcome, scope and spending are settled. Preserve the user's exact deliverable, preferences and voice. Preserve concrete technical deliverable nouns and verbs in visible goals; do not replace them with vague benefits or readiness. Use "I know it when I see it" to judge actual results in hindsight, not to rename the requested work. Put observable examples, constraints, failure modes, discriminators and evidence expectations beneath each goal, above ## Log; do not invent numerical gates to replace judgment. Record the requested worker model in preferences. When your drafted plan is ready for human review, finish your turn; the interface displays the draft and approval choices automatically. Do not ask the user to type a command to see the proposal. /goals review reopens it on request; /goals exit preserves the draft.`;
 }
 export function planningSeed(objective: string, planPath: string): string {
 	return `Enter a planning conversation focused on the user's goals. ${objective ? `Initial idea: ${objective}.` : "Ask what the user wants to achieve; they do not need to supply a finished objective."} Read any existing plan at ${planPath} first, then discuss and draft it with the user. Do not infer approval to implement from starting this conversation. ${planning(planPath)}\n\n${planDrafting}`;
@@ -195,7 +196,7 @@ export function planContext(mode: string, path: string | undefined, text: string
 	return `Current goal mode: ${mode}. Earlier role messages are historical; this current role governs.\n${planContextView(text, tier)}\n\nPlan file (audit or edit link): ${path ?? "not attached"}`;
 }
 export function planChangedReview(planPath: string, text: string): string {
-	return `${supervisorJob}\nPlan changed. Inspect changed requirements, completion claims and evidence.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Manual checkbox edits are claims, not proof. Do not weaken the agreed goal or start a duplicate writer.`;
+	return `${supervisorJob}\nPlan changed. Inspect changed requirements, completion claims and evidence. Evidence-only edits do not revoke execution approval. After review, continue unfinished authorized implementation rather than another recap; respect explicit pauses and do not assume approval for changed scope.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Manual checkbox edits are claims, not proof. Do not weaken the agreed goal or start a duplicate writer.`;
 }
 export function manualReview(planPath: string, text: string): string {
 	return `${supervisorJob}\nReview the current plan, worker progress and actual evidence.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Do not launch a duplicate writer.`;
