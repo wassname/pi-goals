@@ -683,14 +683,14 @@ it("prioritizes unfinished goals and says when the widget list is truncated", as
 	const f = fixture(); await f.draft();
 	writeFileSync(f.path, "- [x] goal: completed one\n- [x] goal: completed two\n- [/] goal: active work\n- [ ] goal: open one\n- [ ] goal: open two\n");
 	await f.command("ready");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◼ G3: active work", "◻ G4: open one", "◻ G5: open two", "… 2 [x]"]);
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◼ G3: active work", "◻ G4: open one", "◻ G5: open two", "… 2 ✔"]);
 	f.shutdown();
 });
 
 it.each([
-	["[x]", "[ ]", "[ ]", "… 1 [x], 2 [ ]"],
-	["[/]", "[x]", "[-]", "… 1 [x], 1 [/], 1 [-]"],
-	["[ ]", "[ ]", "[ ]", "… 3 [ ]"],
+	["[x]", "[ ]", "[ ]", "… 1 ✔, 2 ◻"],
+	["[/]", "[x]", "[-]", "… 1 ✔, 1 ◼, 1 ✗"],
+	["[ ]", "[ ]", "[ ]", "… 3 ◻"],
 ])("summarizes only hidden goal statuses: %s %s %s", async (first, second, third, summary) => {
 	const f = fixture(); await f.draft();
 	const marks = ["[/]", "[/]", "[/]", first, second, third];

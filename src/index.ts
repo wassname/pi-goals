@@ -141,10 +141,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const lines = visible.map((g) => `${mark(g.status)} G${items.indexOf(g) + 1}: ${g.subject}`);
 		const hidden = sorted.slice(WIDGET_GOAL_LIMIT);
 		if (hidden.length) {
-			const symbols: Record<GoalStatus, string> = { done: "[x]", active: "[/]", open: "[ ]", cancelled: "[-]" };
 			const counts = (["done", "active", "open", "cancelled"] as const).map(status => {
 				const count = hidden.filter(g => g.status === status).length;
-				return count ? `${count} ${symbols[status]}` : "";
+				return count ? `${count} ${mark(status)}` : "";
 			}).filter(Boolean);
 			lines.push(`… ${counts.join(", ")}`);
 		}
