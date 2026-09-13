@@ -136,10 +136,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		ctx.ui.setStatus("goals", `👀 ${accepted}/${items.length} goals`);
 		const mark = (status: GoalStatus) => status === "done" ? "✔" : status === "active" ? "◼" : status === "cancelled" ? "✗" : "◻";
 		const priority: Record<GoalStatus, number> = { active: 0, open: 1, done: 2, cancelled: 3 };
-		const visible = [...items].sort((a, b) => priority[a.status] - priority[b.status]).slice(0, WIDGET_GOAL_LIMIT);
+		const sorted = [...items].sort((a, b) => priority[a.status] - priority[b.status]);
+		const visible = sorted.slice(0, WIDGET_GOAL_LIMIT);
 		const lines = visible.map((g) => `${mark(g.status)} G${items.indexOf(g) + 1}: ${g.subject}`);
-		const hidden = items.length - visible.length;
-		if (hidden) lines.push(`… ${hidden} more goal${hidden === 1 ? "" : "s"}`);
+		const hidden = sorted.slice(WIDGET_GOAL_LIMIT);
+		if (hidden.length) {
+			const symbols: Record<GoalStatus, string> = { done: "[x]", active: "[/]", open: "[ ]", cancelled: "[-]" };
+			const counts = (["done", "active", "open", "cancelled"] as const).map(status => {
+				const count = hidden.filter(g => g.status === status).length;
+				return count ? `${count} ${symbols[status]}` : "";
+			}).filter(Boolean);
+			lines.push(`… ${counts.join(", ")}`);
+		}
 		ctx.ui.setWidget("goals", lines);
 	}
 	function watchPlan(ctx: ExtensionContext) {
