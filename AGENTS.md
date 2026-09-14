@@ -12,11 +12,20 @@ The main chat discusses the plan with the user, then supervises an interactive `
 
 — wassname
 
+The supervisor should:
+- Be on a Ralph loop of goals.
+- Keep perspective and context, be token-efficient, and use a more expensive model than the workers.
+- Check in on subagents every N minutes (editable; default hourly).
+- Review subagent work and steer towards the goal:
+  - If a subagent stops for any reason, including saying it's blocked or done.
+  - If a subagent tries to change the plan, including ticking things off.
+- Let the human see and intervene in both worker and supervisor as native Pi panels in Herdr. We keep workers open so the human can check their outputs and final review, usually in the final or penultimate message.
+
 - Keep supervisor inspection tools. It inspects actual results, delegates implementation and must not weaken the user's goal to accept worker output.
 - Put all model-facing prompts in `src/prompts.ts`, in conversation order. Preserve the user's verbatim requirements.
 - `/goals` opens actions. New plan starts a discussion without an objective form. Unknown commands never start planning. A changed settled draft opens the approval dialogue; unchanged discussion does not repeatedly reopen it.
 - Keep goal titles/status in widgets; omit subtask text. Tasks and evidence remain in the plan.
-- Keep startup/compaction plan context, short upkeep reminders and visible editable hourly check-ins. Avoid unchanged-plan repetition and identity-only review turns.
+- Keep startup/compaction plan context, short upkeep reminders and visible check-ins. Avoid unchanged-plan repetition and identity-only review turns.
 - Keep recoverable solo mode: confirm other writers stopped before taking over. Solo completion is self-verification.
 - Record distinct runtime ID, Intercom ID and saved-session path with provenance. A handle or delivery receipt is not proof of liveness or action. User model changes are authorized; do not silently restore an old preference.
 
