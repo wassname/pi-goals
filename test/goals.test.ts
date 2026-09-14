@@ -3,13 +3,16 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { createEditTool, type ExtensionAPI, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { upkeep } from "../src/prompts.js";
+import { upkeep, workerAssignment } from "../src/prompts.js";
+
+vi.mock("pi-subagents/project-panes", () => ({ openProjectPane: vi.fn(async () => ({ ok: true, data: { bindingPath: "/project/.pi/subagents/project-pane.json", disposition: "opened", binding: { paneId: "native-pane", projectRoot: "/project", command: "pi" } } })) }));
 
 const roots: string[] = [];
 const shutdowns: Array<() => void> = [];
-afterEach(() => { for (const shutdown of shutdowns.splice(0)) shutdown(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const shutdown of shutdowns.splice(0)) shutdown(); vi.unstubAllEnvs(); vi.mocked(openProjectPane).mockClear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(predicate: () => boolean, ms = 1500): Promise<void> {
 	const start = Date.now();
@@ -19,13 +22,14 @@ async function waitFor(predicate: () => boolean, ms = 1500): Promise<void> {
 	}
 }
 function fixture(child = false) {
-	vi.stubEnv("PI_SUBAGENT_AGENT", child ? "goals-worker" : "");
 	const cwd = mkdtempSync(join(tmpdir(), "goals-main-test-")); roots.push(cwd);
-	const entries: any[] = []; const hooks = new Map<string, any>(); const commands = new Map<string, any>(); const tools = new Map<string, any>();
+	const entries: any[] = child ? [{ type: "custom", customType: "pi-goals-main-supervisor-v1", data: { mode: "solo", child: true, signoffs: {} } }] : []; const hooks = new Map<string, any>(); const commands = new Map<string, any>(); const tools = new Map<string, any>();
 	const messages: any[] = [];
-	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only" }, hasUI: true, hasPendingMessages: vi.fn(() => false), ui: {
+	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only", getSessionFile: () => join(cwd, "session.jsonl") }, hasUI: true, hasPendingMessages: vi.fn(() => false), ui: {
 		theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async (_title: string, _options: string[]) => "Ready"), editor: vi.fn(),
 	} };
+	let registration: any;
+	const channel = { snapshot: vi.fn(() => ({ connected: true, supported: true })), listSessions: vi.fn(async () => [{ id: "parent-intercom", pid: process.pid }, { id: "live-parent", pid: process.pid + 1 }]), publish: vi.fn() };
 	const pi = {
 		on: (event: string, hook: any) => hooks.set(event, hook),
 		appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
@@ -35,12 +39,8 @@ function fixture(child = false) {
 		registerEntryRenderer: vi.fn(),
 		sendMessage: (message: any, options: any) => messages.push({ message, options }),
 		sendUserMessage: (content: string, options: any) => messages.push({ message: { content }, options, savedPrompt: true }),
-		events: { emit: vi.fn() },
-		getAllTools: vi.fn(() => [
-			{ name: "subagent", parameters: { properties: { agent: {}, title: {} } } },
-			{ name: "subagent_resume", parameters: { properties: { sessionFile: {} } } },
-			{ name: "subagent_kill", parameters: { properties: { id: {} } } },
-		]),
+		events: { emit: vi.fn((name, data) => { if (name === "intercom:extension-register") { registration = data; data.onReady(channel); } }) },
+		getAllTools: vi.fn((): any[] => []),
 	};
 	goalsExtension(pi as unknown as ExtensionAPI);
 	hooks.get("session_start")({}, ctx);
@@ -64,13 +64,13 @@ function fixture(child = false) {
 		renameSync(tmp, path);
 		await delay(25);
 	};
-	const start = (toolCallId: string, input: any = { agent: "goals-worker", title: "Implement" }, toolName = "subagent") => hooks.get("tool_call")({ toolCallId, toolName, input }, ctx);
-	const finish = (toolCallId: string, details: any, toolName = "subagent", isError = false) => hooks.get("tool_execution_end")({ toolCallId, toolName, result: { content: [], details }, isError }, ctx);
-	const launch = (details: any, agent = "goals-worker", toolName = "subagent") => {
-		start(details.id, { agent, title: "Work", sessionFile: details.sessionFile }, toolName);
-		finish(details.id, details, toolName);
+	const start = (_id: string) => hooks.get("tool_call")({ toolName: "OpenGoalWorker" }, ctx);
+	const launch = async (details: { id: string; sessionFile: string }) => {
+		await tools.get("OpenGoalWorker").execute("open", { task: "Implement first output" }, undefined, undefined, ctx);
+		const state = entries.at(-1).data;
+		registration.onEvent({ type: "message", fromSessionId: details.id, payload: { type: "attached", to: state.worker.parentId, requestId: state.worker.requestId, plan: state.plan, sessionFile: details.sessionFile } });
 	};
-	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, finish, launch };
+	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, launch, channel, event: (event: any) => registration.onEvent(event) };
 }
 
 it.each([
@@ -161,7 +161,7 @@ it("edits even an empty draft directly without a model call", async () => {
 
 it("clear preserves the plan without a backup, warns for misbound jobs and allows a separate new draft", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "stale", sessionFile: "/tmp/old-worker.jsonl" });
+	await f.launch({ id: "stale", sessionFile: "/tmp/old-worker.jsonl" });
 	const jobs = [
 		{ id: "owned", name: "goals-copy-only", session: "copy-only", enabled: true },
 		{ id: "older", name: "older-plan", session: "copy-only", enabled: true },
@@ -171,9 +171,9 @@ it("clear preserves the plan without a backup, warns for misbound jobs and allow
 	const schedule = join(f.ctx.cwd, ".pi/schedule-prompts.json"); writeFileSync(schedule, JSON.stringify({ version: 1, jobs }));
 	const before = f.messages.length; await f.command("clear");
 	expect(f.messages).toHaveLength(before);
-	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
+	expect(f.entries.at(-1).data).toEqual({ mode: "chat", signoffs: {} });
 	expect(JSON.parse(readFileSync(schedule, "utf8")).jobs).toEqual(jobs.slice(1));
-	expect(f.pi.events.emit).toHaveBeenCalledExactlyOnceWith("cron:change", { type: "remove", jobId: "owned" });
+	expect(f.pi.events.emit).toHaveBeenCalledWith("cron:change", { type: "remove", jobId: "owned" });
 	expect(f.ctx.ui.notify).toHaveBeenCalledWith("Goal check-ins left unchanged (session binding missing or different): foreign, unbound. Inspect /schedule-prompt.", "warning");
 	const directory = join(f.ctx.cwd, ".pi/plan");
 	expect(readdirSync(directory)).toEqual([basename(f.path)]);
@@ -192,7 +192,7 @@ it.each(["missing", "empty"])("clear resets a %s plan without a model call", asy
 	const f = fixture(); await f.draft(); const before = f.messages.length;
 	if (kind === "missing") rmSync(f.path); else writeFileSync(f.path, "");
 	await f.command("clear");
-	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
+	expect(f.entries.at(-1).data).toEqual({ mode: "chat", signoffs: {} });
 	expect(f.messages).toHaveLength(before);
 });
 
@@ -244,13 +244,6 @@ it("keeps Ready in the same chat, sends saved notices and never installs a conte
 	f.shutdown();
 });
 
-it("preserves a draft when the wrong subagent package is loaded, and offers explicit solo", async () => {
-	const f = fixture(); await f.draft(); f.pi.getAllTools.mockReturnValue([]);
-	await f.command("ready"); expect(f.entries.at(-1).data.mode).toBe("planning");
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
-	await f.command("solo"); expect(f.entries.at(-1).data.mode).toBe("solo");
-});
-
 it("rejects a plan changed while the human was reviewing it", async () => {
 	const f = fixture(); await f.draft();
 	f.ctx.ui.select.mockImplementation(async () => { writeFileSync(f.path, "- [ ] goal: substituted\n"); return "Ready"; });
@@ -259,11 +252,11 @@ it("rejects a plan changed while the human was reviewing it", async () => {
 
 it("reloads a paused plan without launching, and retains the public worker session handle", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "child-1", sessionFile: "/tmp/child.jsonl" });
+	await f.launch({ id: "child-1", sessionFile: "/tmp/child.jsonl" });
 	await f.command("stop");
 	expect(f.messages.at(-1).message.content).toContain("Remote stop is NOT yet confirmed");
 	f.hooks.get("session_start")({}, f.ctx);
-	expect(f.hooks.get("tool_call")({ toolName: "subagent_resume" }).block).toBe(true);
+	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker" }).block).toBe(true);
 	await f.command("resume");
 	expect(f.messages.at(-1).message.content).toContain("/tmp/child.jsonl");
 	await f.command("exit"); expect(f.entries.at(-1).data.mode).toBe("chat");
@@ -313,7 +306,7 @@ it("requires actual nonempty evidence, distinguishes manual ticks, and retains s
 	expect(reminder).toContain("[x] goal: second output");
 	expect(reminder).not.toContain("first output");
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[x] goal: first", "[ ] goal: first"));
-	f.hooks.get("agent_end")({}, f.ctx);
+	f.hooks.get("agent_end")({ messages: [] }, f.ctx);
 	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 0/2 goals");
 	f.shutdown();
 });
@@ -410,7 +403,7 @@ it("gives pause scheduler guidance but clears on exit without a model prompt", a
 	const before = f.messages.length;
 	await f.command("exit");
 	expect(f.messages).toHaveLength(before);
-	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
+	expect(f.entries.at(-1).data).toEqual({ mode: "chat", signoffs: {} });
 });
 
 it("requires a full-plan review turn before recording the final goal", async () => {
@@ -510,7 +503,7 @@ it("recovers from an unreadable plan after compaction instead of restarting work
 
 it("requires confirmed worker stop before solo takeover and never lets two writers run together", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "child-1", sessionFile: "/tmp/child.jsonl" });
+	await f.launch({ id: "child-1", sessionFile: "/tmp/child.jsonl" });
 	f.ctx.ui.select.mockResolvedValueOnce("Cancel");
 	await f.command("solo");
 	expect(f.entries.at(-1).data.mode).toBe("supervising"); // cancelled
@@ -518,8 +511,8 @@ it("requires confirmed worker stop before solo takeover and never lets two write
 	await f.command("solo");
 	expect(f.entries.at(-1).data.mode).toBe("solo");
 	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
-	expect(f.hooks.get("tool_call")({ toolName: "subagent_resume" }).block).toBe(true);
-	expect(f.hooks.get("tool_call")({ toolName: "subagent_kill" })).toBeUndefined();
+	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker" }).block).toBe(true);
+	expect(f.hooks.get("tool_call")({ toolName: "read" })).toBeUndefined();
 	mkdirSync(join(f.ctx.cwd, "evidence")); writeFileSync(join(f.ctx.cwd, "evidence/pass.log"), "bytes\n");
 	const text = (await f.tools.get("CompleteGoal").execute("t", { goal: "first output", evidence: ["evidence/pass.log"], observation: "inspected" }, undefined, undefined, f.ctx)).content[0].text;
 	expect(text).toContain("self-verification");
@@ -586,7 +579,7 @@ it("records the preferred worker model as a visible plan preference", async () =
 
 it.each(["solo", "attach"])("%s takeover cannot bypass confirmation or survive a lifecycle change during the menu", async kind => {
 	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "child", sessionFile: "/tmp/prior.jsonl" });
+	await f.launch({ id: "child", sessionFile: "/tmp/prior.jsonl" });
 	let answer!: (choice: string) => void;
 	f.ctx.ui.select.mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
 	const takeover = f.command(kind === "solo" ? "solo" : `attach ${f.path} solo`);
@@ -609,19 +602,18 @@ it("attach solo requires stop confirmation for a noted worker even in a fresh se
 	expect(readFileSync(path, "utf8")).toContain("worker session: /tmp/known.jsonl");
 });
 
-it("retains the stopped session reference without permanently blocking another plan", async () => {
+it("retains the stopped session reference and refuses replacement in the first-session port", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "child", sessionFile: "/tmp/prior.jsonl" });
+	await f.launch({ id: "child", sessionFile: "/tmp/prior.jsonl" });
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
 	const other = join(f.ctx.cwd, "another.md"); writeFileSync(other, "- [ ] goal: next\n## Log\n");
 	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");
 	await f.command(`attach ${other}`);
 	expect(f.entries.at(-1).data).toMatchObject({ mode: "planning", plan: other, workerStopped: true, worker: { sessionFile: "/tmp/prior.jsonl" } });
 	await f.command("ready");
-	f.start("resume", { sessionFile: "/tmp/prior.jsonl" }, "subagent_resume");
-	expect(f.entries.at(-1).data.workerStopped).toBe(false);
-	await f.command("solo");
-	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("still pending"), "warning");
+	const response = await f.tools.get("OpenGoalWorker").execute("open", { task: "next task" }, undefined, undefined, f.ctx);
+	expect(response.content[0].text).toContain("already recorded");
+	expect(f.entries.at(-1).data.workerStopped).toBe(true);
 });
 
 it("solo closes a pending plan watcher and sends removal-only scheduler guidance", async () => {
@@ -644,7 +636,7 @@ it.each(["missing", "empty", "directory"])("%s plan snapshots never erase signof
 	if (failure === "empty") writeFileSync(f.path, "");
 	else { rmSync(f.path); if (failure === "directory") mkdirSync(f.path); }
 	await delay(250); // also exercise unavailable read after debounce has expired
-	f.hooks.get("agent_end")({}, f.ctx);
+	f.hooks.get("agent_end")({ messages: [] }, f.ctx);
 	expect(f.entries.at(-1).data.signoffs["first output"]).toBeDefined();
 	f.hooks.get("session_compact")();
 	const unavailable = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
@@ -699,22 +691,7 @@ it("cancelled goals do not prevent final cleanup, and solo writes self-verificat
 	expect(text).toContain("Preserved context");
 });
 
-it("prefixes single and batch launch titles with the project without changing handles or duplicating prefixes", () => {
-	const f = fixture();
-	const single = { name: "report-worker", title: "Restore PCA" };
-	const event = { toolName: "subagent", input: single };
-	f.hooks.get("tool_call")(event, f.ctx);
-	const expected = `${f.ctx.cwd.split("/").at(-1)} · Restore PCA`;
-	expect(single).toEqual({ name: "report-worker", title: expected });
-	f.hooks.get("tool_call")(event, f.ctx);
-	expect(single.title).toBe(expected);
-	const children = [{ name: "test-worker", title: "Check results" }, { ...single }];
-	f.hooks.get("tool_call")({ toolName: "subagent", input: { children } }, f.ctx);
-	expect(children[0].title).toBe(`${f.ctx.cwd.split("/").at(-1)} · Check results`);
-	expect(children[1]).toEqual(single);
-});
-
-it("lineage-only child attaches its plan without a widget, retains task context, and cannot complete", async () => {
+it("persisted child attaches its plan without a widget, retains task context, and cannot complete", async () => {
 	const f = fixture(true);
 	const supplied = join(f.ctx.cwd, "supplied.md");
 	const text = "- [/] goal: exact file\n  - [ ] verify bytes\n## Log\n  - [ ] archived task\n";
@@ -853,43 +830,12 @@ it.each(["supervising", "solo"])("%s repeats concise upkeep every eight unchange
 	}
 });
 
-it("extra subagent launches are recorded as helpers and never steal the implementation identity", async () => {
-	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "impl", sessionFile: "/tmp/impl.jsonl" });
-	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "impl", sessionFile: "/tmp/impl.jsonl" }, helpers: [] });
-	f.launch({ id: "reviewer", sessionFile: "/tmp/review.jsonl" }, "reviewer");
-	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "impl" }, helpers: [{ id: "reviewer", sessionFile: "/tmp/review.jsonl" }] });
-	// a repeated helper launch updates its record instead of duplicating it
-	f.launch({ id: "reviewer-2", sessionFile: "/tmp/review.jsonl" }, "reviewer");
-	expect(f.entries.at(-1).data.helpers).toEqual([{ id: "reviewer-2", sessionFile: "/tmp/review.jsonl" }]);
-	// resuming the worker keeps the binding and refreshes its id
-	f.launch({ id: "impl-2", sessionFile: "/tmp/impl.jsonl" }, "goals-worker", "subagent_resume");
-	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "impl-2", sessionFile: "/tmp/impl.jsonl" }, helpers: [{ id: "reviewer-2" }] });
-});
-
-it("pending call IDs survive concurrent launches until every execution ends", async () => {
-	const f = fixture(); await f.draft(); await f.command("ready");
-	f.start("call-a");
-	f.start("call-b", { agent: "reviewer", title: "Review" });
-	f.finish("call-a", { id: "a", sessionFile: "/tmp/a.jsonl" });
-	f.finish("untracked", { id: "noise", sessionFile: "/tmp/noise.jsonl" });
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
-	await f.command("solo");
-	expect(f.entries.at(-1).data.mode).toBe("supervising"); // one launch still pending
-	expect(f.ctx.notify ?? f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("still pending"), "warning");
-	f.finish("call-b", { id: "b", sessionFile: "/tmp/b.jsonl" });
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
-	await f.command("solo");
-	expect(f.entries.at(-1).data.mode).toBe("solo");
-	expect(f.entries.at(-1).data).toMatchObject({ worker: { id: "a" }, helpers: [{ id: "b" }] });
-});
-
 it("a launch started during takeover invalidates the menu without disabling plan watching", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	let answer!: (choice: string) => void;
 	f.ctx.ui.select.mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
 	const solo = f.command("solo");
-	f.launch({ id: "late-child", sessionFile: "/tmp/late.jsonl" });
+	await f.launch({ id: "late-child", sessionFile: "/tmp/late.jsonl" });
 	answer("Worker confirmed stopped"); await solo;
 	expect(f.entries.at(-1).data.mode).toBe("supervising");
 	expect(f.entries.at(-1).data.workerStopped).toBe(false);
@@ -927,13 +873,13 @@ it("does not approve cancelled goals or display current completion for an unavai
 	expect(reply.content[0].text).toContain("no sign-off recorded");
 	expect(readFileSync(f.path, "utf8")).toContain("[-]");
 	rmSync(f.path);
-	f.hooks.get("agent_end")({}, f.ctx);
+	f.hooks.get("agent_end")({ messages: [] }, f.ctx);
 	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", [expect.stringContaining("unavailable")]);
 });
 
 it("keeps interactive workers open", () => {
-	const agent = readFileSync(new URL("../agents/goals-worker.md", import.meta.url), "utf8");
-	expect(agent).toContain("auto-exit: false");
+	const task = workerAssignment("/plan.md", "parent", "request", "bounded task");
+	expect(task).toContain("do not exit, reset, switch session or close the pane");
 });
 
 it.each(["stop", "exit", "edit", "session_tree"])("discards pending upkeep after %s instead of reviving stale work", async change => {
@@ -1060,41 +1006,6 @@ it("rejects blank goal subjects on Ready and CompleteGoal", async () => {
 	expect(f.entries.at(-1).data.signoffs).toEqual({});
 });
 
-it.each(["denied", "cancelled"])("settles a %s preflight on execution_end without tool_result", async reason => {
-	const f = fixture(); await f.draft(); await f.command("ready");
-	f.start("refused");
-	f.finish("refused", { error: reason }, "subagent", true);
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
-	expect(f.entries.at(-1).data.mode).toBe("solo");
-	expect(f.entries.at(-1).data.worker).toBeUndefined();
-});
-
-it("batch results and a reviewer arriving first do not take the implementation binding", async () => {
-	const f = fixture(); await f.draft(); await f.command("ready");
-	f.launch({ id: "early", sessionFile: "/tmp/early.jsonl", agent: "reviewer" }, "reviewer");
-	expect(f.entries.at(-1).data.worker).toBeUndefined();
-	f.start("batch", { children: [{ agent: "reviewer", title: "Review" }, { agent: "goals-worker", title: "Implement" }] });
-	f.finish("batch", { status: "started", children: [
-		{ id: "review", sessionFile: "/tmp/review.jsonl", agent: "reviewer" },
-		{ id: "impl", sessionFile: "/tmp/impl.jsonl", agent: "goals-worker" },
-	] });
-	expect(f.entries.at(-1).data.worker).toEqual({ id: "impl", sessionFile: "/tmp/impl.jsonl" });
-	expect(f.entries.at(-1).data.helpers).toHaveLength(2);
-	await f.command("stop");
-	expect(f.messages.at(-1).message.content).toContain("impl");
-});
-
-it.each(["replace", "tree", "pause"])("does not attach a launch result after %s changed its originating generation", async change => {
-	const f = fixture(); await f.draft(); await f.command("ready");
-	f.start("old");
-	if (change === "replace") { await f.command("exit"); await f.command("new next output"); }
-	if (change === "tree") f.hooks.get("session_tree")({}, f.ctx);
-	if (change === "pause") await f.command("stop");
-	f.finish("old", { id: "old-worker", sessionFile: "/tmp/old-worker.jsonl", agent: "goals-worker" });
-	expect(f.entries.at(-1).data.worker).toBeUndefined();
-	expect(f.entries.at(-1).data.helpers).toEqual([]);
-});
-
 it.each([
 	["criterion", false], ["scope", false], ["other goal", true], ["task", true], ["evidence", true], ["Log", true],
 ])("%s edits retain signoff=%s according to reviewed acceptance",  async (change, retained) => {
@@ -1108,7 +1019,7 @@ it.each([
 		task: ["[ ] original task", "[x] maintained task"], evidence: ["original evidence", "additional evidence"], Log: ["## Log", "## Log\n- historical note"],
 	};
 	writeFileSync(f.path, signed.replace(...replacements[change as string]));
-	f.hooks.get("agent_end")({}, f.ctx);
+	f.hooks.get("agent_end")({ messages: [] }, f.ctx);
 	expect(Boolean(f.entries.at(-1).data.signoffs["first output"])).toBe(retained);
 	f.hooks.get("session_start")({}, f.ctx);
 	expect(Boolean(f.entries.at(-1).data.signoffs["first output"])).toBe(retained);
@@ -1120,4 +1031,65 @@ it("passive pause is visible immediately while its model notice waits safely for
 	await f.command("stop");
 	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Remote stop is NOT yet confirmed"), "info");
+});
+
+// The native surface has one project binding; these replace old launch-schema/helper tests.
+it("opens no-focus, records explicit attachment only, and wakes review only for the exact worker", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	f.channel.listSessions.mockRejectedValueOnce(new Error("Intercom is not connected"));
+	const waiting = await f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
+	expect(waiting.content[0].text).toContain("still connecting"); expect(openProjectPane).not.toHaveBeenCalled();
+	await f.launch({ id: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
+	expect(openProjectPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: f.ctx.cwd, focus: false, message: expect.stringContaining("AttachGoalPlan") }));
+	const worker = f.entries.at(-1).data.worker;
+	expect(worker).toMatchObject({ paneId: "native-pane", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
+	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, text: "Blocked: input missing" };
+	const count = f.messages.length;
+	for (const fromSessionId of [worker.parentId, "foreign-id"]) f.event({ type: "message", fromSessionId, payload: notice });
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, plan: "/foreign.md" } });
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, requestId: "stale" } });
+	expect(f.messages).toHaveLength(count);
+	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	expect(f.messages.at(-1)).toMatchObject({ savedPrompt: true, message: { content: expect.stringContaining("Blocked: input missing") } });
+	expect(f.entries.at(-1).data.signoffs).toEqual({});
+	await f.command("stop");
+	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
+	await f.command("clear");
+	const cleared = f.messages.length; f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	expect(f.messages).toHaveLength(cleared);
+});
+
+it("ordinary project peer explicitly attaches as worker, never gaining approval authority", async () => {
+	const f = fixture(); const path = join(f.ctx.cwd, "supplied.md"); writeFileSync(path, f.plan);
+	const tool = f.tools.get("AttachGoalPlan");
+	await tool.execute("attach", { path }, undefined, undefined, f.ctx);
+	expect(f.entries).toHaveLength(0);
+	f.channel.listSessions.mockRejectedValueOnce(new Error("Intercom is not connected"));
+	const waiting = await tool.execute("attach", { path, parent: "live-parent", requestId: "assignment-id" }, undefined, undefined, f.ctx);
+	expect(waiting.content[0].text).toContain("still connecting"); expect(f.entries).toHaveLength(0);
+	await tool.execute("attach", { path, parent: "live-parent", requestId: "assignment-id" }, undefined, undefined, f.ctx);
+	expect(f.entries.at(-1).data).toMatchObject({ child: true, parent: { intercomId: "live-parent", requestId: "assignment-id" }, plan: path });
+	expect(f.channel.publish).toHaveBeenCalledWith(expect.objectContaining({ type: "attached", to: "live-parent", sessionFile: f.ctx.sessionManager.getSessionFile() }), { audience: "capable" });
+	await f.command("ready"); await f.command("solo");
+	const reply = await f.tools.get("CompleteGoal").execute("complete", { goal: "first output", evidence: [path], observation: "claim" }, undefined, undefined, f.ctx);
+	expect(reply.content[0].text).toContain("only to the active parent");
+	f.hooks.get("session_start")({}, f.ctx); f.hooks.get("session_compact")();
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).systemPrompt).toContain("delegated implementation worker");
+	f.hooks.get("agent_end")({ messages: [{ role: "assistant", content: [{ type: "text", text: "Result at output.txt" }], stopReason: "stop" }] }, f.ctx);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", text: "Result at output.txt" }), { audience: "capable" });
+});
+
+it("pending or failed native opening never permits an unconfirmed second writer", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	let release!: () => void;
+	vi.mocked(openProjectPane).mockImplementationOnce(() => new Promise((_resolve, reject) => { release = () => reject(new Error("connection lost after open")); }));
+	const opening = f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
+	await waitFor(() => Boolean(release));
+	await f.command("solo");
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("still pending"), "warning");
+	release(); expect((await opening).content[0].text).toContain("possible live writer");
+	const again = await f.tools.get("OpenGoalWorker").execute("open", { task: "again" }, undefined, undefined, f.ctx);
+	expect(again.content[0].text).toContain("already recorded");
+	expect(openProjectPane).toHaveBeenCalledTimes(1);
 });

@@ -122,13 +122,13 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. 
+Requires Herdr. Includes [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) 0.66.0, pi-intercom and pi-schedule-prompt.
 
 ```bash
 pi install git:github.com/wassname/pi-goals
 ```
 
-Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session. Use one pi-goals installation and disable separately installed copies of its bundled companions; duplicate scheduler instances send duplicate prompts.
+Start a fresh Pi session. No worker agent file is needed: `OpenGoalWorker` uses Nico's public `project.open` surface, then the peer explicitly attaches with `AttachGoalPlan`. Use one pi-goals installation and disable separately installed copies of its bundled companions; duplicate scheduler instances send duplicate prompts.
 
 The bundled pi-schedule-prompt 0.4.1 reads project schedules even when Pi project trust is declined. Until that upstream issue is fixed, use this bundle only in repositories you trust.
 
@@ -138,8 +138,6 @@ For development, register the checkout so workers also discover its extensions:
 git clone https://github.com/wassname/pi-goals
 cd pi-goals && npm install
 pi install .
-mkdir -p ~/.pi/agent/agents
-cp agents/goals-worker.md ~/.pi/agent/agents/
 pi
 ```
 
@@ -149,7 +147,13 @@ pi
 /goals
 ```
 
-`/goals` shows actions for the current mode. Drafts offer Edit, Discuss and Approve. Discuss returns to chat and waits for your input. Menu New asks for optional instructions before creating a plan; submit blank to use the conversation, or cancel to leave things unchanged. Typed `/goals new <instructions>` still starts directly. Quit (`exit` or `clear`) leaves the original plan unchanged, removes this session's goal check-in, and clears goal state without a model call. Matching check-in names with missing or different session bindings are left unchanged with a warning. Worker processes are unchanged; manage them through `/subagents`. New creates a separate draft without overwriting earlier plans, named `.pi/plan/<last-six-session-characters>-vN.md` using the next version after existing files. The title stays inside the plan; old files are not renamed. The widget shows a plain `✓` and the relative plan path (the fallback for unverified terminal links).
+`/goals` shows actions for the current mode. Drafts offer Edit, Discuss and Approve. Discuss returns to chat and waits for your input. Menu New asks for optional instructions before creating a plan; submit blank to use the conversation, or cancel to leave things unchanged. Typed `/goals new <instructions>` still starts directly. Quit (`exit` or `clear`) leaves the original plan unchanged, removes this session's goal check-in, and clears goal state without a model call. Matching check-in names with missing or different session bindings are left unchanged with a warning. Worker processes are unchanged; inspect their native panes and use their exact Intercom identities for steering. New creates a separate draft without overwriting earlier plans, named `.pi/plan/<last-six-session-characters>-vN.md` using the next version after existing files. The title stays inside the plan; old files are not renamed. The widget shows a plain `✓` and the relative plan path (the fallback for unverified terminal links).
+
+### First-session port limits
+
+The parent and worker keep separate native conversations. Worker attachment and stop notices use stock Intercom extension channels; assignments, reports and corrections remain visible Pi messages. A pane-open receipt, idle state or delivery receipt does not approve a goal.
+
+This port does not yet implement automatic saved-session recovery or later fresh-session replacement. Nico reuses one project binding; an existing conversation is never reset or closed to make room. A recorded worker therefore blocks another `OpenGoalWorker`, including after a confirmed stop. Preserve its saved session and inspect liveness before manual recovery or confirmed solo takeover. `project.open` has no model override; choose a model in the worker's native `/model` UI and verify the resolved choice. — Pi/OpenAI
 
 ## Context delivery
 

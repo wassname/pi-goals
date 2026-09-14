@@ -1,9 +1,11 @@
 // Pi/OpenAI: Plan and supervise in the main chat; delegate implementation to a visible worker.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { type FSWatcher, mkdirSync, readdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { INTERCOM_EXTENSION_REGISTER_EVENT, type IntercomExtensionChannel, type IntercomExtensionRegistration } from "pi-intercom/extension-api.js";
 import { CronStorage } from "pi-schedule-prompt/src/storage.js";
+import { openProjectPane } from "pi-subagents/project-panes";
 import { Type } from "typebox";
 import { noticeDisplay } from "./notice-display.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE, goalAcceptanceSignature } from "./plan.js";
@@ -25,6 +27,7 @@ import {
 	goalToolBlocked,
 	manualReview,
 	messages,
+	nativeMessages,
 	pausedRole,
 	pauseExitNotice,
 	planChangedReview,
@@ -41,6 +44,8 @@ import {
 	soloRole,
 	supervisor,
 	upkeep,
+	workerAssignment,
+	workerReview,
 } from "./prompts.js";
 
 const STATE = "pi-goals-main-supervisor-v1";
@@ -51,15 +56,15 @@ type GoalStatus = "open" | "active" | "done" | "cancelled";
 interface State {
 	mode: Mode;
 	plan?: string;
-	worker?: { id?: string; sessionFile: string };
-	helpers: { id?: string; sessionFile: string }[];
+	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; requestId?: string; parentId?: string };
+	parent?: { intercomId: string; requestId: string };
 	workerStopped?: boolean;
 	pausedFrom?: "solo" | "supervising";
 	signoffs: Record<string, { evidence: string[]; observation: string; signature: string }>;
 	finalReview?: { planDigest: string };
 	child?: boolean;
 }
-const initial = (): State => ({ mode: "chat", helpers: [], signoffs: {} });
+const initial = (): State => ({ mode: "chat", signoffs: {} });
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const key = (text: string) => text.trim().toLowerCase();
 function goals(text: string) {
@@ -79,13 +84,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let generation = 0;
 	let workerRevision = 0;
 	let finalReviewTurnDigest: string | undefined;
-	const pendingLaunches = new Map<string, { plan: string; generation: number; launches: { agent?: string; sessionFile?: string }[] }>();
+	let opening = false;
+	let channel: IntercomExtensionChannel | undefined;
 	let notice = true;
 	let fullPlanContextDue = true;
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
 	let planHash = "";
-	const childEnvironment = process.env.PI_SUBAGENT_AGENT === WORKER;
 	const save = () => pi.appendEntry(STATE, structuredClone(state));
 	// Missing, empty and failed reads are unavailable snapshots, never an empty authoritative plan.
 	const readPlan = () => {
@@ -199,13 +204,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === STATE) state = structuredClone(entry.data as State);
 		}
-		if (childEnvironment) {
-			state.child = true;
-			state.mode = "solo";
-			// Lineage-only workers attach the explicit task path using AttachGoalPlan.
-			save();
-		}
-		state.helpers ??= []; // sessions persisted before helper bookkeeping
 		notice = true;
 		turnsStale = 0;
 		lastWorkingSet = "";
@@ -214,11 +212,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		fullPlanContextDue = true;
 		refresh(ctx);
 		watchPlan(ctx);
-	}
-	function compatible() {
-		const tools = pi.getAllTools();
-		const properties = (name: string) => (tools.find((t) => t.name === name)?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties;
-		return properties("subagent")?.title && properties("subagent")?.agent && properties("subagent_resume")?.sessionFile && properties("subagent_kill")?.id;
 	}
 	function send(content: string, triggerTurn = true) {
 		// sendMessage(triggerTurn:true) bypasses before_agent_start in Pi 0.85.1.
@@ -230,11 +223,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		} else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
-		if (pendingLaunches.size > 0) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
+		if (opening) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
 		const stamp = generation;
 		const revision = workerRevision;
 		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
-		const choice = await ctx.ui.select(solo ? "Confirm all other writers for the current and target plans are stopped (inspect /subagents and their panes). A missing handle is not proof. Take over in this session?" : "Confirm no other supervisor owns this plan. Preserve any existing worker session and reconnect rather than starting another writer.", [confirmation, "Cancel"]);
+		const choice = await ctx.ui.select(solo ? "Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?" : "Confirm no other supervisor owns this plan. Preserve any existing worker session and reconnect rather than starting another writer.", [confirmation, "Cancel"]);
 		if (stamp !== generation || revision !== workerRevision) return false;
 		if (choice !== confirmation) return false;
 		if (readFileSync(target, "utf8") !== text) { ctx.ui.notify("Plan changed during takeover; confirm again.", "warning"); return false; }
@@ -245,7 +238,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 		send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${soloNotice(state.plan!)}`);
 	}
-	const help = "/goals new [initial idea] | edit | discuss | review | ready | status | stop | resume | solo | attach <plan.md> [solo] | model <model> | quit (exit/clear)\n/subagents opens the worker controls. Stop pauses work. Quit/exit/clear preserves the plan and clears goal state without a model call; worker processes are unchanged. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
+	const help = "/goals new [initial idea] | edit | discuss | review | ready | status | stop | resume | solo | attach <plan.md> [solo] | model <model> | quit (exit/clear)\nOpenGoalWorker opens a native project pane; use Intercom to steer the verified worker session. Stop pauses work. Quit/exit/clear preserves the plan and clears goal state without a model call; worker processes are unchanged. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
 	async function ready(ctx: ExtensionContext, menu: boolean, edit = false) {
 		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
 		const text = planText();
@@ -265,14 +258,44 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			}
 			if (choice !== "Ready") return;
 		}
-		if (!compatible()) { ctx.ui.notify("Requires edxeth/pi-subagents 2.9.x, not nicobailon/pi-subagents. Draft preserved; /goals solo is available.", "error"); return; }
 		state.mode = "supervising"; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 		send(`${checkIn(ctx)}\n\n${readyApproved(WORKER, state.plan!, state.worker?.sessionFile, text, ctx.sessionManager.getSessionId())}`);
 	}
 
-	pi.on("session_start", (_e, ctx) => restore(ctx));
+	function registerChannel() {
+		const registration: IntercomExtensionRegistration = {
+			namespace: "pi-goals", ownerEligible: false,
+			onReady: (value) => { channel = value; },
+			onEvent: (event) => {
+				if (event.type === "session_left" && event.sessionId === state.worker?.intercomId && state.mode === "supervising") {
+					send(workerReview(state.plan!, event.sessionId, nativeMessages.disconnected));
+				}
+				if (event.type !== "message" || state.child || !state.worker?.requestId) return;
+				const data = event.payload as { type?: string; to?: string; requestId?: string; plan?: string; sessionFile?: string; text?: string } | null;
+				if (!data || data.to !== state.worker.parentId || event.fromSessionId === data.to || data.requestId !== state.worker.requestId || data.plan !== state.plan) return;
+				if (data.type === "attached" && !state.worker.intercomId && typeof data.sessionFile === "string" && isAbsolute(data.sessionFile)) {
+					state.worker.intercomId = event.fromSessionId; state.worker.sessionFile = data.sessionFile; workerRevision++; save();
+					send(workerReview(state.plan!, event.fromSessionId, nativeMessages.attached(data.sessionFile)), false);
+				}
+				if (data.type === "stopped" && event.fromSessionId === state.worker.intercomId && typeof data.text === "string") {
+					send(workerReview(state.plan!, event.fromSessionId, data.text), state.mode === "supervising");
+				}
+			},
+		};
+		pi.events.emit(INTERCOM_EXTENSION_REGISTER_EVENT, registration);
+	}
+	const reportStop = (text: string) => {
+		if (!state.child || !state.parent) return;
+		try {
+			if (!channel?.snapshot().connected) throw new Error("disconnected");
+			channel.publish({ type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text }, { audience: "capable" });
+		} catch { send(nativeMessages.reportUnavailable, false); }
+	};
+	pi.on("session_start", (_e, ctx) => {
+		restore(ctx); registerChannel();
+	});
 	pi.on("session_tree", (_e, ctx) => restore(ctx));
-	pi.on("session_shutdown", () => { generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
+	pi.on("session_shutdown", () => { reportStop(nativeMessages.shuttingDown); channel = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
 	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
 	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
@@ -301,7 +324,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (snapshot.text === undefined || state.finalReview.planDigest !== digest(snapshot.text)) return;
 		if (content === `[pi-goals]\n${finalReview(state.plan!, snapshot.text)}`) finalReviewTurnDigest = state.finalReview.planDigest;
 	});
-	pi.on("agent_end", (_e, ctx) => { finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
+	pi.on("agent_end", (event, ctx) => {
+		const last = event.messages.filter(message => message.role === "assistant").at(-1);
+		reportStop(last?.role === "assistant" ? last.errorMessage || last.content.filter(part => part.type === "text").map(part => part.text).join("\n") || last.stopReason : nativeMessages.noAssistant);
+		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
 	let proposedDraft = "";
 	let proposing = false;
 	pi.on("agent_settled", async (_e, ctx) => {
@@ -348,40 +374,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		pendingUpkeep = undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(message ? { message } : {}) };
 	});
-	pi.on("tool_call", (event, ctx) => {
-		if (event.toolName === "subagent" && event.input) {
-			const prefix = `${basename(ctx.cwd)} · `;
-			const launches = Array.isArray(event.input.children) ? event.input.children : [event.input];
-			for (const launch of launches) {
-				if (launch && typeof launch.title === "string" && !launch.title.startsWith(prefix)) launch.title = prefix + launch.title;
-			}
-		}
-		if (state.child || (event.toolName !== "subagent" && event.toolName !== "subagent_resume")) return;
-		// Solo means this chat took over implementation: no concurrent writer may be delegated.
-		if (state.mode === "planning" || state.mode === "paused" || state.mode === "solo") return { block: true, reason: goalToolBlocked(state.mode) };
-		if (state.plan) {
-			const input = event.input as { agent?: string; sessionFile?: string; children?: { agent?: string; sessionFile?: string }[] };
-			const launches = input.children ?? [input];
-			pendingLaunches.set(event.toolCallId, { plan: state.plan, generation, launches: launches.map(launch => ({ agent: launch.agent, sessionFile: launch.sessionFile })) });
-			state.workerStopped = false; workerRevision++; save();
-		}
-	});
-	pi.on("tool_execution_end", (event) => {
-		const pending = pendingLaunches.get(event.toolCallId);
-		pendingLaunches.delete(event.toolCallId);
-		if (!pending || state.child || pending.plan !== state.plan || pending.generation !== generation || event.isError) return;
-		type ChildResult = { id?: string; sessionFile?: string; agent?: string };
-		const details = (event.result as { details?: ChildResult & { children?: ChildResult[] } }).details;
-		if (!details) return;
-		for (const [index, child] of (details.children ?? [details]).entries()) {
-			if (!child.id || !child.sessionFile) continue;
-			const record = { id: child.id, sessionFile: child.sessionFile };
-			const launch = pending.launches[index];
-			const implementation = (child.agent ?? launch?.agent) === WORKER || launch?.sessionFile === state.worker?.sessionFile && Boolean(state.worker);
-			if (state.worker?.sessionFile === record.sessionFile || !state.worker && implementation) state.worker = record;
-			else state.helpers = [...state.helpers.filter(h => h.sessionFile !== record.sessionFile), record];
-		}
-		workerRevision++; save();
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "subagent" && event.toolName !== "OpenGoalWorker") return;
+		if (state.child || ["planning", "paused", "solo"].includes(state.mode)) return { block: true, reason: goalToolBlocked(state.child ? "worker" : state.mode) };
 	});
 
 	pi.registerCommand("goals", {
@@ -427,10 +422,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						`Plan: ${state.plan ?? "none"}`,
 						`Preferred worker model (plan): ${notedPlanValue("preferred worker model") ?? "not stated; use /goals model <model>"}`,
 						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
-						`Helper subagent sessions: ${state.helpers.length} recorded (liveness via /subagents)`,
+						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.paneId ?? "unconfirmed"}`,
 						notedPlanValue("worker session") ? `Worker session noted in plan: ${notedPlanValue("worker session")}` : "",
 						`Hourly check-in: schedule_prompt job ${JSON.stringify(`goals-${ctx.sessionManager.getSessionId()}`)} (list/remove via schedule_prompt; plan-change reviews are the plan-watcher event hook)`,
-						"Liveness is owned by edxeth; inspect /subagents.",
+						"Inspect the exact Intercom session and native pane; a binding or idle status is not completion.",
 					].filter(Boolean).join("\n"), "info");
 					return;
 				}
@@ -452,7 +447,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					writeFileSync(state.plan, lines.join("\n"));
 					planHash = digest(planViews(planText()).notify);
 					refresh(ctx);
-					ctx.ui.notify(ref ? `Preferred worker model set to ${ref} in plan preferences. The supervisor selects it at launch and verifies the resolved model; the worker pane's own model is chosen with /model in that pane.` : "Preferred worker model cleared.", "info");
+					ctx.ui.notify(ref ? `Preferred worker model set to ${ref} in plan preferences. project.open has no model override; choose /model in the native worker pane and verify its resolved model.` : "Preferred worker model cleared.", "info");
 					return;
 				}
 				if (command === "attach" || command.startsWith("attach ")) {
@@ -470,7 +465,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (!(await confirmOwnership(ctx, target, text, solo))) return;
 					const retained = target === state.plan ? state.signoffs : {};
 					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
-					state = { mode: solo ? "solo" : "planning", plan: target, signoffs: retained, worker, helpers: [], workerStopped: solo || (!noted && state.workerStopped) };
+					state = { mode: solo ? "solo" : "planning", plan: target, signoffs: retained, worker, workerStopped: solo || (!noted && state.workerStopped) };
 					generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 					if (solo) enterSolo(ctx);
 					else send(attachNotice(target, false, noted));
@@ -486,7 +481,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						storage.removeJob(job.id); // Scheduler re-reads storage before firing; removed jobs cannot prompt.
 						pi.events.emit("cron:change", { type: "remove", jobId: job.id });
 					}
-					state = initial(); generation++; workerRevision++; pendingLaunches.clear(); pendingUpkeep = undefined; notice = true;
+					state = initial(); generation++; workerRevision++; pendingUpkeep = undefined; notice = true;
 					save(); refresh(ctx); watchPlan(ctx);
 					ctx.ui.notify("Goals cleared; original plan file unchanged.", "info");
 					return;
@@ -505,7 +500,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (command === "resume") {
 					if (state.mode !== "paused" || !state.plan) { ctx.ui.notify("Only a paused approved plan can resume. A draft needs Ready.", "warning"); return; }
 					if (state.pausedFrom === "solo") { enterSolo(ctx); return; }
-					if (!compatible()) { ctx.ui.notify("edxeth tools unavailable; plan remains paused.", "error"); return; }
 					state.mode = "supervising"; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 					send(`${checkIn(ctx)}\n\n${resumeNotice(WORKER, state.plan, state.worker)}`);
 					return;
@@ -532,22 +526,57 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						version++;
 					}
 				}
-				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, helpers: state.helpers, workerStopped: state.workerStopped }; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
+				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, workerStopped: state.workerStopped }; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 				send(planningSeed(objective, path));
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},
 	});
 	pi.registerTool({
+		name: "OpenGoalWorker", label: "Open native goal worker", description: nativeMessages.openDescription,
+		parameters: Type.Object({ task: Type.String({ minLength: 1 }) }),
+		async execute(_id, params, signal, _update, ctx) {
+			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
+			if (opening || state.worker) return result(nativeMessages.alreadyRecorded);
+			if (!channel?.snapshot().connected) return result(nativeMessages.intercomNotReady);
+			const stamp = generation;
+			const plan = state.plan;
+			const peers = await channel.listSessions().catch(() => undefined);
+			if (!peers) return result(nativeMessages.intercomNotReady);
+			const self = peers?.filter(peer => peer.pid === process.pid);
+			if (self?.length !== 1) return result(nativeMessages.noIdentity);
+			if (stamp !== generation || opening || state.worker || signal?.aborted) return result(messages.cancelled);
+			const requestId = randomUUID();
+			state.worker = { requestId, parentId: self[0].id }; state.workerStopped = false; workerRevision++; opening = true; save();
+			try {
+				const pane = await openProjectPane({ cwd: ctx.cwd, focus: false, signal, message: workerAssignment(plan, self[0].id, requestId, params.task) });
+				if (pane.ok && state.plan === plan && state.worker?.requestId === requestId) { state.worker.paneId = pane.data.binding.paneId; save(); }
+				return result(pane.ok ? JSON.stringify({ disposition: pane.data.disposition, paneId: pane.data.binding.paneId, projectRoot: pane.data.binding.projectRoot, bindingPath: pane.data.bindingPath }) + nativeMessages.openReceipt : JSON.stringify(pane));
+			} catch (error) { return result(nativeMessages.openFailed + String(error)); }
+			finally { opening = false; }
+		},
+	});
+	pi.registerTool({
 		name: "AttachGoalPlan", label: "Attach delegated plan", description: attachGoalPlanDescription,
-		parameters: Type.Object({ path: Type.String() }),
+		parameters: Type.Object({ path: Type.String(), parent: Type.Optional(Type.String()), requestId: Type.Optional(Type.String()) }),
 		async execute(_id, params, _signal, _update, ctx) {
-			if (!state.child) return result(messages.childAttachOnly);
+			if (!state.child && (state.mode !== "chat" || !params.parent || !params.requestId)) return result(messages.childAttachOnly);
+			if (state.child && state.plan && state.plan !== params.path) return result(messages.invalidAttachment);
 			try {
 				if (!isAbsolute(params.path)) return result(messages.invalidAttachment);
 				const items = goals(readFileSync(params.path, "utf8"));
 				if (!items.length || items.some(g => !g.subject)) return result(messages.invalidAttachment);
 			} catch { return result(messages.invalidAttachment); }
+			if (!state.child) {
+				if (!channel?.snapshot().connected) return result(nativeMessages.intercomNotReady);
+				const stamp = generation;
+				const peers = await channel.listSessions().catch(() => undefined);
+				if (!peers) return result(nativeMessages.intercomNotReady);
+				if (stamp !== generation) return result(messages.cancelled);
+				if (!peers?.some(peer => peer.id === params.parent && peer.pid !== process.pid)) return result(nativeMessages.parentUnavailable);
+				state = { ...initial(), child: true, mode: "solo", parent: { intercomId: params.parent!, requestId: params.requestId! } };
+			}
 			state.plan = params.path; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx);
+			if (state.parent) channel?.publish({ type: "attached", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, sessionFile: ctx.sessionManager.getSessionFile() }, { audience: "capable" });
 			return result(childPlanAttached(params.path));
 		},
 	});

@@ -28,7 +28,6 @@
   },
   "files": [
     "src",
-    "agents",
     "README.md"
   ],
   "publishConfig": {
@@ -56,7 +55,7 @@
   "pi": {
     "extensions": [
       "./src/index.ts",
-      "./node_modules/pi-subagents/src/index.ts",
+      "./node_modules/pi-subagents/index.ts",
       "./node_modules/pi-intercom/index.ts",
       "./node_modules/pi-schedule-prompt/src/index.ts"
     ],
@@ -66,7 +65,7 @@
     ]
   },
   "dependencies": {
-    "pi-subagents": "git+https://github.com/edxeth/pi-subagents.git#953c6f6d2fc7d8a5c956c30cd77c51bad697c2a4",
+    "pi-subagents": "0.66.0",
     "pi-intercom": "0.13.0",
     "pi-schedule-prompt": "0.4.1"
   },

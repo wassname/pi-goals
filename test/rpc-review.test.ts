@@ -97,7 +97,6 @@ describe("RPC review flow", () => {
 		const pi = spawn(resolve("node_modules/.bin/pi"), [
 			"--mode", "rpc", "--no-session", "--no-extensions", "--model", "offline/test",
 			"-e", resolve("test/fixtures/offline-model.ts"),
-			"-e", resolve("test/fixtures/subagent-schema.ts"),
 			"-e", resolve("src/index.ts"),
 		], {
 			cwd,

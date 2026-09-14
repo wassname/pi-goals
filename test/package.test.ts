@@ -10,6 +10,5 @@ it("declares current entry and bundled extension resources that exist after inst
 		expect(manifest.dependencies[name]).toBeTruthy();
 		expect(manifest.bundledDependencies).toContain(name);
 	}
-	expect(manifest.dependencies["pi-subagents"]).toContain("953c6f6d2fc7d8a5c956c30cd77c51bad697c2a4");
-	expect(existsSync("agents/goals-worker.md")).toBe(true);
+	expect(manifest.dependencies["pi-subagents"]).toBe("0.66.0");
 });
