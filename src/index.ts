@@ -50,19 +50,30 @@ import {
 
 const STATE = "pi-goals-main-supervisor-v1";
 const WORKER = "goals-worker";
+const CONTROL = "goals-worker-control";
 const WIDGET_GOAL_LIMIT = 3;
 type Mode = "chat" | "planning" | "supervising" | "paused" | "solo";
 type GoalStatus = "open" | "active" | "done" | "cancelled";
+interface Peer {
+	sessionId: string; sessionFile: string; leafId: string | null; paneId: string;
+	durable: boolean; empty: boolean; started?: boolean; parentSession?: string; plan?: string; parentId?: string; requestId?: string; model?: string;
+}
+interface WorkerRequest {
+	id: string; action: "start" | "fresh" | "recover"; task?: string; model?: string;
+	reviewedThrough?: string; writersStopped?: boolean; sessionFile?: string; savedDigest?: string; savedId?: string; savedIntercom?: string;
+	phase: "probe" | "control" | "switch"; previous?: Peer;
+}
 interface State {
 	mode: Mode;
 	plan?: string;
-	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; requestId?: string; parentId?: string };
-	parent?: { intercomId: string; requestId: string };
+	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; requestId?: string; parentId?: string; identity?: Peer; pending?: WorkerRequest };
+	parent?: { intercomId: string; requestId: string; selfId?: string; started?: boolean };
 	workerStopped?: boolean;
 	pausedFrom?: "solo" | "supervising";
 	signoffs: Record<string, { evidence: string[]; observation: string; signature: string }>;
 	finalReview?: { planDigest: string };
 	child?: boolean;
+	lastControl?: string;
 }
 const initial = (): State => ({ mode: "chat", signoffs: {} });
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -76,6 +87,15 @@ function goals(text: string) {
 	});
 }
 const requirements = (text: string) => goals(text).map(g => goalAcceptanceSignature(text, g.subject)).join("\n");
+function savedWorker(path: string) {
+	const text = readFileSync(path, "utf8");
+	const entries = text.trim().split("\n").map(line => JSON.parse(line));
+	const header = entries[0];
+	if (header?.type !== "session" || typeof header.id !== "string" || !entries.some(entry => entry.message?.role === "assistant")) throw new Error(nativeMessages.notDurable);
+	const state = entries.filter(entry => entry.type === "custom" && entry.customType === STATE).at(-1)?.data as State | undefined;
+	if (!state?.child || !state.parent) throw new Error(nativeMessages.notOwned);
+	return { header, state, digest: digest(text) };
+}
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 export default function mainSupervisor(pi: ExtensionAPI) {
@@ -86,6 +106,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let finalReviewTurnDigest: string | undefined;
 	let opening = false;
 	let channel: IntercomExtensionChannel | undefined;
+	let ownIntercomId: string | undefined;
+	let liveContext: ExtensionContext | undefined;
+	let control: { from: string; request: WorkerRequest; plan: string; expected: Peer; cancelled?: boolean } | undefined;
+	let replacing: "new" | "resume" | undefined;
 	let notice = true;
 	let fullPlanContextDue = true;
 	let planWatcher: FSWatcher | undefined;
@@ -223,7 +247,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		} else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
-		if (opening) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
+		if (opening || state.worker?.pending) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
 		const stamp = generation;
 		const revision = workerRevision;
 		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
@@ -262,40 +286,148 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		send(`${checkIn(ctx)}\n\n${readyApproved(WORKER, state.plan!, state.worker?.sessionFile, text, ctx.sessionManager.getSessionId())}`);
 	}
 
-	function registerChannel() {
+	function identity(ctx: ExtensionContext): Peer {
+		const sessionFile = ctx.sessionManager.getSessionFile() ?? "";
+		let durable = false;
+		try { durable = savedWorker(sessionFile).header.id === ctx.sessionManager.getSessionId(); } catch { /* A prospective path is not saved history. */ }
+		return { sessionId: ctx.sessionManager.getSessionId(), sessionFile, leafId: ctx.sessionManager.getLeafId(), paneId: process.env.HERDR_PANE_ID ?? "", durable,
+			empty: !ctx.sessionManager.getBranch().some(entry => entry.type === "message"), parentSession: ctx.sessionManager.getHeader()?.parentSession,
+			plan: state.plan, parentId: state.parent?.intercomId, requestId: state.parent?.requestId, started: state.parent?.started, model: ctx.model ? ctx.model.provider + "/" + ctx.model.id : undefined };
+	}
+	const publish = (payload: unknown) => { channel?.publish(payload, { audience: "capable" }); };
+	async function available() {
+		const stamp = generation, ctx = liveContext, current = channel;
+		if (!ctx || !current?.snapshot().connected || !current.snapshot().supported) return;
+		const peers = await current.listSessions().catch(() => []);
+		if (stamp !== generation || current !== channel) return;
+		const self = peers.filter(peer => peer.pid === process.pid);
+		if (self.length === 1 && pi.getCommands().some(command => command.name === CONTROL)) { ownIntercomId = self[0].id; publish({ type: "available", identity: identity(ctx) }); }
+	}
+	function probe() {
+		if (state.mode === "supervising" && state.worker?.pending && state.worker.paneId) publish({ type: "inspect", paneId: state.worker.paneId, requestId: state.worker.pending.id });
+	}
+	function cancelControl() {
+		if (control) control.cancelled = true;
+		if (state.worker?.pending) {
+			try { publish({ type: "cancel", paneId: state.worker.paneId, requestId: state.worker.pending.id }); } catch { /* Local pause still takes effect when the peer is disconnected. */ }
+			state.worker.requestId = state.worker.pending.previous?.requestId ?? state.worker.requestId;
+			state.worker.pending = undefined;
+		}
+	}
+	function registerChannel(ctx: ExtensionContext) {
+		liveContext = ctx;
 		const registration: IntercomExtensionRegistration = {
 			namespace: "pi-goals", ownerEligible: false,
-			onReady: (value) => { channel = value; },
+			onReady: (value) => { channel = value; void available(); },
 			onEvent: (event) => {
-				if (event.type === "session_left" && event.sessionId === state.worker?.intercomId && state.mode === "supervising") {
-					send(workerReview(state.plan!, event.sessionId, nativeMessages.disconnected));
+				if (event.type === "connection" && event.connected) { void available(); probe(); }
+				if (event.type === "session_left" && event.sessionId === state.worker?.intercomId && state.mode === "supervising" && state.worker.pending?.phase !== "switch") send(workerReview(state.plan!, event.sessionId, nativeMessages.disconnected));
+				if (event.type !== "message" || !event.payload || typeof event.payload !== "object") return;
+				const data = event.payload as { type?: string; to?: string; requestId?: string; plan?: string; paneId?: string; sessionFile?: string; text?: string; identity?: Peer; request?: WorkerRequest; expected?: Peer };
+				if (data.type === "inspect" && data.paneId && data.paneId === process.env.HERDR_PANE_ID && typeof data.requestId === "string") {
+					publish({ type: "peer", to: event.fromSessionId, requestId: data.requestId, identity: identity(ctx) }); return;
 				}
-				if (event.type !== "message" || state.child || !state.worker?.requestId) return;
-				const data = event.payload as { type?: string; to?: string; requestId?: string; plan?: string; sessionFile?: string; text?: string } | null;
-				if (!data || data.to !== state.worker.parentId || event.fromSessionId === data.to || data.requestId !== state.worker.requestId || data.plan !== state.plan) return;
-				if (data.type === "attached" && !state.worker.intercomId && typeof data.sessionFile === "string" && isAbsolute(data.sessionFile)) {
-					state.worker.intercomId = event.fromSessionId; state.worker.sessionFile = data.sessionFile; workerRevision++; save();
-					send(workerReview(state.plan!, event.fromSessionId, nativeMessages.attached(data.sessionFile)), false);
+				if (data.type === "cancel" && data.paneId === process.env.HERDR_PANE_ID && control?.from === event.fromSessionId && data.requestId === control.request.id) { control.cancelled = true; return; }
+				if (data.type === "control" && ownIntercomId && data.to === ownIntercomId && data.expected && data.expected.paneId === process.env.HERDR_PANE_ID && data.request && ["start", "fresh", "recover"].includes(data.request.action) && typeof data.request.id === "string" && typeof data.plan === "string") {
+					if (control || !pi.getCommands().some(command => command.name === CONTROL)) return;
+					control = { from: event.fromSessionId, request: data.request, plan: data.plan, expected: data.expected };
+					pi.sendUserMessage("/" + CONTROL, { expandPromptTemplates: true, deliverAs: "followUp" }); return;
 				}
-				if (data.type === "stopped" && event.fromSessionId === state.worker.intercomId && typeof data.text === "string") {
-					send(workerReview(state.plan!, event.fromSessionId, data.text), state.mode === "supervising");
+				const worker = state.worker, pending = worker?.pending;
+				if (state.child || !worker || !state.plan) return;
+				if (data.type === "available" && data.identity?.paneId === worker.paneId && pending) { probe(); return; }
+				if (data.type === "peer" && pending && data.identity && data.to === worker.parentId && data.requestId === pending.id && data.identity.paneId === worker.paneId && state.mode === "supervising") {
+					const peer = data.identity;
+					if (event.fromSessionId === worker.parentId) return;
+					if (peer.parentId === worker.parentId && peer.requestId === pending.id && peer.started) { worker.intercomId = event.fromSessionId; worker.identity = peer; worker.sessionFile = peer.sessionFile; worker.requestId = pending.id; worker.pending = undefined; save(); send(workerReview(state.plan, event.fromSessionId, nativeMessages.actionApplied("observed without replay", peer))); return; }
+					if (pending.phase === "control") return;
+					if (pending.phase === "probe" && pending.action === "fresh" && (peer.sessionId !== pending.previous?.sessionId || peer.sessionFile !== pending.previous?.sessionFile)) { worker.pending = undefined; save(); send(workerReview(state.plan, event.fromSessionId, nativeMessages.controlChanged)); return; }
+					if (pending.phase === "switch") {
+						const arrived = pending.action === "fresh" ? peer.sessionId !== pending.previous?.sessionId && peer.parentSession === pending.previous?.sessionFile && peer.requestId === pending.id : peer.sessionId === pending.savedId && peer.sessionFile === pending.sessionFile;
+						if (!arrived) return;
+					}
+					worker.intercomId = event.fromSessionId; worker.identity = peer; worker.sessionFile = peer.sessionFile;
+					const phase = pending.phase; pending.phase = "control"; workerRevision++; save();
+					publish({ type: "control", to: event.fromSessionId, plan: state.plan, expected: peer, request: { ...pending, action: phase === "switch" || pending.action === "recover" && peer.sessionId === pending.savedId ? "start" : pending.action } }); return;
+				}
+				if (!worker.parentId || !data.requestId || data.to !== worker.parentId || event.fromSessionId === data.to || (data.requestId !== worker.requestId && data.requestId !== pending?.id) || data.plan !== state.plan) return;
+				if (data.type === "switching" && event.fromSessionId === worker.intercomId && pending && data.requestId === pending.id) { pending.phase = "switch"; save(); return; }
+				if (data.type === "rejected" && event.fromSessionId === worker.intercomId && pending && data.requestId === pending.id) { worker.requestId = pending.previous?.requestId ?? worker.requestId; worker.pending = undefined; save(); send(workerReview(state.plan, event.fromSessionId, data.text ?? nativeMessages.controlRejected), state.mode === "supervising"); return; }
+				if (data.type === "attached" && typeof data.sessionFile === "string" && isAbsolute(data.sessionFile) && (!worker.intercomId || worker.intercomId === event.fromSessionId)) {
+					if (worker.pending && data.requestId !== worker.pending.id) { send(workerReview(state.plan, event.fromSessionId, nativeMessages.attached(data.sessionFile)), false); return; }
+					const action = worker.pending?.action;
+					worker.requestId = data.requestId;
+					worker.intercomId = event.fromSessionId; worker.sessionFile = data.sessionFile; if (data.identity) worker.identity = data.identity; worker.pending = undefined; workerRevision++; save();
+					send(workerReview(state.plan, event.fromSessionId, action ? nativeMessages.actionApplied(action, data.identity) : nativeMessages.attached(data.sessionFile)), Boolean(action) && state.mode === "supervising");
+				}
+				if (data.type === "stopped" && event.fromSessionId === worker.intercomId && typeof data.text === "string") {
+					if (data.identity) { worker.identity = data.identity; worker.sessionFile = data.identity.sessionFile; save(); }
+					send(workerReview(state.plan, event.fromSessionId, data.text), state.mode === "supervising");
 				}
 			},
 		};
 		pi.events.emit(INTERCOM_EXTENSION_REGISTER_EVENT, registration);
 	}
+	pi.registerCommand(CONTROL, {
+		description: nativeMessages.controlDescription,
+		handler: async (_args, ctx) => {
+			const operation = control;
+			if (!operation) return; // Never execute arbitrary slash-command payloads.
+			const { request, expected, from, plan } = operation;
+			const controlKey = request.id + ":" + request.action;
+			if (state.lastControl === controlKey) { control = undefined; return; }
+			let authorized = false;
+			const reject = (text: string) => publish({ type: "rejected", to: from, requestId: request.id, plan, text });
+			try {
+				await ctx.waitForIdle();
+				const current = identity(ctx);
+				if (operation.cancelled || state.mode === "paused" && !(request.action === "start" && request.savedId === current.sessionId) || ctx.hasPendingMessages() || ctx.ui.getEditorText().length || current.sessionId !== expected.sessionId || current.leafId !== expected.leafId || current.sessionFile !== expected.sessionFile) throw new Error(nativeMessages.controlChanged);
+				if (!isAbsolute(plan) || !goals(readFileSync(plan, "utf8")).length) throw new Error(messages.invalidAttachment);
+				const peers = await channel?.listSessions();
+				const self = peers?.find(peer => peer.pid === process.pid);
+				if (!self || from === self.id || !peers?.some(peer => peer.id === from)) throw new Error(nativeMessages.parentUnavailable);
+				if (operation.cancelled || ctx.hasPendingMessages() || ctx.ui.getEditorText().length || identity(ctx).leafId !== expected.leafId) throw new Error(nativeMessages.controlChanged);
+				if (state.child && state.parent?.intercomId !== from || !state.child && (state.mode !== "chat" || !current.empty)) throw new Error(nativeMessages.notOwned);
+				authorized = true;
+				if (request.action === "start") {
+					const recovering = request.savedId === current.sessionId;
+					if (!recovering && (!current.empty || state.parent?.started)) throw new Error(nativeMessages.controlChanged);
+					if (request.model) throw new Error(nativeMessages.modelRaceBoundary);
+					state = { ...(recovering ? state : initial()), mode: recovering ? state.mode : "solo", child: true, plan, lastControl: controlKey, parent: { intercomId: from, requestId: request.id, selfId: self.id, started: true } };
+					generation++; notice = true; fullPlanContextDue = true; save();
+					publish({ type: "attached", to: from, requestId: request.id, plan, sessionFile: ctx.sessionManager.getSessionFile(), identity: identity(ctx) });
+					if (!recovering && request.task) pi.sendUserMessage(workerAssignment(plan, from, request.id, request.task));
+				} else {
+					if (!current.empty && (!current.durable || request.reviewedThrough !== current.leafId)) throw new Error(nativeMessages.reviewRequired);
+					if (request.action === "fresh" && (!state.child || !current.durable)) throw new Error(nativeMessages.notDurable);
+					if (request.action === "recover") {
+						if (!request.writersStopped || !request.sessionFile || !request.savedIntercom) throw new Error(nativeMessages.stopRequired);
+						const saved = savedWorker(request.sessionFile);
+						if (saved.digest !== request.savedDigest || saved.header.id !== request.savedId || saved.header.cwd !== ctx.cwd || saved.state.parent?.intercomId !== from || peers.some(peer => peer.id === request.savedIntercom && peer.id !== self.id)) throw new Error(nativeMessages.controlChanged);
+					}
+					publish({ type: "switching", to: from, requestId: request.id, plan });
+					replacing = request.action === "fresh" ? "new" : "resume";
+					const switched = request.action === "fresh"
+						? await ctx.newSession({ parentSession: current.sessionFile, setup: async manager => { manager.appendCustomEntry(STATE, { ...initial(), mode: "solo", child: true, plan, parent: { intercomId: from, requestId: request.id } }); } })
+						: await ctx.switchSession(request.sessionFile!);
+					if (switched.cancelled) { replacing = undefined; state.lastControl = controlKey; save(); reject(nativeMessages.controlCancelled); }
+				}
+			} catch (error) { if (authorized) { state.lastControl = controlKey; save(); } reject(String(error)); }
+			finally { replacing = undefined; control = undefined; }
+		},
+	});
 	const reportStop = (text: string) => {
 		if (!state.child || !state.parent) return;
 		try {
 			if (!channel?.snapshot().connected) throw new Error("disconnected");
-			channel.publish({ type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text }, { audience: "capable" });
+			channel.publish({ type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text, identity: liveContext ? identity(liveContext) : undefined }, { audience: "capable" });
 		} catch { send(nativeMessages.reportUnavailable, false); }
 	};
 	pi.on("session_start", (_e, ctx) => {
-		restore(ctx); registerChannel();
+		restore(ctx); registerChannel(ctx);
 	});
 	pi.on("session_tree", (_e, ctx) => restore(ctx));
-	pi.on("session_shutdown", () => { reportStop(nativeMessages.shuttingDown); channel = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
+	pi.on("session_shutdown", (event) => { if (!replacing || event?.reason !== replacing) reportStop(nativeMessages.shuttingDown); channel = undefined; liveContext = undefined; ownIntercomId = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
 	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
 	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
@@ -351,7 +483,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			return { systemPrompt: `${event.systemPrompt}\n\n${state.child ? childPlanRole : ""}\n${snapshot.error}` };
 		}
 		clearChangedFinalReview(snapshot.text);
-		const role = state.child ? childPlanRole : state.mode === "supervising"
+		const role = state.child ? childPlanRole + (state.mode === "paused" ? "\n" + pausedRole : "") : state.mode === "supervising"
 			? supervisor(WORKER, state.plan!, ctx.sessionManager.getSessionId())
 			: state.mode === "planning" ? planning(state.plan!) : state.mode === "paused" ? pausedRole : soloRole;
 		fullPlanContextDue ||= requirements(snapshot.text) !== requirements(lastWorkingSet);
@@ -384,7 +516,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix) => ["new", "attach", "edit", "discuss", "review", "ready", "status", "stop", "resume", "solo", "model", "help", "exit", "clear", "quit"].filter((verb) => verb.startsWith(prefix)).map((verb) => ({ value: verb, label: verb })),
 		handler: async (args, ctx) => {
 			try {
-				if (state.child) { ctx.ui.notify("This is the delegated worker. Goal approval belongs to its parent.", "info"); return; }
+				if (state.child) {
+					if (["stop", "resume"].includes(args.trim())) { cancelControl(); state.mode = args.trim() === "stop" ? "paused" : "solo"; generation++; save(); ctx.ui.notify(nativeMessages.workerPause(state.mode === "paused"), "info"); return; }
+					ctx.ui.notify("This is the delegated worker. Goal approval belongs to its parent.", "info"); return;
+				}
 				let command = args.trim();
 				if (!command) {
 					const actions = [
@@ -472,6 +607,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					return;
 				}
 				if (command === "exit") {
+					cancelControl();
 					const storage = new CronStorage(ctx.cwd);
 					const session = ctx.sessionManager.getSessionId();
 					const matching = storage.getAllJobs().filter(j => j.name === `goals-${session}`);
@@ -489,6 +625,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (command === "stop") {
 					if (state.mode === "planning") { ctx.ui.notify("A draft cannot pause; use /goals quit to clear goal state and preserve the draft.", "warning"); return; }
 					if (state.mode !== "solo" && state.mode !== "supervising") return;
+					cancelControl();
 					state.pausedFrom = state.mode;
 					state.mode = "paused"; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 					const pause = pauseExitNotice(state.worker, false);
@@ -533,23 +670,39 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.registerTool({
 		name: "OpenGoalWorker", label: "Open native goal worker", description: nativeMessages.openDescription,
-		parameters: Type.Object({ task: Type.String({ minLength: 1 }) }),
+		parameters: Type.Object({ task: Type.Optional(Type.String()), action: Type.Optional(Type.Union([Type.Literal("start"), Type.Literal("fresh"), Type.Literal("recover")])), model: Type.Optional(Type.String()), reviewedThrough: Type.Optional(Type.String()), writersStopped: Type.Optional(Type.Boolean()), sessionFile: Type.Optional(Type.String()) }),
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
-			if (opening || state.worker) return result(nativeMessages.alreadyRecorded);
-			if (!channel?.snapshot().connected) return result(nativeMessages.intercomNotReady);
-			const stamp = generation;
-			const plan = state.plan;
+			const action = params.action ?? "start";
+			if (opening || state.worker?.pending || action === "start" && state.worker) return result(nativeMessages.alreadyRecorded);
+			const preference = action === "recover" ? null : notedPlanValue("preferred worker model");
+			if (params.model || preference && (preference.includes("/") || !/^(?:none|\(none|default|inherit|not stated)\b/i.test(preference))) return result(nativeMessages.modelRaceBoundary);
+			if (action !== "recover" && !params.task) return result(nativeMessages.taskRequired);
+			if (action === "fresh" && (!state.worker?.identity || !params.reviewedThrough)) return result(nativeMessages.reviewRequired);
+			if (!channel?.snapshot().connected || !channel.snapshot().supported) return result(nativeMessages.intercomNotReady);
+			const stamp = generation, plan = state.plan;
 			const peers = await channel.listSessions().catch(() => undefined);
 			if (!peers) return result(nativeMessages.intercomNotReady);
-			const self = peers?.filter(peer => peer.pid === process.pid);
-			if (self?.length !== 1) return result(nativeMessages.noIdentity);
-			if (stamp !== generation || opening || state.worker || signal?.aborted) return result(messages.cancelled);
+			const self = peers.filter(peer => peer.pid === process.pid);
+			if (self.length !== 1) return result(nativeMessages.noIdentity);
+			if (stamp !== generation || opening || signal?.aborted) return result(messages.cancelled);
 			const requestId = randomUUID();
-			state.worker = { requestId, parentId: self[0].id }; state.workerStopped = false; workerRevision++; opening = true; save();
+			const request: WorkerRequest = { id: requestId, action, task: params.task, model: params.model, reviewedThrough: params.reviewedThrough, writersStopped: params.writersStopped, phase: "probe", previous: state.worker?.identity };
+			if (action === "recover") {
+				if (!params.writersStopped || params.model || params.task) return result(nativeMessages.stopRequired);
+				try {
+					request.sessionFile = params.sessionFile || state.worker?.sessionFile;
+					if (!request.sessionFile || !isAbsolute(request.sessionFile)) return result(nativeMessages.notDurable);
+					const saved = savedWorker(request.sessionFile);
+					request.savedId = saved.header.id; request.savedDigest = saved.digest;
+					request.savedIntercom = saved.state.parent?.selfId ?? (request.sessionFile === state.worker?.sessionFile ? state.worker.intercomId : undefined);
+					if (saved.header.cwd !== ctx.cwd || saved.state.plan !== plan || saved.state.parent?.intercomId !== self[0].id || !request.savedIntercom) return result(nativeMessages.notOwned);
+				} catch (error) { return result(String(error)); }
+			}
+			state.worker = { ...state.worker, requestId: state.worker?.requestId ?? requestId, parentId: self[0].id, pending: request }; state.workerStopped = false; workerRevision++; opening = true; save();
 			try {
-				const pane = await openProjectPane({ cwd: ctx.cwd, focus: false, signal, message: workerAssignment(plan, self[0].id, requestId, params.task) });
-				if (pane.ok && state.plan === plan && state.worker?.requestId === requestId) { state.worker.paneId = pane.data.binding.paneId; save(); }
+				const pane = await openProjectPane({ cwd: ctx.cwd, focus: false, signal }); // No prompt before verified capability/model selection.
+				if (pane.ok && state.plan === plan && state.worker?.pending?.id === requestId) { state.worker.paneId = pane.data.binding.paneId; save(); probe(); }
 				return result(pane.ok ? JSON.stringify({ disposition: pane.data.disposition, paneId: pane.data.binding.paneId, projectRoot: pane.data.binding.projectRoot, bindingPath: pane.data.bindingPath }) + nativeMessages.openReceipt : JSON.stringify(pane));
 			} catch (error) { return result(nativeMessages.openFailed + String(error)); }
 			finally { opening = false; }
@@ -573,10 +726,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (!peers) return result(nativeMessages.intercomNotReady);
 				if (stamp !== generation) return result(messages.cancelled);
 				if (!peers?.some(peer => peer.id === params.parent && peer.pid !== process.pid)) return result(nativeMessages.parentUnavailable);
-				state = { ...initial(), child: true, mode: "solo", parent: { intercomId: params.parent!, requestId: params.requestId! } };
+				state = { ...initial(), child: true, mode: "solo", parent: { intercomId: params.parent!, requestId: params.requestId!, selfId: peers.find(peer => peer.pid === process.pid)?.id, started: true } };
 			}
 			state.plan = params.path; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx);
-			if (state.parent) channel?.publish({ type: "attached", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, sessionFile: ctx.sessionManager.getSessionFile() }, { audience: "capable" });
+			if (state.parent) channel?.publish({ type: "attached", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, sessionFile: ctx.sessionManager.getSessionFile(), identity: identity(ctx) }, { audience: "capable" });
 			return result(childPlanAttached(params.path));
 		},
 	});

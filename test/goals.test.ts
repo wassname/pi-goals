@@ -25,8 +25,8 @@ function fixture(child = false) {
 	const cwd = mkdtempSync(join(tmpdir(), "goals-main-test-")); roots.push(cwd);
 	const entries: any[] = child ? [{ type: "custom", customType: "pi-goals-main-supervisor-v1", data: { mode: "solo", child: true, signoffs: {} } }] : []; const hooks = new Map<string, any>(); const commands = new Map<string, any>(); const tools = new Map<string, any>();
 	const messages: any[] = [];
-	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only", getSessionFile: () => join(cwd, "session.jsonl") }, hasUI: true, hasPendingMessages: vi.fn(() => false), ui: {
-		theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async (_title: string, _options: string[]) => "Ready"), editor: vi.fn(),
+	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only", getSessionFile: () => join(cwd, "session.jsonl"), getLeafId: () => "reviewed-leaf", getHeader: () => ({ id: "copy-only", cwd }) }, hasUI: true, waitForIdle: vi.fn(async () => {}), newSession: vi.fn(async (_options: any) => ({ cancelled: false })), switchSession: vi.fn(async (_path: string) => ({ cancelled: false })), hasPendingMessages: vi.fn(() => false), ui: {
+		getEditorText: vi.fn(() => ""), theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async (_title: string, _options: string[]) => "Ready"), editor: vi.fn(),
 	} };
 	let registration: any;
 	const channel = { snapshot: vi.fn(() => ({ connected: true, supported: true })), listSessions: vi.fn(async () => [{ id: "parent-intercom", pid: process.pid }, { id: "live-parent", pid: process.pid + 1 }]), publish: vi.fn() };
@@ -41,6 +41,7 @@ function fixture(child = false) {
 		sendUserMessage: (content: string, options: any) => messages.push({ message: { content }, options, savedPrompt: true }),
 		events: { emit: vi.fn((name, data) => { if (name === "intercom:extension-register") { registration = data; data.onReady(channel); } }) },
 		getAllTools: vi.fn((): any[] => []),
+		getCommands: () => [...commands.keys()].map(name => ({name})),
 	};
 	goalsExtension(pi as unknown as ExtensionAPI);
 	hooks.get("session_start")({}, ctx);
@@ -1040,7 +1041,8 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	const waiting = await f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
 	expect(waiting.content[0].text).toContain("still connecting"); expect(openProjectPane).not.toHaveBeenCalled();
 	await f.launch({ id: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
-	expect(openProjectPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: f.ctx.cwd, focus: false, message: expect.stringContaining("AttachGoalPlan") }));
+	expect(openProjectPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: f.ctx.cwd, focus: false }));
+	expect(vi.mocked(openProjectPane).mock.calls[0][0]).not.toHaveProperty("message");
 	const worker = f.entries.at(-1).data.worker;
 	expect(worker).toMatchObject({ paneId: "native-pane", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
 	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, text: "Blocked: input missing" };
@@ -1049,6 +1051,15 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, plan: "/foreign.md" } });
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, requestId: "stale" } });
 	expect(f.messages).toHaveLength(count);
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, identity: { sessionId: "worker-session", sessionFile: "/tmp/native-worker.jsonl", paneId: "native-pane", leafId: "reviewed-leaf", requestId: worker.requestId, durable: true } } });
+	await f.tools.get("OpenGoalWorker").execute("fresh", { action: "fresh", task: "later work", reviewedThrough: "reviewed-leaf" }, undefined, undefined, f.ctx);
+	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	expect(f.entries.at(-1).data.worker.pending).toBeDefined();
+	const pendingId = f.entries.at(-1).data.worker.pending.id;
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, type: "attached", sessionFile: "/tmp/native-worker.jsonl" } });
+	expect(f.entries.at(-1).data.worker.pending.id).toBe(pendingId);
+	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
+	expect(f.messages.at(-1).message.content).not.toContain("Native fresh confirmed");
 	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
 	expect(f.messages.at(-1)).toMatchObject({ savedPrompt: true, message: { content: expect.stringContaining("Blocked: input missing") } });
 	expect(f.entries.at(-1).data.signoffs).toEqual({});
@@ -1082,6 +1093,9 @@ it("ordinary project peer explicitly attaches as worker, never gaining approval 
 
 it("pending or failed native opening never permits an unconfirmed second writer", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
+	const tool = f.tools.get("OpenGoalWorker");
+	expect(tool.parameters.properties.task.minLength ?? 0).toBe(0);
+	expect((await tool.execute("empty", { task: "" }, undefined, undefined, f.ctx)).content[0].text).toContain("task");
 	let release!: () => void;
 	vi.mocked(openProjectPane).mockImplementationOnce(() => new Promise((_resolve, reject) => { release = () => reject(new Error("connection lost after open")); }));
 	const opening = f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
@@ -1092,4 +1106,56 @@ it("pending or failed native opening never permits an unconfirmed second writer"
 	const again = await f.tools.get("OpenGoalWorker").execute("open", { task: "again" }, undefined, undefined, f.ctx);
 	expect(again.content[0].text).toContain("already recorded");
 	expect(openProjectPane).toHaveBeenCalledTimes(1);
+	const worker = f.entries.at(-1).data.worker, saved = join(f.ctx.cwd, "owned-worker.jsonl");
+	writeFileSync(saved, [{ type: "session", id: "old-worker", cwd: f.ctx.cwd }, { type: "custom", customType: "pi-goals-main-supervisor-v1", data: { child: true, mode: "solo", plan: f.path, parent: { intercomId: worker.parentId, selfId: "old-worker" } } }, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "prior work" }] } }].map(entry => JSON.stringify(entry)).join("\n"));
+	f.event({ type: "message", fromSessionId: "old-worker", payload: { type: "attached", to: worker.parentId, requestId: worker.requestId, plan: f.path, sessionFile: saved } });
+	expect((await tool.execute("replay", { action: "recover", task: "repeat work", writersStopped: true }, undefined, undefined, f.ctx)).content[0].text).toContain("No task replay");
+	await tool.execute("recover", { action: "recover", task: "", model: "", sessionFile: "", reviewedThrough: "", writersStopped: true }, undefined, undefined, f.ctx);
+	expect(f.entries.at(-1).data.worker.pending).toMatchObject({ action: "recover", sessionFile: saved, task: "" });
+	expect(openProjectPane).toHaveBeenCalledTimes(2);
+});
+
+it("verified native control preserves drafts/history and fresh context uses only the public replacement API", async () => {
+	const f = fixture(); const path = join(f.ctx.cwd, "owned.md"); writeFileSync(path, f.plan);
+	await f.tools.get("AttachGoalPlan").execute("attach", { path, parent: "live-parent", requestId: "previous" }, undefined, undefined, f.ctx);
+	const file = f.ctx.sessionManager.getSessionFile();
+	writeFileSync(file, [{ type: "session", id: "copy-only", cwd: f.ctx.cwd }, ...f.entries, { type: "message", id: "reviewed-leaf", message: { role: "assistant", content: [{ type: "text", text: "reviewed output" }] } }].map(entry => JSON.stringify(entry)).join("\n"));
+	const before = readFileSync(file, "utf8");
+	f.event({ type: "message", fromSessionId: "live-parent", payload: { type: "inspect", paneId: process.env.HERDR_PANE_ID, requestId: "next" } });
+	const expected = f.channel.publish.mock.calls.at(-1)![0].identity;
+	const request = { id: "next", action: "fresh", phase: "control", reviewedThrough: "reviewed-leaf", previous: expected, task: "independent work" };
+	const dispatch = async (from = "live-parent") => {
+		f.event({ type: "message", fromSessionId: from, payload: { type: "control", to: "parent-intercom", plan: path, expected, request } });
+		await f.commands.get("goals-worker-control").handler("", f.ctx);
+	};
+	f.ctx.ui.getEditorText.mockReturnValue("unsent draft"); await dispatch();
+	expect(f.ctx.newSession).not.toHaveBeenCalled(); expect(f.ctx.ui.getEditorText()).toBe("unsent draft"); expect(readFileSync(file, "utf8")).toBe(before);
+	f.ctx.ui.getEditorText.mockReturnValue(""); f.ctx.hasPendingMessages.mockReturnValueOnce(true); await dispatch();
+	expect(f.ctx.newSession).not.toHaveBeenCalled();
+	await dispatch("foreign"); expect(f.ctx.newSession).not.toHaveBeenCalled();
+	request.id = "reviewed-next"; await dispatch();
+	expect(f.ctx.newSession).toHaveBeenCalledWith(expect.objectContaining({ parentSession: file, setup: expect.any(Function) }));
+	expect(f.ctx.switchSession).not.toHaveBeenCalled(); expect(readFileSync(file, "utf8")).toBe(before);
+	const appendCustomEntry = vi.fn(); await f.ctx.newSession.mock.calls[0][0].setup({ appendCustomEntry });
+	expect(appendCustomEntry).toHaveBeenCalledWith("pi-goals-main-supervisor-v1", expect.objectContaining({ child: true, mode: "solo", plan: path, parent: { intercomId: "live-parent", requestId: "reviewed-next" } }));
+	expect(f.messages.filter(message => message.savedPrompt).every(message => message.message.content === "/goals-worker-control")).toBe(true);
+	request.id = "replacement-fails"; f.ctx.newSession.mockRejectedValueOnce(new Error("replacement rejected")); await dispatch();
+	expect(f.ctx.newSession).toHaveBeenCalledTimes(2);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "rejected", text: expect.stringContaining("replacement rejected") }), { audience: "capable" });
+	f.hooks.get("session_shutdown")({ reason: "new" }, f.ctx);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", text: expect.stringContaining("shutting down") }), { audience: "capable" });
+});
+
+it("model requests fail closed and an unavailable control command never falls through to inference", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	const before = f.entries.length;
+	for (const model of ["offline/requested", "missing/unavailable"]) {
+		const reply = await f.tools.get("OpenGoalWorker").execute("open", { task: "must not run", model }, undefined, undefined, f.ctx);
+		expect(reply.content[0].text).toContain("public setModel");
+	}
+	expect(f.entries).toHaveLength(before); expect(openProjectPane).not.toHaveBeenCalled();
+	f.commands.delete("goals-worker-control");
+	const count = f.messages.length;
+	f.event({ type: "message", fromSessionId: "live-parent", payload: { type: "control", to: "parent-intercom", plan: f.path, expected: { paneId: process.env.HERDR_PANE_ID }, request: { id: "unknown-command", action: "start" } } });
+	expect(f.messages).toHaveLength(count);
 });

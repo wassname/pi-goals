@@ -149,11 +149,15 @@ pi
 
 `/goals` shows actions for the current mode. Drafts offer Edit, Discuss and Approve. Discuss returns to chat and waits for your input. Menu New asks for optional instructions before creating a plan; submit blank to use the conversation, or cancel to leave things unchanged. Typed `/goals new <instructions>` still starts directly. Quit (`exit` or `clear`) leaves the original plan unchanged, removes this session's goal check-in, and clears goal state without a model call. Matching check-in names with missing or different session bindings are left unchanged with a warning. Worker processes are unchanged; inspect their native panes and use their exact Intercom identities for steering. New creates a separate draft without overwriting earlier plans, named `.pi/plan/<last-six-session-characters>-vN.md` using the next version after existing files. The title stays inside the plan; old files are not renamed. The widget shows a plain `✓` and the relative plan path (the fallback for unverified terminal links).
 
-### First-session port limits
+### Native worker lifecycle and limits
 
 The parent and worker keep separate native conversations. Worker attachment and stop notices use stock Intercom extension channels; assignments, reports and corrections remain visible Pi messages. A pane-open receipt, idle state or delivery receipt does not approve a goal.
 
-This port does not yet implement automatic saved-session recovery or later fresh-session replacement. Nico reuses one project binding; an existing conversation is never reset or closed to make room. A recorded worker therefore blocks another `OpenGoalWorker`, including after a confirmed stop. Preserve its saved session and inspect liveness before manual recovery or confirmed solo takeover. `project.open` has no model override; choose a model in the worker's native `/model` UI and verify the resolved choice. — Pi/OpenAI
+`OpenGoalWorker` opens a blank peer and waits for verified Intercom capability before sending work. For independent work after review, use `action: "fresh"` with the exact inspected `reviewedThrough` entry ID. This uses Pi's new session in the same pane; the previous conversation stays in saved history. Revisions still use the same Intercom session. Drafts, pending input, changed history and a local worker pause block replacement.
+
+For recovery, use `action: "recover"`, `writersStopped: true` and the owned saved session after inspecting other writers. Recovery restores context without replaying a task or changing its model. A prospective session path is not durable history. A live binding without a responsive, capable Pi peer remains unconfirmed; no shell restart or second backend is invented.
+
+Without an explicit model preference, a new context uses the current Pi profile's normal defaults. A session-local human choice remains in that earlier session's history; recovery retains it. Requested-model automation currently fails closed: Pi's asynchronous public setter lacks a guard against overwriting a concurrent human selection. No fallback task is launched and no stale preference is reapplied. This model-selection requirement remains unfinished. — Pi/OpenAI
 
 ## Context delivery
 
