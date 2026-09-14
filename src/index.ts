@@ -1,7 +1,7 @@
 // Pi/OpenAI: Plan and supervise in the main chat; delegate implementation to a visible worker.
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, type FSWatcher, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { type FSWatcher, mkdirSync, readdirSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { CronStorage } from "pi-schedule-prompt/src/storage.js";
 import { Type } from "typebox";
@@ -70,6 +70,7 @@ function goals(text: string) {
 		return [{ subject: match[2].trim(), status: (box === "x" ? "done" : box === "/" ? "active" : box === "-" ? "cancelled" : "open") as GoalStatus, index }];
 	});
 }
+const requirements = (text: string) => goals(text).map(g => goalAcceptanceSignature(text, g.subject)).join("\n");
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 export default function mainSupervisor(pi: ExtensionAPI) {
@@ -103,13 +104,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	const clearChangedFinalReview = (text: string) => {
 		if (!state.finalReview || state.finalReview.planDigest === digest(text)) return false;
 		state.finalReview = undefined;
+		finalReviewTurnDigest = undefined;
 		save();
 		return true;
 	};
 	let turnsStale = 0;
-	let upkeepRound = 0;
 	let lastWorkingSet = "";
+	let pendingPlanNotice: string | undefined;
 	let pendingUpkeep: { generation: number; workingSet: string } | undefined;
+	const unfinishedGoals = (text: string) => foldPlan(text).split("\n").filter(line => {
+		const match = GOAL_LINE.exec(line);
+		return match && match[1] !== "-" && !(match[1].toLowerCase() === "x" && state.signoffs[key(match[2])] && state.signoffs[key(match[2])].signature === goalAcceptanceSignature(text, match[2]));
+	}).join("\n");
 	const checkIn = (ctx: ExtensionContext) => scheduleCheckIn(ctx.sessionManager.getSessionId(), state.plan ?? "");
 	const hasScheduleTool = () => pi.getAllTools().some((tool) => tool.name === "schedule_prompt");
 	const notedPlanValue = (prefix: string) => {
@@ -134,7 +140,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 		const accepted = items.filter((g) => g.status === "done" && state.signoffs[key(g.subject)]).length;
 		ctx.ui.setStatus("goals", `👀 ${accepted}/${items.length} goals`);
-		const mark = (status: GoalStatus) => status === "done" ? "✔" : status === "active" ? "◼" : status === "cancelled" ? "✗" : "◻";
+		const mark = (status: GoalStatus) => status === "done" ? "✓" : status === "active" ? "◼" : status === "cancelled" ? "✗" : "◻";
 		const priority: Record<GoalStatus, number> = { active: 0, open: 1, done: 2, cancelled: 3 };
 		const sorted = [...items].sort((a, b) => priority[a.status] - priority[b.status]);
 		const visible = sorted.slice(0, WIDGET_GOAL_LIMIT);
@@ -147,9 +153,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			}).filter(Boolean);
 			lines.push(`… ${counts.join(", ")}`);
 		}
+		lines.unshift(relative(ctx.cwd, state.plan!)); // Readable path fallback; terminal link activation is not verified.
 		ctx.ui.setWidget("goals", lines);
 	}
 	function watchPlan(ctx: ExtensionContext) {
+		pendingPlanNotice = undefined;
 		planWatcher?.close();
 		planWatcher = undefined;
 		clearTimeout(planEditTimer);
@@ -160,8 +168,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const stamp = generation;
 		// Watch the directory so atomic plan replacement remains observable. This is an event hook:
 		// plan-change reviews, not another scheduled loop (the hourly job is schedule_prompt's). A
-		// short debounce coalesces bursts. Existing high-level plan views exclude maintenance
-		// (tasks/evidence/Log) while preserving requirement wording and goal checkbox claims.
+		// short debounce coalesces bursts. The notification view excludes Log and worker identity;
+		// requirement changes additionally request active-plan context.
 		try {
 			planWatcher = watch(dirname(state.plan), { persistent: false }, () => {
 			if (stamp !== generation) return;
@@ -177,7 +185,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (hash === planHash) return;
 				planHash = hash;
 				notice = true;
-				send(planChangedReview(state.plan!, snapshot.text));
+				fullPlanContextDue ||= requirements(snapshot.text) !== requirements(lastWorkingSet);
+				if (!pendingPlanNotice) { pendingPlanNotice = planChangedReview(state.plan!); send(pendingPlanNotice); }
 			}, 150);
 		});
 		planWatcher.on("error", (error) => { planWatcher?.close(); planWatcher = undefined; ctx.ui.notify(`Plan monitoring failed: ${error.message}`, "error"); });
@@ -199,7 +208,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		state.helpers ??= []; // sessions persisted before helper bookkeeping
 		notice = true;
 		turnsStale = 0;
-		upkeepRound = 0;
 		lastWorkingSet = "";
 		pendingUpkeep = undefined;
 		finalReviewTurnDigest = undefined;
@@ -234,10 +242,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	}
 	function enterSolo(ctx: ExtensionContext) {
 		state.mode = "solo"; state.workerStopped = true;
-		generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+		generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 		send(`${removeGoalSchedule(ctx.sessionManager.getSessionId())}\n\n${soloNotice(state.plan!)}`);
 	}
-	const help = "/goals new [initial idea] | edit | discuss | review | ready | status | stop | resume | solo | attach <plan.md> [solo] | model <model> | quit (exit/clear)\n/subagents opens the worker controls. Stop pauses work. Quit/exit/clear backs up the plan and clears goal state without a model call; worker processes are unchanged. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
+	const help = "/goals new [initial idea] | edit | discuss | review | ready | status | stop | resume | solo | attach <plan.md> [solo] | model <model> | quit (exit/clear)\n/subagents opens the worker controls. Stop pauses work. Quit/exit/clear preserves the plan and clears goal state without a model call; worker processes are unchanged. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_prompt job; plan-change reviews are the plan-watcher event hook.";
 	async function ready(ctx: ExtensionContext, menu: boolean, edit = false) {
 		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
 		const text = planText();
@@ -249,7 +257,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (menu || edit) {
 			const choice = edit ? "Edit" : await ctx.ui.select(`Review ${state.plan}`, ["Ready", "Discuss", "Edit", "Cancel"]);
 			if (stamp !== generation || digest(planText()) !== digest(text)) { ctx.ui.notify("Plan changed during review. Review it again.", "warning"); return; }
-			if (choice === "Discuss") { send(discuss); return; }
+			if (choice === "Discuss") { ctx.ui.notify(discuss, "info"); return; }
 			if (choice === "Edit") {
 				const edited = await ctx.ui.editor("Edit goal plan", text);
 				if (edited !== undefined && stamp === generation && planText() === text && state.plan) { writeFileSync(state.plan, edited); refresh(ctx); }
@@ -258,7 +266,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (choice !== "Ready") return;
 		}
 		if (!compatible()) { ctx.ui.notify("Requires edxeth/pi-subagents 2.9.x, not nicobailon/pi-subagents. Draft preserved; /goals solo is available.", "error"); return; }
-		state.mode = "supervising"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+		state.mode = "supervising"; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 		send(`${checkIn(ctx)}\n\n${readyApproved(WORKER, state.plan!, state.worker?.sessionFile, text, ctx.sessionManager.getSessionId())}`);
 	}
 
@@ -269,21 +277,31 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
 	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
 	pi.on("turn_end", (_event, ctx) => {
-		finalReviewTurnDigest = undefined;
 		if (!["supervising", "solo"].includes(state.mode)) return;
 		const snapshot = readPlan();
 		if (snapshot.text === undefined) { notice = true; return; }
 		const workingSet = foldPlan(snapshot.text);
+		fullPlanContextDue ||= requirements(workingSet) !== requirements(lastWorkingSet);
 		turnsStale = workingSet === lastWorkingSet ? turnsStale + 1 : 0;
 		lastWorkingSet = workingSet;
 		refresh(ctx);
-		if (turnsStale === 8 && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")) {
+		if (turnsStale === 8 && unfinishedGoals(snapshot.text)) {
 			// In Pi 0.85.1 triggerTurn:false updates saved history, not the live loop snapshot.
 			// Queue intent locally until ordinary prompt preparation, never force another turn.
 			pendingUpkeep = { generation, workingSet };
 		}
 	});
-	pi.on("agent_end", (_e, ctx) => { refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
+	// Queued follow-ups can be consumed inside the same run, without before_agent_start.
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "user") return;
+		const content = typeof event.message.content === "string" ? event.message.content : event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+		if (pendingPlanNotice && content === `[pi-goals]\n${pendingPlanNotice}`) pendingPlanNotice = undefined;
+		if (!state.finalReview || !["supervising", "solo"].includes(state.mode)) return;
+		const snapshot = readPlan();
+		if (snapshot.text === undefined || state.finalReview.planDigest !== digest(snapshot.text)) return;
+		if (content === `[pi-goals]\n${finalReview(state.plan!, snapshot.text)}`) finalReviewTurnDigest = state.finalReview.planDigest;
+	});
+	pi.on("agent_end", (_e, ctx) => { finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
 	let proposedDraft = "";
 	let proposing = false;
 	pi.on("agent_settled", async (_e, ctx) => {
@@ -310,22 +328,23 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const role = state.child ? childPlanRole : state.mode === "supervising"
 			? supervisor(WORKER, state.plan!, ctx.sessionManager.getSessionId())
 			: state.mode === "planning" ? planning(state.plan!) : state.mode === "paused" ? pausedRole : soloRole;
-		const pendingFinalReview = state.finalReview;
+		fullPlanContextDue ||= requirements(snapshot.text) !== requirements(lastWorkingSet);
+		const pendingFinalReview = ["supervising", "solo"].includes(state.mode) ? state.finalReview : undefined;
 		if (pendingFinalReview) finalReviewTurnDigest = pendingFinalReview.planDigest;
 		// Returned messages enter both Pi's prompt snapshot and saved history together.
 		// Unlike nextTurn, retaining intent here lets a fresh plan resync supersede upkeep,
 		// and drops obsolete reminders after edits, takeover, pause or session navigation.
 		const message = pendingFinalReview
 			? { customType: "pi-goals-final-review", content: finalReview(state.plan!, snapshot.text), display: false }
-			: notice
-				? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text, fullPlanContextDue ? "full" : "short"), display: false }
+			: notice || fullPlanContextDue
+				? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, fullPlanContextDue ? snapshot.text : unfinishedGoals(snapshot.text), fullPlanContextDue ? "full" : "short"), display: false }
 				: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
-				&& ["supervising", "solo"].includes(state.mode) && goals(snapshot.text).some(g => g.status === "open" || g.status === "active")
-				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, snapshot.text, state.mode === "supervising" ? upkeepRound : undefined), display: false } : undefined;
-		if (message?.customType === "pi-goals-upkeep" && state.mode === "supervising") upkeepRound++;
+				&& ["supervising", "solo"].includes(state.mode) && unfinishedGoals(snapshot.text)
+				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, unfinishedGoals(snapshot.text)), display: false } : undefined;
 		if (message) turnsStale = 0;
 		notice = false;
 		fullPlanContextDue = false;
+		lastWorkingSet = foldPlan(snapshot.text);
 		pendingUpkeep = undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}`, ...(message ? { message } : {}) };
 	});
@@ -375,7 +394,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (!command) {
 					const actions = [
 						...({
-							chat: ["new — New plan", "attach — Open plan…"],
+							chat: ["new — New plan…", "attach — Open plan…"],
 							planning: ["edit — Edit plan…", "discuss — Discuss changes to the plan", "ready — Approve draft"],
 							supervising: ["review — Check progress", "stop — Pause work"],
 							paused: ["resume — Resume work"],
@@ -388,6 +407,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					const choice = await ctx.ui.select("Goal plan actions", actions);
 					if (!choice || before !== generation) return;
 					command = choice.split(" — ")[0];
+					if (command === "new") {
+						const value = await ctx.ui.editor("Planning instructions (optional; blank uses this conversation)", "");
+						if (value === undefined || before !== generation) return;
+						command += ` ${value.trim()}`;
+					}
 					if (["attach", "model"].includes(command)) {
 						const value = await ctx.ui.editor(command === "attach" ? "Plan path (optional: solo)" : "Worker model (provider/model)", "");
 						if (!value?.trim() || before !== generation) return;
@@ -412,9 +436,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				}
 				if (command === "discuss") {
 					if (state.mode !== "planning") { ctx.ui.notify("Discuss applies to a draft.", "warning"); return; }
-					send(discuss); return;
+					ctx.ui.notify(discuss, "info"); return;
 				}
-				if (command === "review" && state.mode === "supervising") { notice = true; send(manualReview(state.plan ?? "", planText())); return; }
+				if (command === "review" && state.mode === "supervising") { send(manualReview(state.plan ?? "", unfinishedGoals(planText()))); return; }
 				if (command === "edit" || command === "review" || command === "ready") { await ready(ctx, command === "review", command === "edit"); return; }
 				if (command === "model" || command.startsWith("model ")) {
 					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }
@@ -447,30 +471,31 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					const retained = target === state.plan ? state.signoffs : {};
 					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
 					state = { mode: solo ? "solo" : "planning", plan: target, signoffs: retained, worker, helpers: [], workerStopped: solo || (!noted && state.workerStopped) };
-					generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 					if (solo) enterSolo(ctx);
 					else send(attachNotice(target, false, noted));
 					return;
 				}
 				if (command === "exit") {
-					const backup = state.plan && existsSync(state.plan) ? `${state.plan}.${randomUUID()}.bak` : undefined;
-					if (backup) writeFileSync(backup, readFileSync(state.plan!), { flag: "wx" });
 					const storage = new CronStorage(ctx.cwd);
 					const session = ctx.sessionManager.getSessionId();
-					for (const job of storage.getAllJobs().filter(j => j.name === `goals-${session}` && j.session === session)) {
+					const matching = storage.getAllJobs().filter(j => j.name === `goals-${session}`);
+					const skipped = matching.filter(j => j.session !== session);
+					if (skipped.length) ctx.ui.notify(`Goal check-ins left unchanged (session binding missing or different): ${skipped.map(j => j.id).join(", ")}. Inspect /schedule-prompt.`, "warning");
+					for (const job of matching.filter(j => j.session === session)) {
 						storage.removeJob(job.id); // Scheduler re-reads storage before firing; removed jobs cannot prompt.
 						pi.events.emit("cron:change", { type: "remove", jobId: job.id });
 					}
 					state = initial(); generation++; workerRevision++; pendingLaunches.clear(); pendingUpkeep = undefined; notice = true;
 					save(); refresh(ctx); watchPlan(ctx);
-					ctx.ui.notify(`Goals cleared.${backup ? ` Plan backed up to ${backup}.` : ""}`, "info");
+					ctx.ui.notify("Goals cleared; original plan file unchanged.", "info");
 					return;
 				}
 				if (command === "stop") {
-					if (state.mode === "planning") { ctx.ui.notify("A draft cannot pause; use /goals quit to back up and clear it.", "warning"); return; }
+					if (state.mode === "planning") { ctx.ui.notify("A draft cannot pause; use /goals quit to clear goal state and preserve the draft.", "warning"); return; }
 					if (state.mode !== "solo" && state.mode !== "supervising") return;
 					state.pausedFrom = state.mode;
-					state.mode = "paused"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					state.mode = "paused"; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 					const pause = pauseExitNotice(state.worker, false);
 					const requestCleanup = Boolean(state.worker) || hasScheduleTool();
 					if (!requestCleanup) ctx.ui.notify(pause, "info"); // Visible now; passive model context waits for a prompt.
@@ -481,7 +506,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (state.mode !== "paused" || !state.plan) { ctx.ui.notify("Only a paused approved plan can resume. A draft needs Ready.", "warning"); return; }
 					if (state.pausedFrom === "solo") { enterSolo(ctx); return; }
 					if (!compatible()) { ctx.ui.notify("edxeth tools unavailable; plan remains paused.", "error"); return; }
-					state.mode = "supervising"; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+					state.mode = "supervising"; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 					send(`${checkIn(ctx)}\n\n${resumeNotice(WORKER, state.plan, state.worker)}`);
 					return;
 				}
@@ -496,18 +521,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if ((state.worker && !state.workerStopped) || state.mode === "supervising") { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
 				const planDir = join(ctx.cwd, ".pi", "plan");
 				mkdirSync(planDir, { recursive: true });
-				const timestamp = new Date().toISOString().replace("T", "-").replace(/:/g, "").replace(/\.\d{3}Z$/, "Z");
-				const slug = (objective.toLowerCase().normalize("NFKD").replace(/[^\w\s-]/g, "").replace(/[\s_]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "goal-plan");
-				let version = 1;
+				const suffix = ctx.sessionManager.getSessionId().slice(-6);
+				const pattern = new RegExp(`^${suffix}-v(\\d+)\\.md$`);
+				let version = 1 + Math.max(0, ...readdirSync(planDir).map(name => Number(pattern.exec(name)?.[1] ?? 0)));
 				let path: string;
 				for (;;) {
-					path = join(planDir, `${timestamp}-${slug}-v${version}.md`);
+					path = join(planDir, `${suffix}-v${version}.md`);
 					try { writeFileSync(path, planDocument(objective), { flag: "wx" }); break; } catch (error) {
 						if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 						version++;
 					}
 				}
-				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, helpers: state.helpers, workerStopped: state.workerStopped }; generation++; notice = true; save(); refresh(ctx); watchPlan(ctx);
+				state = { mode: "planning", plan: path, signoffs: {}, worker: state.worker, helpers: state.helpers, workerStopped: state.workerStopped }; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 				send(planningSeed(objective, path));
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},
@@ -522,7 +547,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				const items = goals(readFileSync(params.path, "utf8"));
 				if (!items.length || items.some(g => !g.subject)) return result(messages.invalidAttachment);
 			} catch { return result(messages.invalidAttachment); }
-			state.plan = params.path; generation++; notice = true; save(); refresh(ctx);
+			state.plan = params.path; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx);
 			return result(childPlanAttached(params.path));
 		},
 	});
@@ -553,8 +578,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (finalReviewTurnDigest !== digest(text)) {
 						if (!state.finalReview) {
 							state.finalReview = { planDigest: digest(text) };
-							notice = true;
-							fullPlanContextDue = true;
 							save();
 							send(finalReview(path, text));
 						}

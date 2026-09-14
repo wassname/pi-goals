@@ -1,5 +1,13 @@
 // Pi/OpenAI: Planning, approval, supervision, reminders, completion and recovery.
-import { foldPlan, planContextView } from "./plan.js";
+import { createHash } from "node:crypto";
+import { foldPlan, GOAL_LINE } from "./plan.js";
+
+// Quote the existing selection verbatim; a longer fence also contains nested Markdown fences.
+function quotedPlan(path: string | undefined, text: string, selection: string): string {
+	const fence = "`".repeat(Math.max(3, ...Array.from(text.matchAll(/`+/g), match => match[0].length + 1)));
+	const label = selection === "full" ? "Full plan snapshot" : `Plan excerpt (${selection})`;
+	return `${label} from ${JSON.stringify(path ?? "not attached")}:\n${fence}md\n${text}\n${fence}`;
+}
 
 export const planDrafting = `\
 You are in plan mode. Help the user express what they want this project to achieve in a short judgeable plan. Seek to understand their underlying goals, infer ordinary details, and use their applicable AGENTS.md instructions, relevant skills, and project context to interpret the request correctly. Do not silently substitute your own goals or expand the agreed scope.
@@ -138,10 +146,10 @@ export function planning(planPath: string): string {
 	return `Plan only in ${planPath}; do not implement or launch workers before Ready. Ask material unresolved questions, not a quota or confirmation of ordinary details. Record unknowns and present Ready when the outcome, scope and spending are settled. Preserve the user's exact deliverable, preferences and voice. Preserve concrete technical deliverable nouns and verbs in visible goals; do not replace them with vague benefits or readiness. Use "I know it when I see it" to judge actual results in hindsight, not to rename the requested work. Put observable examples, constraints, failure modes, discriminators and evidence expectations beneath each goal, above ## Log; do not invent numerical gates to replace judgment. Record the requested worker model in preferences. When your drafted plan is ready for human review, finish your turn; the interface displays the draft and approval choices automatically. Do not ask the user to type a command to see the proposal. /goals review reopens it on request; /goals exit preserves the draft.`;
 }
 export function planningSeed(objective: string, planPath: string): string {
-	return `Enter a planning conversation focused on the user's goals. ${objective ? `Initial idea: ${objective}.` : "Ask what the user wants to achieve; they do not need to supply a finished objective."} Read any existing plan at ${planPath} first, then discuss and draft it with the user. Do not infer approval to implement from starting this conversation. ${planning(planPath)}\n\n${planDrafting}`;
+	return `Enter a planning conversation focused on the user's goals. ${objective ? `Initial idea: ${objective}.` : "Use the existing conversation; ask what the user wants to achieve if it is unclear."} Read any existing plan at ${planPath} first, then discuss and draft it with the user. Do not infer approval to implement from starting this conversation. ${planning(planPath)}\n\n${planDrafting}`;
 }
-export const planDocument = (objective: string) => `# Goal plan\n\n## Objective\n${objective}\n\n## Goals\n\n## Log\n`;
-export const discuss = "Discuss the current draft in ordinary chat. Do not launch a worker. An unchanged draft does not reopen the review menu; a changed settled draft does.";
+export const planDocument = (objective: string) => `# ${objective.split("\n")[0] || "Goal plan"}\n\n## Objective\n${objective}\n\n## Goals\n\n## Log\n`;
+export const discuss = "Type your changes in chat; the draft stays open.";
 
 // Ready and explicit child attachment: stock lineage-only sessions do not inherit the shared plan.
 export const attachGoalPlanDescription = "Delegated goals-worker only: attach the absolute plan path explicitly supplied in your task. Read it without rewriting it. Restores plan context; grants no parent completion authority. No discovery or worker launch.";
@@ -150,7 +158,7 @@ export function readyApproved(workerName: string, planPath: string, notedWorker:
 	const launch = notedWorker
 		? `Inspect the recorded worker session ${notedWorker}; if still live, let it continue or message it. Only after confirming it stopped use subagent_resume with that sessionFile. Never restart completed work.`
 		: `Delegate the first unfinished goal to agent '${workerName}' with subagent; provide name, title and a bounded task.`;
-	return `Ready approved this plan: ${planPath}. Stay here as supervisor. ${launch} Include the absolute plan path, require AttachGoalPlan, and first use intercom status/list to discover and confirm your own actual Intercom UUID, then give that address to the child. Your Pi session ID is ${supervisorId}; it is not necessarily your Intercom UUID. The child sends its completion report there and stays open. Require an initial worker report with its actual Intercom UUID, saved-session path and current provider/model; the async launch may return only a runtime ID. Record each distinct identity in plan preferences, marking child-reported fields as such until verified. Do not start a second writer. Inspect actual outputs when the child reports.\n\n${foldPlan(plan)}`;
+	return `[pi-goals: approval — Ready]\nReady approved this plan: ${planPath}. Stay here as supervisor. ${launch} Include the absolute plan path, require AttachGoalPlan, and first use intercom status/list to discover and confirm your own actual Intercom UUID, then give that address to the child. Your Pi session ID is ${supervisorId}; it is not necessarily your Intercom UUID. The child sends its completion report there and stays open. Require an initial worker report with its actual Intercom UUID, saved-session path and current provider/model; the async launch may return only a runtime ID. Record each distinct identity in plan preferences, marking child-reported fields as such until verified. Do not start a second writer. Inspect actual outputs when the child reports.\n\n${quotedPlan(planPath, foldPlan(plan), "working set before Log")}`;
 }
 
 // Supervision and turn-event upkeep (not a scheduled wake-up).
@@ -164,45 +172,22 @@ Take uncertainty as an invitation to investigate, not something to hide. Have ro
 Use stock subagent for launch and subagent_resume with the returned sessionFile only after confirming the worker stopped. A stored handle is not proof of liveness; missing runtime state is not proof it stopped. Use pi-intercom list/status to identify the actual live child session before live steering; receipt alone does not prove action. Your Pi session ID is ${supervisorId}, not necessarily your Intercom UUID. Use intercom status/list to discover and confirm your own actual Intercom UUID before supplying the worker's report address. Require its completion report through Intercom while its pane stays open. A recap alone sends no instruction. Record '- worker session:' and '- worker intercom session:' in plan preferences from actual launch results and received-message identity; never confuse the runtime ID with the Intercom ID. Ensure the child calls AttachGoalPlan with the supplied path. Inspect results before CompleteGoal, then continue only unfinished goals.
 Use the worker model requested in plan preferences, verify the resolved model, and report unavailable choices instead of silently substituting. Keep normal tools, not edxeth's restricted orchestrator mode. After reload or compaction reread the plan. Failed compaction, exhausted credits or lost connection do not erase progress: diagnose the actual error, restore an available authorized model/credits and resume the same saved session; never restart long work. Stock edxeth can crash the parent when a worker exits after parent reload: preserve drafts and stop workers before /reload. If it already happened, restart the saved parent session; do not repeat completed work.`;
 }
-// Pi/OpenAI: user nudges plus quotes/attributions from https://github.com/wassname/ml-debug/blob/main/fortune.txt.
-export const upkeepNudges = [
-	"is the worker stuck? (or are you)",
-	"Insufficient skepticism doesn't feel like insufficient skepticism from the inside. It just feels like doing research. -- Neel Nanda",
-	"take a breath, use a kamoji, how it going?",
-	"Don't let your instruments overwhelm your system. -- David J. Agans, *Debugging: The 9 Indispensable Rules*",
-	"is the worker being cheeky, does it need sheperding",
-	"The first step is just making time to stop and ask yourself: do I endorse what I'm doing, and could I be doing something better? -- Neel Nanda",
-	"It seems important to really commit yourself to always investigate whenever you notice confusion. -- Dan Rahtz",
-	"How reliable is my experiment? Ask yourself: How surprised would I be if it turned out to be complete bullshit due to a bug, error, noise, misunderstanding, etc.? Investigate the most uncertain bits. -- Neel Nanda",
-	"If it doesn’t work, assume there’s a bug. Spend a lot of effort searching for bugs before you resort to tweaking hyperparameters: usually it’s a bug. Bad hyperparameters can significantly degrade RL performance, but if you’re using hyperparameters similar to the ones in papers and standard implementations, those will probably not be the issue. -- Josh Achiam",
-	"You can't find typos in your own writing without a great deal of effort because you know what it's supposed to say. -- Gwern Branwen",
-	"Even a single anomaly, apparently trivial in itself, can indicate the everyday mental model is not just a little bit wrong, but fundamentally wrong. -- Gwern Branwen",
-	"The default state of the world is that your research is false, because doing research is hard. -- Neel Nanda",
-	"If you're new to RL, writing things from scratch is the most catastrophically self-sabotaging thing you can do. -- Andy Jones",
-	"QUIT THINKING AND LOOK. -- David J. Agans, *Debugging: The 9 Indispensable Rules*",
-	"Excitement is evidence of bullshit: generally, most true results are not exciting, but a fair amount of false results are. -- Neel Nanda",
-	"Read your data. Often, the quality of the data is a crucial driver of the results of your experiments. Often, it is quite bad. -- Neel Nanda",
-	"Visualize the model in action. Directly observing the machine learning model performing its task will help determine whether the quantitative performance numbers it achieves seem reasonable. -- Goodfellow, Bengio and Courville",
-	"The unambiguously correct place to visualize your data is immediately before y_hat = model(x). This is the only source of truth. -- Andrej Karpathy",
-	"Your misconfigured neural net will throw exceptions only if you're lucky; most of the time it will train but silently work a bit worse. -- Andrej Karpathy",
-	"The first step to training a neural net is to not touch any neural net code at all and instead begin by thoroughly inspecting your data. -- Andrej Karpathy",
-	"Write multiple competing hypotheses: consider the most likely failure but also some of: a subtle failure, a perverse failure, a possible bug, and an unknown. Put a rough credence on each. Finally write down what you expect to see differently for success vs each possibility and brainstorm the cheapest tests that may narrow them down. -- wassname",
-];
-export function upkeep(planPath: string, text: string, supervisorRound?: number): string {
-	const nudge = supervisorRound === undefined ? "" : `${upkeepNudges[supervisorRound % upkeepNudges.length]}\n\n`;
-	return `${nudge}Plan upkeep: update task ticks, evidence and Log when you have new progress to record. Preserve agreed goals and discriminators. If already reviewing evidence, finish that review rather than repeat a status recap. This turn-event reminder does not resume paused work.\n\n${planContextView(text, "medium")}\n\nPlan file (audit or edit link): ${planPath}`;
+// Routine notices quote only selected goal lines; full context stops at Log.
+const goalLines = (text: string) => foldPlan(text).split("\n").filter(line => GOAL_LINE.test(line)).join("\n");
+export function upkeep(planPath: string, text: string): string {
+	return `[pi-goals: reminder — upkeep]\nEight unchanged turns: update task ticks, evidence or Log only for new progress. Finish any evidence review already underway; do not restart completed or paused work.\n\n${quotedPlan(planPath, goalLines(text), "unfinished or unreviewed goal lines")}`;
 }
 export function planContext(mode: string, path: string | undefined, text: string, tier: "short" | "medium" | "full" = "full"): string {
-	return `Current goal mode: ${mode}. Earlier role messages are historical; this current role governs.\n${planContextView(text, tier)}\n\nPlan file (audit or edit link): ${path ?? "not attached"}`;
+	return `[pi-goals: context resync]\nCurrent goal mode: ${mode}. Earlier role messages are historical; this current role governs. Read the plan file for details and earlier evidence; do not restart completed work.\n\n${quotedPlan(path, tier === "full" ? foldPlan(text) : goalLines(text), tier === "full" ? "active plan above Log" : "unfinished or unreviewed goal lines")}`;
 }
-export function planChangedReview(planPath: string, text: string): string {
-	return `${supervisorJob}\nPlan changed. Inspect changed requirements, completion claims and evidence. Evidence-only edits do not revoke execution approval. After review, continue unfinished authorized implementation rather than another recap; respect explicit pauses and do not assume approval for changed scope.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Manual checkbox edits are claims, not proof. Do not weaken the agreed goal or start a duplicate writer.`;
+export function planChangedReview(planPath: string, text = ""): string {
+	return `[pi-goals: reminder — plan changed]\nPlan changed: inspect current requirements, completion claims and evidence at ${planPath}. Evidence-only edits do not revoke execution approval. Continue only unfinished authorized work; respect pauses and do not assume approval for changed scope. Manual ticks are claims, not sign-off. Do not start a duplicate writer.${text ? `\n\n${quotedPlan(planPath, goalLines(text), "selected goal lines")}` : ""}`;
 }
 export function manualReview(planPath: string, text: string): string {
-	return `${supervisorJob}\nReview the current plan, worker progress and actual evidence.\n\n${planContextView(text, "short")}\n\nPlan file (audit or edit link): ${planPath}. Do not launch a duplicate writer.`;
+	return `[pi-goals: reminder — requested review]\nReview requested: inspect the plan and actual evidence. Do not launch a duplicate writer.\n\n${quotedPlan(planPath, goalLines(text), "unfinished or unreviewed goal lines")}`;
 }
 export function finalReview(planPath: string, text: string): string {
-	return `Final completion review. The preceding CompleteGoal request did not record approval. Read the complete embedded plan, including goal requirements, evidence and Log. Inspect the cited artifacts yourself. Only after this review, call CompleteGoal again with the exact remaining goal and evidence; if the plan changed, inspect the changed plan instead.\n\n${planContextView(text, "full")}\n\nPlan file (audit or edit link): ${planPath}.`;
+	return `[pi-goals: reminder — final completion review]\nFinal completion review: the preceding CompleteGoal request did not record approval. Read the complete file at ${planPath}, including requirements, evidence and Log, and inspect the cited artifacts yourself. Then call CompleteGoal again with the exact remaining goal and evidence. Changed requirements need a new review. Plan revision: ${createHash("sha256").update(text).digest("hex")}.\n\n${quotedPlan(planPath, goalLines(text), "selected goal lines")}`;
 }
 
 // Check-ins. The installed scheduler owns storage/timing/UI. Removal guidance must never add jobs.
@@ -210,7 +195,7 @@ export function removeGoalSchedule(sessionId: string): string {
 	return `With schedule_prompt, list jobs and read .pi/schedule-prompts.json to verify ownership; tool text omits session binding. Remove by jobId only the job named ${JSON.stringify(`goals-${sessionId}`)} bound to session ${JSON.stringify(sessionId)}. Never use cleanup; leave other jobs untouched. Do not add, enable or recreate any job. If unavailable or ownership is ambiguous, report it; /schedule-prompt opens the user controls.`;
 }
 export function scheduleCheckIn(sessionId: string, planPath: string): string {
-	return `Hourly check-in is one visible schedule_prompt job; plan-change and upkeep reviews are event hooks, not another timer. List first. If an owned job named ${JSON.stringify(`goals-${sessionId}`)} already exists, retain its human-edited prompt, interval and enabled/disabled state unchanged; never recreate, overwrite or re-enable it. Only while supervising unfinished non-cancelled goals, if missing on this explicit start/resume, add one session-bound interval '1h' job with no model override. Read .pi/schedule-prompts.json and verify that new job's session is ${JSON.stringify(sessionId)}; tool text does not expose binding. If the new job is unbound, remove that job by ID and report the scope error. Do not change other jobs. Its initial prompt: ${supervisorJob} Read ${planPath} and the current goal mode. If paused, exited, solo or all non-cancelled goals reviewed, remove only this owned job without resuming work. Otherwise inspect progress and evidence, give a brief assessment and keep authorized work moving without a duplicate writer. Do not reinstall a missing job from a scheduled check-in. Users inspect/toggle/remove jobs with /schedule-prompt and edit prompt/interval through schedule_prompt update. Never use cleanup. Retain their edits, but warn that this installed scheduler deletes disabled jobs on reload/shutdown; do not promise they persist. If schedule_prompt is unavailable, report hourly check-ins unavailable; do not build a timer.`;
+	return `Hourly check-in is one visible schedule_prompt job; plan-change and upkeep reviews are event hooks, not another timer. List first. If an owned job named ${JSON.stringify(`goals-${sessionId}`)} already exists, retain its human-edited prompt, interval and enabled/disabled state unchanged; never recreate, overwrite or re-enable it. Only while supervising unfinished non-cancelled goals, if missing on this explicit start/resume, add one session-bound interval '1h' job with no model override. Read .pi/schedule-prompts.json and verify that new job's session is ${JSON.stringify(sessionId)}; tool text does not expose binding. If the new job is unbound, remove that job by ID and report the scope error. Do not change other jobs. Its initial prompt: Hourly goal check-in: read ${planPath} and the current goal mode. If paused, exited, solo or all non-cancelled goals reviewed, remove only this owned job without resuming work. Otherwise inspect progress and evidence, give a brief assessment and keep authorized work moving without a duplicate writer. Do not reinstall a missing job from a scheduled check-in. Users inspect/toggle/remove jobs with /schedule-prompt and edit prompt/interval through schedule_prompt update. Never use cleanup. Retain their edits, but warn that this installed scheduler deletes disabled jobs on reload/shutdown; do not promise they persist. If schedule_prompt is unavailable, report hourly check-ins unavailable; do not build a timer.`;
 }
 
 // Completion and runtime errors. Tool returns are model-facing too.
@@ -233,7 +218,7 @@ export function completionLog(goal: string, observation: string, evidence: strin
 	return `- ${solo ? "Solo self-verification" : "Parent review"}: ${JSON.stringify(goal)}; ${JSON.stringify(observation)}; evidence ${JSON.stringify(evidence)}`;
 }
 export function finalReviewQueued(goal: string): string {
-	return `Final review queued for ${goal}; no sign-off recorded. Read the complete embedded plan and actual evidence in that review turn, then call CompleteGoal again with the exact goal and evidence.`;
+	return `Final review queued for ${goal}; no sign-off recorded. Read the complete plan file and actual evidence in that review run, then call CompleteGoal again with the exact goal and evidence.`;
 }
 export const finalReviewInvalidated = "The plan changed since the final review was queued; no sign-off recorded. Inspect the current plan and request completion again to queue a new final review.";
 export function completionResult(goal: string, sessionId: string, remaining: boolean, solo: boolean): string {

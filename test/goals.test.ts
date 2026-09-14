@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { createEditTool, type ExtensionAPI, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { upkeep, upkeepNudges } from "../src/prompts.js";
+import { upkeep } from "../src/prompts.js";
 
 const roots: string[] = [];
 const shutdowns: Array<() => void> = [];
@@ -23,7 +23,7 @@ function fixture(child = false) {
 	const cwd = mkdtempSync(join(tmpdir(), "goals-main-test-")); roots.push(cwd);
 	const entries: any[] = []; const hooks = new Map<string, any>(); const commands = new Map<string, any>(); const tools = new Map<string, any>();
 	const messages: any[] = [];
-	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only" }, hasUI: true, ui: {
+	const ctx = { cwd, sessionManager: { getBranch: () => entries, getSessionId: () => "copy-only" }, hasUI: true, hasPendingMessages: vi.fn(() => false), ui: {
 		theme: { fg: (_color: string, text: string) => text }, notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn(), select: vi.fn(async (_title: string, _options: string[]) => "Ready"), editor: vi.fn(),
 	} };
 	const pi = {
@@ -112,14 +112,42 @@ it("requires a model argument without clearing the preference", async () => {
 	expect(readFileSync(f.path, "utf8")).toBe(before);
 });
 
-it.each(["menu", "command"])("enters planning conversation through %s without an objective box or worker launch", async (route) => {
+it.each(["menu", "command"])("enters planning conversation through %s without a worker launch", async (route) => {
 	const f = fixture();
-	f.ctx.ui.select.mockResolvedValueOnce("new — New plan");
+	f.ctx.ui.select.mockResolvedValueOnce("new — New plan…");
+	f.ctx.ui.editor.mockResolvedValueOnce("supplied instructions");
 	await f.command(route === "menu" ? "" : "new");
 	expect(f.entries.at(-1).data.mode).toBe("planning");
-	expect(f.ctx.ui.editor).not.toHaveBeenCalled();
-	expect(f.messages.at(-1).message.content).toContain("Ask what the user wants to achieve");
+	expect(f.ctx.ui.editor).toHaveBeenCalledTimes(route === "menu" ? 1 : 0);
+	expect(f.messages).toHaveLength(1);
+	expect(f.messages[0].message.content).toContain(route === "menu" ? "Initial idea: supplied instructions" : "Use the existing conversation");
 	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
+});
+
+it("cancelled menu New creates nothing and sends nothing", async () => {
+	const f = fixture();
+	f.ctx.ui.select.mockResolvedValueOnce("new — New plan…");
+	await f.command(""); // editor returns undefined on Cancel
+	expect(f.entries).toHaveLength(0); expect(f.messages).toHaveLength(0);
+	expect(existsSync(join(f.ctx.cwd, ".pi/plan"))).toBe(false);
+});
+
+it("new names use six session characters, skip deletion holes and suffix collisions, and preserve old files", async () => {
+	const f = fixture(); f.ctx.sessionManager.getSessionId = () => "first-abc123";
+	const directory = join(f.ctx.cwd, ".pi/plan"); mkdirSync(directory, { recursive: true });
+	const old = ["2026-09-14-000000Z-descriptive-plan-v1.md", "abc123-v1.md", "abc123-v2.md", "abc123-v10.md"];
+	for (const name of old) writeFileSync(join(directory, name), name);
+	rmSync(join(directory, "abc123-v2.md"));
+	await f.command("new Preserve the descriptive title");
+	const first = f.entries.at(-1).data.plan;
+	expect(basename(first)).toBe("abc123-v11.md");
+	expect(readFileSync(first, "utf8")).toContain("# Preserve the descriptive title\n");
+	f.ctx.sessionManager.getSessionId = () => "another-abc123";
+	await f.command("new Different session with same suffix");
+	expect(basename(f.entries.at(-1).data.plan)).toBe("abc123-v12.md");
+	expect(readFileSync(first, "utf8")).toContain("# Preserve the descriptive title\n");
+	for (const name of old.filter(name => name !== "abc123-v2.md")) expect(readFileSync(join(directory, name), "utf8")).toBe(name);
+	expect(readdirSync(directory)).toHaveLength(5);
 });
 
 it("edits even an empty draft directly without a model call", async () => {
@@ -131,7 +159,7 @@ it("edits even an empty draft directly without a model call", async () => {
 	expect(f.messages).toHaveLength(before);
 });
 
-it("clear backs up the plan, drops stale bindings and allows a separate new draft", async () => {
+it("clear preserves the plan without a backup, warns for misbound jobs and allows a separate new draft", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	f.launch({ id: "stale", sessionFile: "/tmp/old-worker.jsonl" });
 	const jobs = [
@@ -145,16 +173,19 @@ it("clear backs up the plan, drops stale bindings and allows a separate new draf
 	expect(f.messages).toHaveLength(before);
 	expect(f.entries.at(-1).data).toEqual({ mode: "chat", helpers: [], signoffs: {} });
 	expect(JSON.parse(readFileSync(schedule, "utf8")).jobs).toEqual(jobs.slice(1));
-	expect(f.pi.events.emit).toHaveBeenCalledWith("cron:change", { type: "remove", jobId: "owned" });
+	expect(f.pi.events.emit).toHaveBeenCalledExactlyOnceWith("cron:change", { type: "remove", jobId: "owned" });
+	expect(f.ctx.ui.notify).toHaveBeenCalledWith("Goal check-ins left unchanged (session binding missing or different): foreign, unbound. Inspect /schedule-prompt.", "warning");
 	const directory = join(f.ctx.cwd, ".pi/plan");
-	const backup = readdirSync(directory).find(name => name.endsWith(".bak"))!;
-	expect(readFileSync(join(directory, backup), "utf8")).toBe(f.plan);
+	expect(readdirSync(directory)).toEqual([basename(f.path)]);
+	expect(readFileSync(f.path, "utf8")).toBe(f.plan);
 	await f.command("new a different objective");
 	const next = f.entries.at(-1).data;
 	expect(next.mode).toBe("planning"); expect(next.worker).toBeUndefined(); expect(next.plan).not.toBe(f.path);
 	expect(readFileSync(next.plan, "utf8")).toContain("a different objective");
 	expect(readFileSync(next.plan, "utf8")).not.toContain("first output");
 	expect(readFileSync(f.path, "utf8")).toBe(f.plan);
+	expect(readdirSync(directory)).toHaveLength(2);
+	expect(f.messages).toHaveLength(before + 1); // New alone queues its normal planning turn.
 });
 
 it.each(["missing", "empty"])("clear resets a %s plan without a model call", async kind => {
@@ -167,9 +198,10 @@ it.each(["missing", "empty"])("clear resets a %s plan without a model call", asy
 
 it("discusses plan changes only during planning", async () => {
 	const f = fixture(); await f.command("discuss"); expect(f.messages).toHaveLength(0);
-	await f.draft();
+	await f.draft(); const sent = f.messages.length;
 	f.ctx.ui.select.mockResolvedValueOnce("discuss — Discuss changes to the plan"); await f.command("");
-	expect(f.messages.at(-1).message.content).toContain("Discuss the current draft");
+	expect(f.messages).toHaveLength(sent);
+	expect(readFileSync(f.path, "utf8")).toBe(f.plan);
 	expect(f.entries.at(-1).data.mode).toBe("planning");
 	await f.command("ready"); const before = f.messages.length;
 	await f.command("discuss"); expect(f.messages).toHaveLength(before);
@@ -274,14 +306,19 @@ it("requires actual nonempty evidence, distinguishes manual ticks, and retains s
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[ ] goal: second", "[x] goal: second"));
 	f.hooks.get("session_start")({}, f.ctx);
 	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 1/2 goals");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toContain("✔ G1: first output");
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toContain("✓ G1: first output");
+	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
+	for (let i = 0; i < 9; i++) f.hooks.get("turn_end")({}, f.ctx);
+	const reminder = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message.content;
+	expect(reminder).toContain("[x] goal: second output");
+	expect(reminder).not.toContain("first output");
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[x] goal: first", "[ ] goal: first"));
 	f.hooks.get("agent_end")({}, f.ctx);
 	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 0/2 goals");
 	f.shutdown();
 });
 
-it("reviews a plan replaced atomically with direct short context, and ignores writes that keep the same content", async () => {
+it("reviews a plan replaced atomically with a current-file notice, and ignores writes that keep the same content", async () => {
 	const f = fixture(); await f.draft();
 	const plan = `# Context title
 
@@ -305,11 +342,11 @@ old progress`;
 	await f.atomicWrite(revised);
 	await waitFor(() => f.changed() === 1);
 	const review = f.messages.find((m) => m.message.content.includes("Plan changed"))?.message.content;
-	expect(review).toContain("A short introduction for ordinary reminders.");
-	expect(review).toContain("A revised visible artifact.");
+	expect(review).toContain("inspect current requirements");
 	expect(review).toContain(f.path);
 	expect(review).not.toContain("The full requirement must survive resync.");
 	expect(review).not.toContain("run the detailed check");
+	f.hooks.get("message_end")({ message: { role: "user", content: review } });
 	await f.atomicWrite(revised.replace("A revised", "A second revised"));
 	await waitFor(() => f.changed() === 2);
 	// Rewriting identical bytes must not retrigger the review event hook.
@@ -319,13 +356,23 @@ old progress`;
 	f.shutdown();
 });
 
-it("coalesces duplicate plan-change notifications into one review", async () => {
+it("delivers changed plans while coalescing only its own pending notice", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
+	f.ctx.hasPendingMessages.mockReturnValue(true); // An unrelated queued prompt must not suppress the notice.
 	await f.atomicWrite(f.plan.replace("## Log", "- discriminator: first burst edit\n## Log"));
 	await f.atomicWrite(f.plan.replace("## Log", "- discriminator: second burst edit\n## Log"));
 	await waitFor(() => f.changed() === 1);
+	f.hooks.get("message_end")({ message: { role: "user", content: "unrelated input" } });
+	await f.atomicWrite(f.plan.replace("## Log", "- discriminator: later queued edit\n## Log"));
 	await delay(200);
 	expect(f.changed()).toBe(1);
+	f.hooks.get("message_end")({ message: { role: "user", content: f.messages.at(-1).message.content } });
+	await f.atomicWrite(f.plan.replace("## Log", "- discriminator: after same-run delivery\n## Log"));
+	await waitFor(() => f.changed() === 2);
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message.content).toContain("after same-run delivery");
+	f.hooks.get("message_end")({ message: { role: "user", content: f.messages.at(-1).message.content } });
+	await f.atomicWrite(f.plan.replaceAll("[ ] goal:", "[-] goal:"));
+	await waitFor(() => f.changed() === 3); // Cancelling the last goals must still notify an ongoing run.
 	f.shutdown();
 });
 
@@ -377,6 +424,7 @@ it("requires a full-plan review turn before recording the final goal", async () 
 ## Log
 - worker evidence: keep this history in the final review`;
 	writeFileSync(f.path, plan); await f.command("ready");
+	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
 	mkdirSync(join(f.ctx.cwd, "evidence")); writeFileSync(join(f.ctx.cwd, "evidence/pass.log"), "bytes\n");
 	const complete = (goal: string) => f.tools.get("CompleteGoal").execute("t", { goal, evidence: ["evidence/pass.log"], observation: "inspected" }, undefined, undefined, f.ctx);
 	await complete("first output");
@@ -385,16 +433,18 @@ it("requires a full-plan review turn before recording the final goal", async () 
 	expect(readFileSync(f.path, "utf8")).toContain("- [ ] goal: second output");
 	const direct = f.messages.at(-1);
 	expect(direct.savedPrompt).toBe(true);
-	expect(direct.message.content).toContain("second output has exact saved bytes");
-	expect(direct.message.content).toContain("worker evidence: keep this history");
-	const review = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
-	expect(review).toMatchObject({ customType: "pi-goals-final-review" });
-	expect(review.content).toContain("first output has exact saved bytes");
-	expect(review.content).toContain("worker evidence: keep this history");
+	expect(direct.message.content).toContain("Read the complete file at");
+	expect(direct.message.content).not.toContain("worker evidence: keep this history");
+	// A queued follow-up may be consumed without another before_agent_start.
+	f.hooks.get("message_end")({ message: { role: "user", content: direct.message.content } });
+	expect(readFileSync(f.path, "utf8")).toContain("second output has exact saved bytes");
+	f.hooks.get("turn_end")({}, f.ctx); // Evidence-reading tool round must not invalidate this review.
 	const finalText = (await complete("second output")).content[0].text;
 	expect(finalText).toContain("All non-cancelled goals are reviewed.");
 	expect(finalText).toContain('job named "goals-copy-only"');
 	expect(finalText).toContain("leave other jobs untouched");
+	for (let i = 0; i < 10; i++) f.hooks.get("turn_end")({}, f.ctx);
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
 	f.shutdown();
 });
 
@@ -404,31 +454,34 @@ it("recovers a queued final review and invalidates it when the plan changes", as
 	const complete = (goal: string) => f.tools.get("CompleteGoal").execute("t", { goal, evidence: ["proof.log"], observation: "inspected" }, undefined, undefined, f.ctx);
 	await complete("first output");
 	await complete("second output");
+	const oldPrompt = f.messages.at(-1).message.content;
 	f.hooks.get("session_start")({}, f.ctx);
 	const recovered = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
 	expect(recovered).toMatchObject({ customType: "pi-goals-final-review" });
 	expect(recovered.content).toContain("- [ ] goal: second output");
-	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("second output", "revised second output"));
-	const invalidated = await complete("revised second output");
+	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("## Log", "  - discriminator: changed exact bytes\n## Log"));
+	const invalidated = await complete("second output");
 	expect(invalidated.content[0].text).toContain("plan changed since the final review");
-	const changed = await complete("revised second output");
+	const changed = await complete("second output");
 	expect(changed.content[0].text).toContain("Final review queued");
-	expect(readFileSync(f.path, "utf8")).toContain("- [ ] goal: revised second output");
-	expect(f.messages.at(-1).message.content).toContain("revised second output");
+	expect(readFileSync(f.path, "utf8")).toContain("- [ ] goal: second output");
+	expect(f.messages.at(-1).message.content).toContain("second output");
+	f.hooks.get("message_end")({ message: { role: "user", content: oldPrompt } });
+	expect((await complete("second output")).content[0].text).toContain("Final review queued");
 	f.shutdown();
 });
 
-it("restores the complete plan document after session restore", async () => {
+it("restores the active plan above Log after session restore", async () => {
 	const f = fixture(); await f.draft();
 	const plan = `${f.plan.replace("## Log", "## User voice\n- > \"Keep the user voice after restore.\"\n## Log")}old progress`;
 	writeFileSync(f.path, plan); await f.command("ready");
 	f.hooks.get("session_start")({}, f.ctx);
 	const restored = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
 	expect(restored.message.content).toContain("Keep the user voice after restore.");
-	expect(restored.message.content).toContain("old progress");
+	expect(restored.message.content).not.toContain("old progress");
 });
 
-it("restores the complete plan document after compaction without reinstalling or overriding scheduler jobs", async () => {
+it("restores the active plan above Log after compaction without reinstalling or overriding scheduler jobs", async () => {
 	const f = fixture(); await f.draft();
 	const plan = `${f.plan.replace("## Log", "## User voice\n- > \"Keep this exact requirement.\"\n  - task detail\n## Log")}old progress`;
 	writeFileSync(f.path, plan); await f.command("ready");
@@ -437,7 +490,7 @@ it("restores the complete plan document after compaction without reinstalling or
 	expect(result.systemPrompt).not.toContain("add one session-bound");
 	expect(result.message.content).toContain("Keep this exact requirement.");
 	expect(result.message.content).toContain("task detail");
-	expect(result.message.content).toContain("old progress");
+	expect(result.message.content).not.toContain("old progress");
 	expect(result.message.content).toContain(f.path);
 });
 
@@ -619,8 +672,10 @@ it("ignores post-completion maintenance but reviews evidence, requirement or man
 	// contradictory evidence block through exactly this event (LUCID3, 2026-09-10).
 	await f.atomicWrite(signed.replace("## Log", "  - evidence: proof.log\n## Log\n- recap: finished"));
 	await waitFor(() => f.changed() === 1);
+	f.hooks.get("message_end")({ message: { role: "user", content: f.messages.at(-1).message.content } });
 	await f.atomicWrite(signed.replace("## Log", "- discriminator: exact bytes and trailing newline\n## Log"));
 	await waitFor(() => f.changed() === 2);
+	f.hooks.get("message_end")({ message: { role: "user", content: f.messages.at(-1).message.content } });
 	await f.atomicWrite(signed.replace("[x] goal: first", "[ ] goal: first"));
 	await waitFor(() => f.changed() === 3);
 	expect(f.entries.at(-1).data.signoffs["first output"]).toBeUndefined();
@@ -683,13 +738,13 @@ it("prioritizes unfinished goals and says when the widget list is truncated", as
 	const f = fixture(); await f.draft();
 	writeFileSync(f.path, "- [x] goal: completed one\n- [x] goal: completed two\n- [/] goal: active work\n- [ ] goal: open one\n- [ ] goal: open two\n");
 	await f.command("ready");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◼ G3: active work", "◻ G4: open one", "◻ G5: open two", "… 2 ✔"]);
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual([relative(f.ctx.cwd, f.path), "◼ G3: active work", "◻ G4: open one", "◻ G5: open two", "… 2 ✓"]);
 	f.shutdown();
 });
 
 it.each([
-	["[x]", "[ ]", "[ ]", "… 1 ✔, 2 ◻"],
-	["[/]", "[x]", "[-]", "… 1 ✔, 1 ◼, 1 ✗"],
+	["[x]", "[ ]", "[ ]", "… 1 ✓, 2 ◻"],
+	["[/]", "[x]", "[-]", "… 1 ✓, 1 ◼, 1 ✗"],
 	["[ ]", "[ ]", "[ ]", "… 3 ◻"],
 ])("summarizes only hidden goal statuses: %s %s %s", async (first, second, third, summary) => {
 	const f = fixture(); await f.draft();
@@ -697,7 +752,7 @@ it.each([
 	writeFileSync(f.path, marks.map((mark, index) => `- ${mark} goal: output ${index + 1}`).join("\n"));
 	await f.command("ready");
 	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual([
-		"◼ G1: output 1", "◼ G2: output 2", "◼ G3: output 3", summary,
+		relative(f.ctx.cwd, f.path), "◼ G1: output 1", "◼ G2: output 2", "◼ G3: output 3", summary,
 	]);
 	f.shutdown();
 });
@@ -708,7 +763,7 @@ it.each(["solo", "supervising"])("%s widget omits long tasks without altering th
 	writeFileSync(f.path, text);
 	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
 	else await f.command("ready");
-	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual(["◼ G1: first output", "◻ G2: second output"]);
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual([relative(f.ctx.cwd, f.path), "◼ G1: first output", "◻ G2: second output"]);
 	expect(readFileSync(f.path, "utf8")).toBe(text);
 });
 
@@ -736,13 +791,13 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, and joins
 	writeFileSync(f.path, f.plan.replace("first output", "refined output"));
 	f.hooks.get("turn_end")({}, f.ctx);
 	for (let i = 0; i < 7; i++) f.hooks.get("turn_end")({}, f.ctx);
-	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message).toBeUndefined();
+	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message.content).toContain("refined output");
 	await f.command("stop");
 	for (let i = 0; i < 10; i++) f.hooks.get("turn_end")({}, f.ctx);
 	expect(reminders()).toHaveLength(0);
 });
 
-it("injects medium direct context after the bounded unchanged-turn reminder", async () => {
+it("injects only unfinished goal lines after the bounded unchanged-turn reminder", async () => {
 	const f = fixture(); await f.draft();
 	const plan = `# Context title
 
@@ -763,19 +818,19 @@ A visible artifact.
 ## Log
 old progress`;
 	writeFileSync(f.path, plan); await f.command("ready");
-	// Consume startup full context before observing the medium reminder. -- PI/gpt-5.6-terra
+	// Consume active context before observing the routine reminder.
 	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
 	for (let i = 0; i < 9; i++) f.hooks.get("turn_end")({}, f.ctx);
 	const reminder = f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).message;
 	expect(reminder.customType).toBe("pi-goals-upkeep");
-	expect(reminder.content).toContain("Keep this exact user requirement.");
+	expect(reminder.content).not.toContain("Keep this exact user requirement.");
 	expect(reminder.content).toContain("goal: produce the artifact");
 	expect(reminder.content).not.toContain("run the detailed check");
 	expect(reminder.content).not.toContain("proof.log");
 	expect(reminder.content).not.toContain("old progress");
 });
 
-it.each(["supervising", "solo"])("%s repeats upkeep every eight unchanged turns and rotates only delivered supervisor nudges", async mode => {
+it.each(["supervising", "solo"])("%s repeats concise upkeep every eight unchanged turns", async mode => {
 	const f = fixture(); await f.draft();
 	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
 	else await f.command("ready");
@@ -785,14 +840,14 @@ it.each(["supervising", "solo"])("%s repeats upkeep every eight unchanged turns 
 	f.hooks.get("session_compact")();
 	expect(prepare().message.customType).toBe("pi-goals-plan");
 	const sent = f.messages.length;
-	for (let round = 0; round <= upkeepNudges.length; round++) {
+	for (let round = 0; round < 2; round++) {
 		for (let turn = 0; turn < 7; turn++) f.hooks.get("turn_end")({}, f.ctx);
 		expect(prepare().message).toBeUndefined();
 		f.hooks.get("turn_end")({}, f.ctx);
 		expect(f.messages).toHaveLength(sent);
 		expect(prepare().message).toMatchObject({
 			customType: "pi-goals-upkeep",
-			content: upkeep(f.path, f.plan, mode === "supervising" ? round : undefined),
+			content: upkeep(f.path, f.plan.split("\n").filter(line => line.includes("goal:")).join("\n")),
 		});
 		expect(prepare().message).toBeUndefined();
 	}

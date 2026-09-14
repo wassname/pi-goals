@@ -114,7 +114,9 @@ describe("RPC review flow", () => {
 			client.send({ type: "prompt", id: "goals", message: "/goals new work out the thing" });
 			const review = await client.waitFor(isSelect);
 			expect(review.options).toEqual(["Ready", "Discuss", "Edit", "Cancel"]);
-			expect(basename(planPath)).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}Z-work-out-the-thing-v1\.md$/);
+			client.send({ type: "get_state", id: "session-name" });
+			const state = await client.waitFor(message => message.type === "response" && message.id === "session-name");
+			expect(basename(planPath)).toBe(`${(state.data as { sessionId: string }).sessionId.slice(-6)}-v1.md`);
 			expect(review.title).toContain(planPath);
 			const proposal = client.messages.find(message => message.type === "message_end" && (message.message as { customType?: string })?.customType === "goal-plan-proposal");
 			expect(proposal?.message).toMatchObject({ content: plan, display: true });
@@ -136,11 +138,18 @@ describe("RPC review flow", () => {
 				expect(readFileSync(planPath, "utf8")).toBe(approvedPlan);
 				expect(requests).toHaveLength(2);
 			} else {
-				await client.waitFor(message => message.type === "agent_end", choiceStart);
+				await client.waitFor(message => message.type === "agent_settled", choiceStart);
+				client.send({ type: "get_state", id: "idle-discuss" });
+				const idle = await client.waitFor(message => message.type === "response" && message.id === "idle-discuss");
+				expect(idle.data).toMatchObject({ isStreaming: false, pendingMessageCount: 0 });
+				expect(requests).toHaveLength(2);
+				expect(client.messages.slice(choiceStart).filter(message => message.type === "agent_start" || isEditor(message))).toEqual([]);
+				const userStart = client.messages.length;
+				client.send({ type: "prompt", id: "user-discussion", message: "Keep the output name, but explain the failure mode." });
+				await client.waitFor(message => message.type === "agent_settled", userStart);
 				expect(requests).toHaveLength(3);
 				expect(systemText(requests[2])).toContain("Plan only in");
-				expect(JSON.stringify(requests[2].messages.at(-1))).toContain("Discuss the current draft");
-				expect(client.messages.slice(choiceStart).filter(isEditor)).toEqual([]);
+				expect(JSON.stringify(requests[2].messages)).toContain("Keep the output name, but explain the failure mode.");
 			}
 			const beforeReady = requests.length;
 			const reopenStart = client.messages.length;
@@ -155,6 +164,9 @@ describe("RPC review flow", () => {
 			expect(systemText(supervisor)).toContain("You are the goal supervisor in the main chat");
 			expect(systemText(supervisor)).not.toContain("Plan only in");
 			expect(JSON.stringify(supervisor.messages)).toContain(JSON.stringify(foldPlan(approvedPlan)).slice(1, -1));
+			const approval = supervisor.messages.filter(message => message.role === "user").map(message => messageText(message.content)).find(text => text.includes("Ready approved this plan:"))!;
+			expect(approval).toContain("[pi-goals: approval — Ready]");
+			expect(approval).toContain(`Plan excerpt (working set before Log) from ${JSON.stringify(planPath)}:\n\x60\x60\x60md\n${foldPlan(approvedPlan)}\n\x60\x60\x60`);
 			expect(client.messages.filter(message => message.type === "tool_execution_start").map(message => message.toolName)).toEqual(["write"]);
 			expect(client.messages.filter(message => message.type === "extension_error")).toEqual([]);
 			const notices = client.messages.filter(message => message.type === "entry_appended" && (message.entry as { customType?: string })?.customType === "pi-goals-notice");
