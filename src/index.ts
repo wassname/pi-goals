@@ -1,7 +1,7 @@
 // Pi/OpenAI: Plan and supervise in the main chat; delegate implementation to a visible worker.
 import { createHash, randomUUID } from "node:crypto";
 import { type FSWatcher, mkdirSync, readdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { INTERCOM_EXTENSION_REGISTER_EVENT, type IntercomExtensionChannel, type IntercomExtensionRegistration } from "pi-intercom/extension-api.js";
 import { CronStorage } from "pi-schedule-prompt/src/storage.js";
@@ -182,7 +182,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			}).filter(Boolean);
 			lines.push(`… ${counts.join(", ")}`);
 		}
-		lines.unshift(relative(ctx.cwd, state.plan!)); // Readable path fallback; terminal link activation is not verified.
+		const planPath = relative(ctx.cwd, state.plan!);
+		const external = isAbsolute(planPath) || planPath === ".." || planPath.startsWith(`..${sep}`);
+		lines.unshift(external ? `${basename(state.plan!)} (external)` : planPath);
 		ctx.ui.setWidget("goals", lines);
 	}
 	function watchPlan(ctx: ExtensionContext) {

@@ -742,6 +742,10 @@ it.each(["solo", "supervising"])("%s widget omits long tasks without altering th
 	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
 	else await f.command("ready");
 	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual([relative(f.ctx.cwd, f.path), "◼ G1: first output", "◻ G2: second output"]);
+	f.ctx.cwd = join(f.ctx.cwd, "another-project", "nested");
+	await f.command("status");
+	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toEqual([`${basename(f.path)} (external)`, "◼ G1: first output", "◻ G2: second output"]);
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(`Plan: ${f.path}`), "info");
 	expect(readFileSync(f.path, "utf8")).toBe(text);
 });
 
