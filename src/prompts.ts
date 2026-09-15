@@ -268,6 +268,7 @@ export function attachNotice(planPath: string, solo: boolean, notedWorker: strin
 }
 
 export const nativeMessages = {
+	samePlanRestored: "Plan context refreshed; mode and worker binding unchanged. No new work authorized.",
 	workerPause: (paused: boolean) => `Worker ${paused ? "paused" : "unpaused"} locally; no new task submitted and no approval authority granted.`,
 	taskRequired: "Supply an explicit bounded proposed task for a new worker context.",
 	modelDescription: "User preference for agent-led configuration and verification, not a launch override.",

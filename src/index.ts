@@ -691,6 +691,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					let text: string;
 					try { text = readFileSync(target, "utf8"); } catch { ctx.ui.notify(`Cannot read plan at ${target}.`, "error"); return; }
 					if (!goals(text).length || goals(text).some(g => !g.subject)) { ctx.ui.notify(`${target} has no '- [ ] goal:' lines with valid subjects; attach a judgeable plan.`, "warning"); return; }
+					if (!solo && state.plan === target && state.mode !== "chat") {
+						notice = true; fullPlanContextDue = true; refresh(ctx);
+						ctx.ui.notify(nativeMessages.samePlanRestored, "info"); return;
+					}
 					if (!solo && ((state.worker && !state.workerStopped) || state.mode === "supervising")) { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
 					const noted = /^-\s*worker session:\s*(\S+)/im.exec(foldPlan(text))?.[1];
 					if (!(await confirmOwnership(ctx, target, text, solo))) return;
