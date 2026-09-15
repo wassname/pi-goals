@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1094,23 +1095,25 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(worker).toMatchObject({ paneId: "native-pane", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
 	expect(f.messages.at(-1)).toMatchObject({ message: { customType: "pi-goals-supervision", display: true, content: expect.stringContaining("Metadata only; no acknowledgement or review turn requested") }, options: { triggerTurn: false } });
 	expect(f.messages.at(-1).savedPrompt).toBeUndefined();
-	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, text: "Blocked: input missing" };
+	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "revision-1", text: "Blocked: input missing" };
 	const count = f.messages.length;
 	for (const fromSessionId of [worker.parentId, "foreign-id"]) f.event({ type: "message", fromSessionId, payload: notice });
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, plan: "/foreign.md" } });
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, requestId: "stale" } });
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: undefined } });
 	expect(f.messages).toHaveLength(count);
-	for (const text of ["Blocked: input missing", "Done: output.txt", "Error: execution failed"]) {
-		f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text } });
-		expect(f.messages.at(-2)?.message.content).toContain(text);
-		expect(f.messages.at(-1)?.message.content).toContain("Pending worker reviews:");
-	}
+	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	expect(f.messages.at(-2)?.message.content).toContain("Blocked: input missing");
+	expect(f.messages.at(-1)?.message.content).toContain("Pending worker revision reviews:");
+	const afterFirstRevision = f.messages.length;
+	for (const text of ["Done: output.txt", "Error: execution failed"]) f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text } });
+	expect(f.messages).toHaveLength(afterFirstRevision);
 	expect(readFileSync(f.path, "utf8")).not.toContain("[✓]");
 	await f.command("stop");
-	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text: "New report during pause" } });
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New report during pause" } });
 	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
 	await f.command("clear");
-	const cleared = f.messages.length; f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	const cleared = f.messages.length; f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-3" } });
 	expect(f.messages).toHaveLength(cleared);
 });
 
@@ -1184,9 +1187,9 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 	await f.command("status");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Last observed worker model: offline/inherited"), "info");
 	if (model) {
-		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
+		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
 		expect(f.messages.at(-2)?.message.content).toContain("missing/unavailable is unavailable");
-		expect(f.messages.at(-1)?.message.content).toContain("Pending worker reviews:");
+		expect(f.messages.at(-1)?.message.content).toContain("Pending worker revision reviews:");
 	}
 
 });
@@ -1220,7 +1223,12 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	parent.hooks.get("session_start")({}, parent.ctx);
 	expect(parent.hooks.get("before_agent_start")({ systemPrompt: "base" }, parent.ctx).systemPrompt).toContain(id);
 	const artifact = join(parent.ctx.cwd, "output.txt"); writeFileSync(artifact, "first output\n");
-	const form = { report: id, goal: { path: parent.path, quote: "goal: first output" }, evidence: [{ path: artifact, quote: "invented", observation: "Read output.txt" }], observation: "Inspected actual output and assigned goal", unmet: "none", verdict: "accepted" };
+	execFileSync("git", ["init"], { cwd: parent.ctx.cwd });
+	execFileSync("git", ["add", "output.txt"], { cwd: parent.ctx.cwd });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "worker evidence"], { cwd: parent.ctx.cwd });
+	const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: parent.ctx.cwd, encoding: "utf8" }).trim();
+	writeFileSync(artifact, "changed after reported revision\n");
+	const form = { reportId: id, goal: { path: parent.path, quote: "goal: first output" }, evidence: [{ path: `git:${commit}:output.txt`, quote: "invented", observation: "Read the reported revision" }], observation: "Inspected actual output and assigned goal", unmet: "none", verdict: "accepted" };
 	const review = () => parent.tools.get("review_subagent").execute("review", form, undefined, undefined, parent.ctx);
 	await expect(review()).rejects.toThrow("Quote does not match");
 	form.evidence[0].quote = "first output";
@@ -1228,17 +1236,18 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	parent.channel.publish.mockImplementationOnce(() => {}); // Publish success is not saved delivery.
 	await review(); await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(id);
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Implement first output");
 	await review(); await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending report reviews: none");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	expect(worker.messages).toHaveLength(workerTurns);
 	expect(readFileSync(sm.getSessionFile()!, "utf8")).toContain("Worker review: accepted");
 	await review(); worker.hooks.get("session_shutdown")();
 	parent.event({ type: "session_left", sessionId: workerId });
 	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending report reviews: none");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	worker.hooks.get("session_start")({}, worker.ctx);
 	await parent.command("stop");
-	form.report = report("Revision failed", "error");
+	form.reportId = report("Revision failed", "error");
 	const paused = parent.messages.length;
 	await parent.hooks.get("agent_settled")({}, parent.ctx);
 	expect(parent.messages).toHaveLength(paused);
@@ -1247,9 +1256,9 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	await expect(review()).rejects.toThrow("concrete continuation");
 	await parent.tools.get("review_subagent").execute("revision", { ...form, unmet: "Output still needs correction", continuation: "Correct output.txt and rerun verification." }, undefined, undefined, parent.ctx);
 	expect(worker.messages.at(-1)).toMatchObject({ savedPrompt: true, message: { content: expect.stringContaining("Correct output.txt") } });
-	form.report = report("Cancelled while correcting", "aborted"); form.verdict = "blocked";
+	form.reportId = report("Cancelled while correcting", "aborted"); form.verdict = "blocked";
 	await review(); await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending report reviews: none");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	expect(readFileSync(parent.path, "utf8")).not.toContain("[✓]");
 
 	// Lost notification and cancellation before any new assistant message: durable run identity.
@@ -1257,7 +1266,7 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	worker.channel.publish.mockImplementationOnce(() => {});
 	worker.hooks.get("agent_end")({ messages: [] }, worker.ctx);
 	const missed = `${workerId}:${worker.channel.publish.mock.lastCall?.[0].entryId}`;
-	expect(missed).not.toBe(form.report);
+	expect(missed).not.toBe(form.reportId);
 	// Same preserved worker, newly approved plan and request: old reviews stay in history.
 	const history = sm.getBranch(), oldPlan = readFileSync(parent.path, "utf8");
 	await parent.command("clear"); await parent.command("new Next output");
@@ -1283,7 +1292,7 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	parent.hooks.get("session_start")({}, parent.ctx); // Reconcile the missed stop from real saved worker history.
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(missed);
-	form.report = missed; await review(); // Old-plan blocked review remains deliverable after retargeting.
+	form.reportId = missed; await review(); // Old-plan blocked review remains deliverable after retargeting.
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain(missed);
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
@@ -1299,11 +1308,8 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	ordinary("ack-only", "OK"); ordinary("foreign", "Unowned report", {}, "foreign-peer");
 	parent.hooks.get("session_start")({}, parent.ctx); await parent.command("status");
 	const pending = parent.ctx.ui.notify.mock.lastCall?.[0];
-	expect(pending).toContain(`${workerId}:ordinary-b`);
-	for (const excluded of ["ordinary-a", "retry-b", "retry-again", "ack-only", "foreign-peer"]) expect(pending).not.toContain(excluded);
-	form.report = `${workerId}:ordinary-b`; await review();
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("ordinary-b");
+	for (const nonReviewable of ["ordinary-a", "ordinary-b", "retry-b", "retry-again", "ack-only", "foreign-peer"]) expect(pending).not.toContain(nonReviewable);
+	expect(pending).toContain(nextReport);
 	expect(readFileSync(parent.path, "utf8")).toBe(oldPlan);
 	expect((await worker.tools.get("CompleteGoal").execute("deny", { goal: "first output", evidence: [], observation: "claim" }, undefined, undefined, worker.ctx)).content[0].text).toContain("only to the active parent");
 });
