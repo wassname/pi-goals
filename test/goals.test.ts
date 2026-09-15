@@ -1248,4 +1248,29 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	await review(); await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending report reviews: none");
 	expect(readFileSync(parent.path, "utf8")).not.toContain("[✓]");
+
+	// Same preserved worker, newly approved plan and request: old reviews stay in history.
+	const history = sm.getBranch(), oldPlan = readFileSync(parent.path, "utf8");
+	await parent.command("clear"); await parent.command("new Next output");
+	const nextPlan = parent.entries.at(-1).data.plan; writeFileSync(nextPlan, parent.plan);
+	await parent.command("ready");
+	await parent.tools.get("OpenGoalWorker").execute("next", { task: "Implement next output" }, undefined, undefined, parent.ctx);
+	const nextRequest = parent.entries.at(-1).data.worker.requestId;
+	const attach = (params: object) => worker.tools.get("AttachGoalPlan").execute("reattach", params, undefined, undefined, worker.ctx);
+	const unchanged = () => expect(sm.getBranch()).toEqual(history);
+	expect((await attach({ path: nextPlan })).content[0].text).toContain("explicit authorization"); unchanged();
+	worker.channel.listSessions.mockResolvedValue([{ id: "parent-intercom", pid: process.pid + 1 }, { id: "foreign-parent", pid: process.pid + 2 }]);
+	expect((await attach({ path: nextPlan, parent: "foreign-parent", requestId: nextRequest })).content[0].text).toContain("Different-parent takeover"); unchanged();
+	worker.channel.listSessions.mockRejectedValueOnce(new Error("offline"));
+	expect((await attach({ path: nextPlan, parent: "parent-intercom", requestId: nextRequest })).content[0].text).toContain("still connecting"); unchanged();
+	await attach({ path: nextPlan, parent: "parent-intercom", requestId: nextRequest });
+	expect(parent.entries.at(-1).data.worker).toMatchObject({ intercomId: workerId, requestId: nextRequest, sessionFile: sm.getSessionFile() });
+	expect(sm.getBranch().slice(0, history.length)).toEqual(history);
+	await attach({ path: nextPlan }); // Context restoration does not require new authorization.
+	const nextReport = report("New-plan output needs inspection");
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
+	expect(worker.channel.publish.mock.lastCall?.[0]).toMatchObject({ type: "stopped", plan: nextPlan, requestId: nextRequest });
+	expect(readFileSync(parent.path, "utf8")).toBe(oldPlan);
+	expect((await worker.tools.get("CompleteGoal").execute("deny", { goal: "first output", evidence: [], observation: "claim" }, undefined, undefined, worker.ctx)).content[0].text).toContain("only to the active parent");
 });

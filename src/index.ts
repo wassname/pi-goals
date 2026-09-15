@@ -732,22 +732,27 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "AttachGoalPlan", label: "Attach delegated plan", description: attachGoalPlanDescription,
 		parameters: Type.Object({ path: Type.String(), parent: Type.Optional(Type.String()), requestId: Type.Optional(Type.String()) }),
-		async execute(_id, params, _signal, _update, ctx) {
+		async execute(_id, params, signal, _update, ctx) {
 			if (!state.child && (state.mode !== "chat" || !params.parent || !params.requestId)) return result(messages.childAttachOnly);
-			if (state.child && state.plan && state.plan !== params.path) return result(messages.invalidAttachment);
+			const authorize = !state.child || state.plan && state.plan !== params.path || params.parent !== undefined || params.requestId !== undefined;
+			if (state.child && authorize && (!state.parent || params.parent !== state.parent.intercomId || !params.requestId?.trim())) return result(nativeMessages.reattachAuthorization);
+			let text: string;
 			try {
 				if (!isAbsolute(params.path)) return result(messages.invalidAttachment);
-				const items = goals(readFileSync(params.path, "utf8"));
+				text = readFileSync(params.path, "utf8");
+				const items = goals(text);
 				if (!items.length || items.some(g => !g.subject)) return result(messages.invalidAttachment);
 			} catch { return result(messages.invalidAttachment); }
-			if (!state.child) {
-				if (!channel?.snapshot().connected) return result(nativeMessages.intercomNotReady);
+			if (authorize) {
+				if (!channel?.snapshot().connected || !channel.snapshot().supported) return result(nativeMessages.intercomNotReady);
 				const stamp = generation;
 				const peers = await channel.listSessions().catch(() => undefined);
-				if (!peers) return result(nativeMessages.intercomNotReady);
-				if (stamp !== generation) return result(messages.cancelled);
-				if (!peers?.some(peer => peer.id === params.parent && peer.pid !== process.pid)) return result(nativeMessages.parentUnavailable);
-				state = { ...initial(), child: true, mode: "solo", parent: { intercomId: params.parent!, requestId: params.requestId! } };
+				if (!peers || !channel?.snapshot().connected || !channel.snapshot().supported) return result(nativeMessages.intercomNotReady);
+				if (stamp !== generation || signal?.aborted) return result(messages.cancelled);
+				if (!peers.some(peer => peer.id === params.parent && peer.pid !== process.pid)) return result(nativeMessages.parentUnavailable);
+				try { if (readFileSync(params.path, "utf8") !== text) return result(messages.invalidAttachment); } catch { return result(messages.invalidAttachment); }
+				if (!state.child) state = { ...initial(), child: true, mode: "solo" };
+				state.parent = { intercomId: params.parent!, requestId: params.requestId! };
 			}
 			state.plan = params.path; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx);
 			if (state.parent) channel?.publish({ type: "attached", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, sessionFile: ctx.sessionManager.getSessionFile(), identity: identity(ctx) }, { audience: "capable" });
