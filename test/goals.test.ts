@@ -4,8 +4,8 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEditTool, type ExtensionAPI, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { createEditTool, type ExtensionAPI, initTheme, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { Markdown, visibleWidth } from "@earendil-works/pi-tui";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
@@ -69,8 +69,8 @@ function fixture(child = false) {
 		await delay(25);
 	};
 	const start = (_id: string) => hooks.get("tool_call")({ toolName: "OpenGoalWorker" }, ctx);
-	const launch = async (details: { id: string; sessionFile: string }) => {
-		await tools.get("OpenGoalWorker").execute("open", { task: "Implement first output" }, undefined, undefined, ctx);
+	const launch = async (details: { id: string; sessionFile: string; task?: string }) => {
+		await tools.get("OpenGoalWorker").execute("open", { task: details.task ?? "Implement first output" }, undefined, undefined, ctx);
 		const state = entries.at(-1).data;
 		registration.onEvent({ type: "message", fromSessionId: details.id, payload: { type: "attached", to: state.worker.parentId, requestId: state.worker.requestId, plan: state.plan, sessionFile: details.sessionFile } });
 	};
@@ -333,15 +333,14 @@ it("rejects an existing zero-byte evidence file", async () => {
 	expect(result.content[0].text).toContain("Empty evidence"); expect(readFileSync(f.path, "utf8")).toBe(before);
 });
 
-it("requires actual nonempty evidence, distinguishes manual ticks, and retains reviewed markers through Clear/reattach", async () => {
+it("requires actual nonempty evidence, distinguishes manual ticks, and retains reviewed markers through same-context restoration", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	const complete = (goal: string, evidence: string[], signal?: AbortSignal) => f.tools.get("CompleteGoal").execute("t", { goal, evidence, observation: "Inspected exact saved bytes" }, signal, undefined, f.ctx);
 	expect((await complete("first output", ["missing.log"])).content[0].text).toContain("Evidence unavailable");
 	mkdirSync(join(f.ctx.cwd, "evidence")); writeFileSync(join(f.ctx.cwd, "evidence/pass.log"), "actual fixture bytes\n");
 	expect((await complete("first output", ["evidence/pass.log"], AbortSignal.abort())).content[0].text).toContain("Cancelled");
 	await complete("first output", ["evidence/pass.log"]);
-	await f.command("clear");
-	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped"); await f.command(`attach ${f.path}`); await f.command("ready");
+	await f.command(`attach ${f.path}`);
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[ ] goal: second", "[x] goal: second"));
 	f.hooks.get("session_start")({}, f.ctx);
 	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 1/2 goals");
@@ -576,21 +575,22 @@ it("requires confirmed worker stop before solo takeover and never lets two write
 	expect(text).toContain("self-verification");
 });
 
-it("attaches an existing plan without restarting completed work, and restores its noted worker session", async () => {
+it("leaves an unverified external plan and its noted worker untouched", async () => {
 	const f = fixture();
 	const existing = join(f.ctx.cwd, "existing.md");
 	writeFileSync(existing, "# Plan\n- preferred worker model: deepseek flash\n- worker session: /tmp/attach-child.jsonl\n- [ ] goal: attached goal\n\n## Log\n- previous progress kept\n");
 	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");
 	await f.command(`attach ${existing}`);
-	expect(f.entries.at(-1).data.mode).toBe("planning");
-	expect(f.entries.at(-1).data.plan).toBe(existing);
-	expect(f.messages.at(-1).message.content).toContain("without restarting completed work");
-	expect(f.messages.at(-1).message.content).toContain("/tmp/attach-child.jsonl");
+	expect(f.entries).toEqual([]);
+	expect(f.messages).toEqual([]);
+	expect(f.ctx.ui.select).not.toHaveBeenCalled();
+	expect(readFileSync(existing, "utf8")).toContain("previous progress kept");
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Original supervisor unknown"), "warning");
 });
 
-it("attaches directly into solo mode and reports the recorded session in status", async () => {
-	const f = fixture();
-	const existing = join(f.ctx.cwd, "existing.md");
+it("retains same-current-plan solo recovery and reports the recorded session in status", async () => {
+	const f = fixture(); await f.draft();
+	const existing = f.path;
 	writeFileSync(existing, "# Plan\n- worker session: /tmp/attach-child.jsonl\n- [ ] goal: attached goal\n\n## Log\n");
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
 	await f.command(`attach ${existing} solo`);
@@ -622,9 +622,10 @@ it.each(["exit", "quit", "clear", "menu"])("%s exits planning with the draft pre
 	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", undefined);
 	expect(readFileSync(f.path, "utf8")).toContain("first output");
 	expect(f.messages.length).toBe(before); // notify only, no model turn started
-	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");
 	await f.command(`attach ${f.path}`);
-	expect(f.entries.at(-1).data.mode).toBe("planning");
+	expect(f.entries.at(-1).data.mode).toBe("chat");
+	expect(f.messages.length).toBe(before);
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Cannot verify ownership"), "warning");
 });
 
 it("records the preferred worker model as a visible plan preference", async () => {
@@ -648,7 +649,7 @@ it.each(["solo", "attach"])("%s takeover cannot bypass confirmation or survive a
 	expect(f.entries.at(-1).data.workerStopped).not.toBe(true);
 });
 
-it("attach solo requires stop confirmation for a noted worker even in a fresh session", async () => {
+it("external attach solo cannot turn a noted worker or stop checkbox into ownership proof", async () => {
 	const f = fixture(); const path = join(f.ctx.cwd, "saved.md");
 	writeFileSync(path, `# Plan\n- worker session: /tmp/known.jsonl\n${f.plan}`);
 	f.ctx.ui.select.mockResolvedValueOnce("Cancel");
@@ -656,21 +657,29 @@ it("attach solo requires stop confirmation for a noted worker even in a fresh se
 	expect(f.entries).toHaveLength(0);
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
 	await f.command(`attach ${path} solo`);
-	expect(f.entries.at(-1).data).toMatchObject({ mode: "solo", workerStopped: true, worker: { sessionFile: "/tmp/known.jsonl" } });
+	expect(f.entries).toHaveLength(0);
+	expect(f.ctx.ui.select).not.toHaveBeenCalled();
+	expect(f.messages).toEqual([]);
 	expect(readFileSync(path, "utf8")).toContain("worker session: /tmp/known.jsonl");
 });
 
-it("retains the stopped session reference across plan changes", async () => {
+it("retains current solo authority and stopped-session reference when external adoption is blocked", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.launch({ id: "child", sessionFile: "/tmp/prior.jsonl" });
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
+	const binding = f.entries.at(-1).data.worker;
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command(`attach ${f.path} solo`);
+	expect(f.entries.at(-1).data.worker).toEqual(binding);
 	const other = join(f.ctx.cwd, "another.md"); writeFileSync(other, "- [ ] goal: next\n## Log\n");
+	const before = f.entries.at(-1), messageCount = f.messages.length;
 	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");
 	await f.command(`attach ${other}`);
-	expect(f.entries.at(-1).data).toMatchObject({ mode: "planning", plan: other, workerStopped: true, worker: { sessionFile: "/tmp/prior.jsonl" } });
-	await f.command("ready");
+	expect(f.entries.at(-1).data).toMatchObject({ mode: "solo", plan: f.path, workerStopped: true, worker: { sessionFile: "/tmp/prior.jsonl" } });
+	expect(f.entries.at(-1)).toBe(before); expect(f.messages).toHaveLength(messageCount);
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('read({path:"/tmp/prior.jsonl"})'), "warning");
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('herdr pane process-info --pane "native-pane"'), "warning");
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("locate exact ID child"), "warning");
 	const response = await f.tools.get("OpenGoalWorker").execute("open", { task: "next task" }, undefined, undefined, f.ctx);
-	expect(response.content[0].text).toContain("already recorded");
+	expect(response.content[0].text).toContain("solo");
 	expect(f.entries.at(-1).data.workerStopped).toBe(true);
 });
 
@@ -923,7 +932,7 @@ it("changed plan or shutdown during takeover never grants solo permission", asyn
 	expect(f.entries.at(-1).data.mode).toBe("planning");
 });
 
-it("requires explicit supervisor ownership confirmation when attaching an existing plan", async () => {
+it("blocks unknown external ownership without offering an attestation or launching work", async () => {
 	const f = fixture(); const path = join(f.ctx.cwd, "shared.md");
 	writeFileSync(path, f.plan);
 	f.ctx.ui.select.mockResolvedValueOnce("Cancel");
@@ -931,7 +940,10 @@ it("requires explicit supervisor ownership confirmation when attaching an existi
 	expect(f.entries).toHaveLength(0);
 	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");
 	await f.command(`attach ${path}`);
-	expect(f.entries.at(-1).data).toMatchObject({ mode: "planning", plan: path });
+	expect(f.entries).toHaveLength(0);
+	expect(f.ctx.ui.select).not.toHaveBeenCalled();
+	expect(f.messages).toEqual([]);
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("supported Intercom roster does not identify per-plan supervisors"), "warning");
 });
 
 it("does not approve cancelled goals or display current completion for an unavailable plan", async () => {
@@ -1088,7 +1100,7 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	f.channel.listSessions.mockRejectedValueOnce(new Error("Intercom is not connected"));
 	const waiting = await f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
 	expect(waiting.content[0].text).toContain("still connecting"); expect(openProjectPane).not.toHaveBeenCalled();
-	await f.launch({ id: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
+	await f.launch({ id: "worker-id", sessionFile: "/tmp/native-worker.jsonl", task: "Inspect [cached interruption audit](slop/audits/20260916_job1551_a2_cached_interruption_audit.md) before rerun" });
 	expect(openProjectPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: f.ctx.cwd, focus: false }));
 	expect(vi.mocked(openProjectPane).mock.calls[0][0].message).toContain("WAIT for an explicit assignment");
 	const worker = f.entries.at(-1).data.worker;
@@ -1107,6 +1119,8 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages.at(-2)?.message.content).toContain("Blocked: input missing");
 	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-notice" && entry.data.content.includes("## Worker revision report"))).toBe(true);
 	expect(f.messages.at(-1)?.message.content).toContain("## Worker revision reviews");
+	expect(f.messages.at(-1)?.message.content).toContain("cached interruption audit");
+	expect(f.messages.at(-1)?.message.content).not.toContain("](");
 	const afterFirstRevision = f.messages.length;
 	for (const text of ["Done: output.txt", "Error: execution failed"]) f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text } });
 	expect(f.messages).toHaveLength(afterFirstRevision);
@@ -1243,12 +1257,26 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	expect(worker.messages).toHaveLength(workerTurns);
 	expect(readFileSync(sm.getSessionFile()!, "utf8")).toContain("Worker review: accepted");
+	initTheme("dark");
+	const reviewEntry = sm.getBranch().find(entry => entry.type === "custom" && entry.customType === "pi-goals-report-review")!;
+	const reviewRenderer = vi.mocked(worker.pi.registerEntryRenderer).mock.calls.find(([type]) => type === "pi-goals-report-review")![1];
+	const collapsedReview = reviewRenderer(reviewEntry, { expanded: false }, worker.ctx.ui.theme);
+	expect(collapsedReview.render(100).join("\n")).toContain("Worker review: accepted");
+	expect(collapsedReview.render(100).join("\n")).not.toContain("Inspected actual output");
+	expect(reviewRenderer(reviewEntry, { expanded: true }, worker.ctx.ui.theme)).toBeInstanceOf(Markdown);
 	await review(); worker.hooks.get("session_shutdown")();
 	parent.event({ type: "session_left", sessionId: workerId });
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	worker.hooks.get("session_start")({}, worker.ctx);
+	const staleStop = worker.channel.publish.mock.lastCall?.[0];
+	vi.stubEnv("HERDR_PANE_ID", "restored-pane");
+	await worker.tools.get("AttachGoalPlan").execute("restore", { path: parent.path }, undefined, undefined, worker.ctx);
+	parent.event({ type: "message", fromSessionId: workerId, payload: staleStop });
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("native pane: restored-pane");
 	await parent.command("stop");
+	expect(parent.messages.at(-1)?.message.content).toContain("native pane restored-pane");
 	form.reportId = report("Revision failed", "error");
 	const paused = parent.messages.length;
 	await parent.hooks.get("agent_settled")({}, parent.ctx);
@@ -1294,21 +1322,32 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	parent.hooks.get("session_start")({}, parent.ctx); // Reconcile the missed stop from real saved worker history.
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(missed);
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
 	form.reportId = missed; await review(); // Old-plan blocked review remains deliverable after retargeting.
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain(missed);
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
+	const afterReview = parent.messages.length;
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
+	parent.hooks.get("session_start")({}, parent.ctx);
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
+	expect(parent.messages).toHaveLength(afterReview); // Shrinking/restoring the same backlog does not wake again.
 	const ordinary = (id: string, text: string, links = {}, sender = workerId) => {
 		const details = { from: { id: sender }, message: { id, timestamp: Date.now(), content: { text }, ...links } };
 		parent.ctx.sessionManager.getBranch().push({ type: "custom_message", id, customType: "intercom_message", content: text, details });
 		parent.hooks.get("message_end")({ message: { role: "custom", customType: "intercom_message", content: text, details } }, parent.ctx);
 	};
+	const beforeOrdinary = parent.messages.length;
 	ordinary("ordinary-a", "Partial output needs review");
 	ordinary("ordinary-b", "Corrected output needs review", { supersedes: "ordinary-a" });
 	ordinary("retry-b", "Corrected output needs review", { retryOf: "ordinary-b" });
 	ordinary("retry-again", "Corrected output needs review", { retryOf: "retry-b" });
 	ordinary("ack-only", "OK"); ordinary("foreign", "Unowned report", {}, "foreign-peer");
-	parent.hooks.get("session_start")({}, parent.ctx); await parent.command("status");
+	expect(parent.messages).toHaveLength(beforeOrdinary); // No second body beside Intercom's saved/displayed original.
+	parent.hooks.get("session_start")({}, parent.ctx);
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
+	expect(parent.messages).toHaveLength(beforeOrdinary); // Ordinary Intercom messages remain visible but are not review obligations.
+	await parent.command("status");
 	const pending = parent.ctx.ui.notify.mock.lastCall?.[0];
 	for (const nonReviewable of ["ordinary-a", "ordinary-b", "retry-b", "retry-again", "ack-only", "foreign-peer"]) expect(pending).not.toContain(nonReviewable);
 	expect(pending).toContain(nextReport);

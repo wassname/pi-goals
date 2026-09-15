@@ -35,9 +35,14 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	const reviewCollapsed = render({ type: "custom", customType: "pi-goals-notice", data: { content: review } }, { expanded: false }, theme);
 	expect(reviewCollapsed.render(80).join("\n")).toContain("Worker revisions · review requested");
 
-	display.restore({ sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext);
+	const deliveredReview = "## Worker review: changes_requested\n\nCorrect output.txt.";
+	display.hide(deliveredReview);
+	expect(transform(deliveredReview, { messageType: "user" })).toBe("");
+	display.restore({ sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext, ["pi-goals-report-review"]);
 	expect(transform(content, { messageType: "user" })).toBe(content);
-	display.restore({ sessionManager: { getBranch: () => [entry] } } as unknown as ExtensionContext);
+	const reviewEntry = { type: "custom", customType: "pi-goals-report-review", data: { content: deliveredReview } };
+	display.restore({ sessionManager: { getBranch: () => [entry, reviewEntry] } } as unknown as ExtensionContext, ["pi-goals-report-review"]);
 	expect(transform(content, { messageType: "user" })).toBe("");
+	expect(transform(deliveredReview, { messageType: "user" })).toBe("");
 	expect(entry.data.content).toBe(content);
 });

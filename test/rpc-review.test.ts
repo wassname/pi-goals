@@ -185,6 +185,12 @@ describe("RPC review flow", () => {
 				expect(client.messages.some(event => event.type === "message_end" && (event.message as any)?.role === "user" && (event.message as any)?.content[0]?.text === content)).toBe(true);
 				expect(supervisor.messages.filter(message => message.role === "user" && messageText(message.content) === content)).toHaveLength(1);
 			}
+			const restoreStart = client.messages.length;
+			client.send({ type: "prompt", id: "restore-same-plan", message: `/goals attach ${planPath}` });
+			await client.waitFor(message => message.type === "response" && message.id === "restore-same-plan", restoreStart);
+			expect(client.messages.slice(restoreStart).filter(isSelect)).toEqual([]);
+			expect(client.messages.slice(restoreStart).some(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes("mode and worker binding unchanged"))).toBe(true);
+			expect(requests).toHaveLength(beforeReady + 1);
 			const beforeNotice = requests.length, noticeStart = client.messages.length;
 			client.send({ type: "prompt", id: "attachment-notice", message: "/fixture-attachment-notice" });
 			const attachment = await client.waitFor(message => message.type === "message_end" && (message.message as any)?.customType === "pi-goals-supervision", noticeStart);

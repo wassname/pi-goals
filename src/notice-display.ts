@@ -10,7 +10,7 @@ export function noticeDisplay(pi: ExtensionAPI) {
 		context.messageType === "user" && mirrored.has(markdown) ? "" : markdown);
 	pi.registerEntryRenderer(NOTICE, (entry, { expanded }, theme) => {
 		const { content } = entry.data as { content: string };
-		const label = content.includes("\nPlan changed.") ? "Plan changed · review requested"
+		const label = content.includes("\nPlan changed") ? "Plan changed · review requested"
 			: content.includes("## Worker revision reviews") ? "Worker revisions · review requested"
 			: content.includes("## Worker revision report") ? "Worker revision report"
 			: "Goal instructions";
@@ -21,14 +21,19 @@ export function noticeDisplay(pi: ExtensionAPI) {
 		};
 	});
 	return {
+		hide(content: string) {
+			mirrored.add(content);
+		},
 		mirror(content: string) {
 			mirrored.add(content);
 			pi.appendEntry(NOTICE, { content });
 		},
-		restore(ctx: ExtensionContext) {
+		restore(ctx: ExtensionContext, hiddenTypes: string[] = []) {
 			mirrored.clear();
 			for (const entry of ctx.sessionManager.getBranch()) {
-				if (entry.type === "custom" && entry.customType === NOTICE) mirrored.add((entry.data as { content: string }).content);
+				if (entry.type !== "custom" || entry.customType !== NOTICE && !hiddenTypes.includes(entry.customType)) continue;
+				const content = (entry.data as { content?: unknown }).content;
+				if (typeof content === "string") mirrored.add(content);
 			}
 		},
 	};

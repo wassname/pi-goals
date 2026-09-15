@@ -4,8 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { type FSWatcher, mkdirSync, readdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ExtensionAPI, type ExtensionContext, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme, keyHint, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { Markdown, truncateToWidth } from "@earendil-works/pi-tui";
 import { INTERCOM_EXTENSION_REGISTER_EVENT, type IntercomExtensionChannel, type IntercomExtensionRegistration } from "pi-intercom/extension-api.js";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { Type } from "typebox";
@@ -14,7 +14,6 @@ import { FOLD_LINE, foldPlan, GOAL_LINE, planRequirements as requirements } from
 import { planViews } from "./plan-view.js";
 import {
 	attachGoalPlanDescription,
-	attachNotice,
 	childPlanAttached,
 	childPlanRole,
 	completeGoalDescription,
@@ -285,7 +284,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	}
 	function restore(ctx: ExtensionContext) {
 		cancelCheckInRemoval(); agentRunActive = false;
-		notices.restore(ctx);
+		notices.restore(ctx, [REVIEW]);
 		generation++;
 		state = initial();
 		for (const entry of ctx.sessionManager.getBranch()) {
@@ -316,12 +315,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			pi.sendMessage({ customType: "pi-goals-supervision", content, display: !collapse }, { deliverAs: "nextTurn" });
 		}
 	}
-	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
+	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string): Promise<boolean> {
+		if (target !== state.plan || state.mode === "chat") { ctx.ui.notify(nativeMessages.externalOwnershipUnknown(target, state.worker), "warning"); return false; }
 		if (opening) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
 		const stamp = generation;
 		const revision = workerRevision;
-		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
-		const choice = await ctx.ui.select(solo ? "Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?" : "Confirm no other supervisor owns this plan. Preserve any existing worker session and reconnect rather than starting another writer.", [confirmation, "Cancel"]);
+		const confirmation = "Worker confirmed stopped";
+		const choice = await ctx.ui.select("Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?", [confirmation, "Cancel"]);
 		if (stamp !== generation || revision !== workerRevision) return false;
 		if (choice !== confirmation) return false;
 		if (readFileSync(target, "utf8") !== text) { ctx.ui.notify("Plan changed during takeover; confirm again.", "warning"); return false; }
@@ -361,12 +361,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			paneId: process.env.HERDR_PANE_ID ?? "", model: ctx.model ? ctx.model.provider + "/" + ctx.model.id : undefined };
 	}
 	const records = <T,>(ctx: ExtensionContext, type: string): T[] => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === type ? [entry.data as T] : []);
-	const pendingReports = (ctx: ExtensionContext) => records<Report>(ctx, REPORT).filter(report => !records<ReportReview>(ctx, REVIEW).some(review => reviewedReportId(review) === report.id));
+	const pendingReports = (ctx: ExtensionContext) => records<Report>(ctx, REPORT).filter(report =>
+		!records<ReportReview>(ctx, REVIEW).some(review => reviewedReportId(review) === report.id));
 	const reportLabel = (report: Report) => {
 		const revision = report.id.slice(report.id.lastIndexOf(":") + 1);
-		const task = report.task ? `${report.task.trim().replace(/\s+/g, " ").slice(0, 100)} — ` : "";
-		const summary = report.text.trim().replace(/\s+/g, " ").slice(0, 160) || "No worker summary";
-		return `revision ${revision}: ${task}${summary} (reportId ${report.id})`;
+		const plainTask = report.task?.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`~<>]/g, "").trim().replace(/\s+/g, " ").slice(0, 100);
+		return `revision ${revision}${plainTask ? ` — ${plainTask}` : ""} (reportId ${report.id})`;
 	};
 	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
@@ -377,12 +377,22 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	function remindReports(ctx: ExtensionContext) {
 		if (state.child || state.mode !== "supervising") return;
 		const reports = pendingReports(ctx);
-		const fingerprint = digest(JSON.stringify(reports.map(report => report.id)));
-		if (!reports.length || records<string>(ctx, REVIEW_REMINDER).at(-1) === fingerprint) return;
-		pi.appendEntry(REVIEW_REMINDER, fingerprint);
+		const reportIds = reports.map(report => report.id);
+		const branch = ctx.sessionManager.getBranch();
+		const sinceReminder = branch.slice(branch.map(entry => entry.type === "custom" ? entry.customType : "").lastIndexOf(REVIEW_REMINDER) + 1);
+		if (!sinceReminder.some(entry => entry.type === "custom" && entry.customType === REPORT && reportIds.includes((entry.data as Report).id))) return;
+		pi.appendEntry(REVIEW_REMINDER);
 		send(pendingReportReviews(reports.map(reportLabel)));
 	}
-	pi.registerEntryRenderer(REVIEW, entry => new Text((entry.data as ReportReview).content, 0, 0));
+	pi.registerEntryRenderer(REVIEW, (entry, { expanded }, theme) => {
+		const review = entry.data as ReportReview;
+		if (expanded) return new Markdown(review.content, 0, 0, getMarkdownTheme());
+		const revision = reviewedReportId(review)?.split(":").at(-1) ?? "unknown";
+		return {
+			render: (width) => [truncateToWidth(theme.fg("muted", `[pi-goals] Worker review: ${review.verdict} · revision ${revision} · ${keyHint("app.tools.expand", "expand")}`), width)],
+			invalidate() {},
+		};
+	});
 	function registerChannel(ctx: ExtensionContext) {
 		liveContext = ctx;
 		const registration: IntercomExtensionRegistration = {
@@ -408,7 +418,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (!prior && review.verdict === "changes_requested" && (state.mode === "paused" || data.plan !== state.plan || data.requestId !== state.parent.requestId || !review.continuation.trim())) return;
 					if (!prior) {
 						pi.appendEntry(REVIEW, review);
-						if (review.verdict === "changes_requested") pi.sendUserMessage(review.content, { deliverAs: "followUp" });
+						if (review.verdict === "changes_requested") {
+							notices.hide(review.content);
+							pi.sendUserMessage(review.content, { deliverAs: "followUp" });
+						}
 					}
 					channel?.publish({ ...data, review, type: "review_saved", to: state.parent.intercomId }, { audience: "capable" });
 					return;
@@ -432,8 +445,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					sendAttachment(state.plan, event.fromSessionId, nativeMessages.attached(data.sessionFile));
 				}
 				if (data.type === "stopped" && event.fromSessionId === worker.intercomId && typeof data.entryId === "string" && data.entryId && typeof data.text === "string") {
+					const id = `${event.fromSessionId}:${data.entryId}`;
+					if (records<Report>(ctx, REPORT).some(report => report.id === id)) return;
 					if (data.identity) { worker.identity = data.identity; worker.sessionFile = data.identity.sessionFile; save(); }
-					const report: Report = { id: `${event.fromSessionId}:${data.entryId}`, plan: state.plan, session: event.fromSessionId, sessionFile: worker.sessionFile!, requestId: data.requestId, task: worker.task, text: data.text };
+					const report: Report = { id, plan: state.plan, session: event.fromSessionId, sessionFile: worker.sessionFile!, requestId: data.requestId, task: worker.task, text: data.text };
 					recordReport(ctx, report);
 				}
 			},
@@ -645,7 +660,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						`Last observed worker model: ${state.worker?.identity?.model ?? "unconfirmed"}; verify current choice before claiming configuration.`,
 						`Pending worker revision reviews: ${pendingReports(ctx).map(reportLabel).join("; ") || "none"}`,
 						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
-						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.paneId ?? "unconfirmed"}`,
+						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.identity?.paneId || state.worker?.paneId || "unconfirmed"}`,
 						notedPlanValue("worker session") ? `Worker session noted in plan: ${notedPlanValue("worker session")}` : "",
 						`Check-in: session-scoped pi-scheduler task ${JSON.stringify(`goals-${ctx.sessionManager.getSessionId()}`)} (default 1h; /schedules all shows current recurrence; manage_scheduled_task updates it)`,
 						"Inspect the exact Intercom session and native pane; a binding or idle status is not completion.",
@@ -684,14 +699,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					let text: string;
 					try { text = readFileSync(target, "utf8"); } catch { ctx.ui.notify(`Cannot read plan at ${target}.`, "error"); return; }
 					if (!goals(text).length || goals(text).some(g => !g.subject)) { ctx.ui.notify(`${target} has no '- [ ] goal:' lines with valid subjects; attach a judgeable plan.`, "warning"); return; }
-					if (!solo && ((state.worker && !state.workerStopped) || state.mode === "supervising")) { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
+					if (!solo && state.plan === target && state.mode !== "chat") {
+						notice = true; fullPlanContextDue = true; refresh(ctx);
+						ctx.ui.notify(nativeMessages.samePlanRestored, "info"); return;
+					}
 					const noted = /^-\s*worker session:\s*(\S+)/im.exec(foldPlan(text))?.[1];
-					if (!(await confirmOwnership(ctx, target, text, solo))) return;
-					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
-					state = { mode: solo ? "solo" : "planning", plan: target, worker, workerStopped: solo || (!noted && state.workerStopped) };
-					generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
-					if (solo) enterSolo(ctx);
-					else send(attachNotice(target, false, noted));
+					if (!(await confirmOwnership(ctx, target, text))) return;
+					if (noted && !state.worker) state.worker = { sessionFile: resolve(ctx.cwd, noted) };
+					enterSolo(ctx);
 					return;
 				}
 				if (command === "exit") {
