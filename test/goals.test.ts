@@ -1131,7 +1131,9 @@ it("ordinary project peer explicitly attaches as worker, never gaining approval 
 	expect(reply.content[0].text).toContain("only to the active parent");
 	f.hooks.get("session_start")({}, f.ctx); f.hooks.get("session_compact")();
 	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).systemPrompt).toContain("delegated implementation worker");
-	f.hooks.get("agent_end")({ messages: [{ role: "assistant", content: [{ type: "text", text: "Result at output.txt" }], stopReason: "stop" }] }, f.ctx);
+	const assistant = { role: "assistant", content: [{ type: "text", text: "Result at output.txt" }], stopReason: "stop" };
+	f.ctx.sessionManager.getBranch().push({ type: "message", id: "saved-report", message: assistant });
+	f.hooks.get("agent_end")({ messages: [assistant] }, f.ctx);
 	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", text: "Result at output.txt" }), { audience: "capable" });
 });
 
@@ -1202,10 +1204,11 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	const requestId = parent.entries.at(-1).data.worker.requestId;
 	await worker.tools.get("AttachGoalPlan").execute("attach", { path: parent.path, parent: "parent-intercom", requestId }, undefined, undefined, worker.ctx);
 	const report = (text: string, stopReason = "stop") => {
+		worker.hooks.get("agent_start")({}, worker.ctx);
 		const message = { role: "assistant", content: [{ type: "text", text }], stopReason, timestamp: Date.now(), api: "openai-completions", provider: "offline", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-		const entry = sm.appendMessage(message as any);
+		sm.appendMessage(message as any);
 		worker.hooks.get("agent_end")({ messages: [message] }, worker.ctx);
-		return `${workerId}:${entry}`;
+		return `${workerId}:${worker.channel.publish.mock.lastCall?.[0].entryId}`;
 	};
 	parent.ctx.isIdle.mockReturnValue(false); // Another authorized task is still running.
 	const id = report("Output is ready.");
@@ -1249,6 +1252,12 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending report reviews: none");
 	expect(readFileSync(parent.path, "utf8")).not.toContain("[✓]");
 
+	// Lost notification and cancellation before any new assistant message: durable run identity.
+	worker.hooks.get("agent_start")({}, worker.ctx);
+	worker.channel.publish.mockImplementationOnce(() => {});
+	worker.hooks.get("agent_end")({ messages: [] }, worker.ctx);
+	const missed = `${workerId}:${worker.channel.publish.mock.lastCall?.[0].entryId}`;
+	expect(missed).not.toBe(form.report);
 	// Same preserved worker, newly approved plan and request: old reviews stay in history.
 	const history = sm.getBranch(), oldPlan = readFileSync(parent.path, "utf8");
 	await parent.command("clear"); await parent.command("new Next output");
@@ -1271,6 +1280,30 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
 	expect(worker.channel.publish.mock.lastCall?.[0]).toMatchObject({ type: "stopped", plan: nextPlan, requestId: nextRequest });
+	parent.hooks.get("session_start")({}, parent.ctx); // Reconcile the missed stop from real saved worker history.
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(missed);
+	form.report = missed; await review(); // Old-plan blocked review remains deliverable after retargeting.
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain(missed);
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
+	const ordinary = (id: string, text: string, links = {}, sender = workerId) => {
+		const details = { from: { id: sender }, message: { id, timestamp: Date.now(), content: { text }, ...links } };
+		parent.ctx.sessionManager.getBranch().push({ type: "custom_message", id, customType: "intercom_message", content: text, details });
+		parent.hooks.get("message_end")({ message: { role: "custom", customType: "intercom_message", content: text, details } }, parent.ctx);
+	};
+	ordinary("ordinary-a", "Partial output needs review");
+	ordinary("ordinary-b", "Corrected output needs review", { supersedes: "ordinary-a" });
+	ordinary("retry-b", "Corrected output needs review", { retryOf: "ordinary-b" });
+	ordinary("retry-again", "Corrected output needs review", { retryOf: "retry-b" });
+	ordinary("ack-only", "OK"); ordinary("foreign", "Unowned report", {}, "foreign-peer");
+	parent.hooks.get("session_start")({}, parent.ctx); await parent.command("status");
+	const pending = parent.ctx.ui.notify.mock.lastCall?.[0];
+	expect(pending).toContain(`${workerId}:ordinary-b`);
+	for (const excluded of ["ordinary-a", "retry-b", "retry-again", "ack-only", "foreign-peer"]) expect(pending).not.toContain(excluded);
+	form.report = `${workerId}:ordinary-b`; await review();
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("ordinary-b");
 	expect(readFileSync(parent.path, "utf8")).toBe(oldPlan);
 	expect((await worker.tools.get("CompleteGoal").execute("deny", { goal: "first output", evidence: [], observation: "claim" }, undefined, undefined, worker.ctx)).content[0].text).toContain("only to the active parent");
 });

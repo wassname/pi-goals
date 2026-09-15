@@ -57,7 +57,9 @@ import {
 const STATE = "pi-goals-main-supervisor-v1";
 const WORKER = "goals-worker";
 const REPORT = "pi-goals-report", REVIEW = "pi-goals-report-review", REVIEW_DRAFT = "pi-goals-review-draft", REVIEW_REMINDER = "pi-goals-review-reminder";
-interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; text: string; }
+const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop";
+interface WorkerStop { type: "stopped"; entryId: string; to: string; requestId: string; plan: string; text: string; identity: Peer; }
+interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; text: string; supersedes?: string; }
 interface ReportReview { id: string; report: string; verdict: string; content: string; continuation: string; }
 const WIDGET_GOAL_LIMIT = 3;
 type Mode = "chat" | "planning" | "supervising" | "paused" | "solo";
@@ -354,12 +356,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			paneId: process.env.HERDR_PANE_ID ?? "", model: ctx.model ? ctx.model.provider + "/" + ctx.model.id : undefined };
 	}
 	const records = <T,>(ctx: ExtensionContext, type: string): T[] => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === type ? [entry.data as T] : []);
-	const pendingReports = (ctx: ExtensionContext) => records<Report>(ctx, REPORT).filter(report => report.plan === state.plan && !records<ReportReview>(ctx, REVIEW).some(review => review.report === report.id));
-	function recordReport(ctx: ExtensionContext, report: Report) {
+	const pendingReports = (ctx: ExtensionContext) => records<Report>(ctx, REPORT).filter(report => !records<ReportReview>(ctx, REVIEW).some(review => review.report === report.id) && !records<Report>(ctx, REPORT).some(newer => newer.session === report.session && newer.supersedes === report.id));
+	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
 		pi.appendEntry(REPORT, report);
 		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}`), false);
-		if (ctx.isIdle()) remindReports(ctx);
+		if (wake && ctx.isIdle()) remindReports(ctx);
 	}
 	function remindReports(ctx: ExtensionContext) {
 		if (state.child || state.mode !== "supervising") return;
@@ -378,15 +380,21 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			onEvent: event => {
 				if (event.type === "session_left" && event.sessionId === state.worker?.intercomId && state.plan) {
 					let entryId = "disconnected";
-					try { entryId = savedSession(state.worker.sessionFile!).getBranch().filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id || entryId; } catch { /* Unknown history remains a review obligation, not proof of exit. */ }
+					try {
+						const branch = savedSession(state.worker.sessionFile!).getBranch();
+						const run = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1);
+						const stop = branch.filter(entry => entry.type === "custom" && entry.customType === STOP).at(-1);
+						const stopped = stop?.type === "custom" ? stop.data as WorkerStop : undefined;
+						entryId = run && run.id !== stopped?.entryId ? `${run.id}:disconnected` : stopped?.entryId || branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id || entryId;
+					} catch { /* Unknown history remains a review obligation, not proof of exit. */ }
 					recordReport(ctx, { id: `${event.sessionId}:${entryId}`, plan: state.plan, session: event.sessionId, sessionFile: state.worker.sessionFile || "", requestId: state.worker.requestId!, text: nativeMessages.disconnected });
 				}
 				if (event.type !== "message" || !event.payload || typeof event.payload !== "object") return;
 				const data = event.payload as { type?: string; to?: string; requestId?: string; plan?: string; sessionFile?: string; text?: string; identity?: Peer; entryId?: string; review?: ReportReview };
-				if (data.type === "review" && state.child && state.parent && event.fromSessionId === state.parent.intercomId && data.requestId === state.parent.requestId && data.plan === state.plan && data.sessionFile === ctx.sessionManager.getSessionFile() && data.review) {
+				if (data.type === "review" && state.child && state.parent && event.fromSessionId === state.parent.intercomId && records<State>(ctx, STATE).some(saved => saved.child && saved.parent?.intercomId === event.fromSessionId && saved.parent.requestId === data.requestId && saved.plan === data.plan) && data.sessionFile === ctx.sessionManager.getSessionFile() && data.review) {
 					const prior = records<ReportReview>(ctx, REVIEW).find(saved => saved.report === data.review!.report);
 					const review = prior || data.review;
-					if (!prior && review.verdict === "changes_requested" && (state.mode === "paused" || !review.continuation.trim())) return;
+					if (!prior && review.verdict === "changes_requested" && (state.mode === "paused" || data.plan !== state.plan || data.requestId !== state.parent.requestId || !review.continuation.trim())) return;
 					if (!prior) {
 						pi.appendEntry(REVIEW, review);
 						if (review.verdict === "changes_requested") pi.sendUserMessage(review.content, { deliverAs: "followUp" });
@@ -397,7 +405,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (data.type === "review_saved" && !state.child && data.review) {
 					const draft = records<ReportReview>(ctx, REVIEW_DRAFT).find(review => review.id === data.review!.id);
 					const report = records<Report>(ctx, REPORT).find(report => report.id === draft?.report);
-					if (!draft || !report || event.fromSessionId !== report.session || data.requestId !== report.requestId || data.to !== state.worker?.parentId || data.plan !== report.plan) return;
+					if (!draft || !report || event.fromSessionId !== report.session || data.requestId !== report.requestId || !records<State>(ctx, STATE).some(saved => saved.worker && saved.worker.parentId === data.to && saved.worker.requestId === report.requestId && saved.worker.intercomId === report.session) || data.plan !== report.plan) return;
 					try {
 						const saved = savedSession(report.sessionFile).getBranch().some(entry => entry.type === "custom" && entry.customType === REVIEW && JSON.stringify(entry.data) === JSON.stringify(draft));
 						if (saved && !records<ReportReview>(ctx, REVIEW).some(review => review.id === draft.id)) pi.appendEntry(REVIEW, draft);
@@ -421,15 +429,55 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		};
 		pi.events.emit(INTERCOM_EXTENSION_REGISTER_EVENT, registration);
 	}
+	function reconcileReports(ctx: ExtensionContext) {
+		if (state.child) return;
+		const owners = records<State>(ctx, STATE).filter(saved => saved.worker?.intercomId && saved.worker.sessionFile && saved.worker.requestId && saved.worker.parentId);
+		for (const owner of new Map(owners.map(saved => [saved.worker!.requestId, saved])).values()) {
+			const worker = owner.worker!;
+			try {
+				for (const entry of savedSession(worker.sessionFile!).getBranch()) {
+					if (entry.type !== "custom" || entry.customType !== STOP) continue;
+					const stopped = entry.data as WorkerStop;
+					if (stopped.to !== worker.parentId || stopped.requestId !== worker.requestId || stopped.plan !== owner.plan) continue;
+					recordReport(ctx, { id: `${worker.intercomId}:${stopped.entryId}`, plan: stopped.plan, session: worker.intercomId!, sessionFile: worker.sessionFile!, requestId: stopped.requestId, text: stopped.text }, false);
+				}
+			} catch { /* Unavailable saved history is not evidence of a stopped worker. */ }
+		}
+		const aliases = new Map<string, string>();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "custom_message" || entry.customType !== "intercom_message") continue;
+			const received = entry.details as { from?: { id?: string }; message?: { id?: string; timestamp?: number; content?: { text?: string }; retryOf?: string; supersedes?: string } } | undefined;
+			const sender = received?.from?.id, message = received?.message;
+			if (!sender || !message?.id || typeof message.content?.text !== "string" || !message.content.text.trim() || /^(?:ok(?:ay)?|thanks|received|acknowledged)[.!]?$/i.test(message.content.text.trim())) continue;
+			const ownerEntry = ctx.sessionManager.getBranch().filter(saved => saved.type === "custom" && saved.customType === STATE && (!message.timestamp || !saved.timestamp || Date.parse(saved.timestamp) <= message.timestamp) && (saved.data as State).worker?.intercomId === sender).at(-1);
+			const owner = ownerEntry?.type === "custom" ? ownerEntry.data as State : undefined;
+			if (!owner?.worker?.requestId || !owner.worker.sessionFile || !owner.plan) continue;
+			const id = `${sender}:${message.id}`, retry = message.retryOf ? aliases.get(`${sender}:${message.retryOf}`) || `${sender}:${message.retryOf}` : undefined;
+			if (retry && records<Report>(ctx, REPORT).some(report => report.id === retry && report.text === message.content!.text)) { aliases.set(id, retry); continue; }
+			aliases.set(id, id);
+			const supersedes = message.supersedes ? aliases.get(`${sender}:${message.supersedes}`) || `${sender}:${message.supersedes}` : undefined;
+			recordReport(ctx, { id, session: sender, sessionFile: owner.worker.sessionFile, plan: owner.plan, requestId: owner.worker.requestId, text: message.content.text, supersedes }, false);
+		}
+		if (ctx.isIdle()) remindReports(ctx);
+	}
 	const reportStop = (text: string) => {
-		if (!state.child || !state.parent) return;
+		if (!state.child || !state.parent || !state.plan || !liveContext) return;
+		const branch = liveContext.sessionManager.getBranch();
+		const entryId = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1)?.id
+			|| branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id;
+		if (!entryId) return;
+		let stopped = records<WorkerStop>(liveContext, STOP).find(saved => saved.entryId === entryId);
+		if (!stopped) {
+			stopped = { type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text: Buffer.from(text).subarray(0, 6000).toString("utf8"), entryId, identity: identity(liveContext) };
+			pi.appendEntry(STOP, stopped);
+		}
 		try {
 			if (!channel?.snapshot().connected) throw new Error("disconnected");
-			channel.publish({ type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text: Buffer.from(text).subarray(0, 6000).toString("utf8"), entryId: liveContext?.sessionManager.getBranch().filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id, identity: liveContext ? identity(liveContext) : undefined }, { audience: "capable" });
+			channel.publish(stopped, { audience: "capable" });
 		} catch { send(nativeMessages.reportUnavailable, false); }
 	};
 	pi.on("session_start", (_e, ctx) => {
-		restore(ctx); registerChannel(ctx);
+		restore(ctx); registerChannel(ctx); reconcileReports(ctx);
 	});
 	pi.on("session_tree", (_e, ctx) => restore(ctx));
 	pi.on("session_shutdown", () => { reportStop(nativeMessages.shuttingDown); cancelCheckInRemoval(); agentRunActive = false; pauseCheckIn = false; channel = undefined; liveContext = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
@@ -452,7 +500,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 	});
 	// Queued follow-ups can be consumed inside the same run, without before_agent_start.
-	pi.on("message_end", (event) => {
+	pi.on("message_end", (event, ctx) => {
+		if (event.message.role === "custom" && event.message.customType === "intercom_message") reconcileReports(ctx);
 		if (event.message.role !== "user") return;
 		const content = typeof event.message.content === "string" ? event.message.content : event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
 		if (pendingPlanNotice && content === `[pi-goals]\n${pendingPlanNotice}`) pendingPlanNotice = undefined;
@@ -467,13 +516,15 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
 	let proposedDraft = "";
 	let proposing = false;
-	pi.on("agent_start", () => {
+	pi.on("agent_start", (_event, ctx) => {
 		agentRunActive = true;
+		if (state.child && state.parent) pi.appendEntry(RUN, { plan: state.plan, parent: state.parent, session: identity(ctx) });
 		if (clearCheckIn) { clearTimeout(clearCheckIn.deadline); clearCheckIn.deadline = undefined; }
 	});
 	pi.on("agent_settled", async (_e, ctx) => {
 		agentRunActive = false;
 		clearCheckIn?.startDeadline?.();
+		reconcileReports(ctx);
 		remindReports(ctx);
 		if (state.child || state.mode !== "planning" || !ctx.hasUI || proposing) return;
 		const text = planText();
@@ -770,7 +821,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising") throw new Error("Only the active parent supervisor can review worker reports.");
-			const report = records<Report>(ctx, REPORT).find(report => report.id === params.report && report.plan === state.plan);
+			const report = records<Report>(ctx, REPORT).find(report => report.id === params.report);
 			if (!report) throw new Error("Unknown owned report; inspect pending report reviews in /goals status.");
 			if (!["accepted", "changes_requested", "blocked"].includes(params.verdict) || !params.goal.quote.trim() || !params.observation.trim() || !params.unmet.trim() || params.verdict === "changes_requested" && !params.continuation?.trim()) throw new Error("Supply the verdict, inspection, unmet requirements (or none), and a concrete continuation for changes_requested.");
 			const sources = [params.goal, ...params.evidence].map(source => {
