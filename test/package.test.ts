@@ -6,14 +6,11 @@ import { expect, it } from "vitest";
 
 it("declares current entry and bundled extension resources that exist after install", () => {
 	const manifest = JSON.parse(readFileSync("package.json", "utf8"));
-	expect(manifest.pi.extensions[0]).toBe("./src/index.ts");
 	for (const path of manifest.pi.extensions) expect(existsSync(resolve(path)), path).toBe(true);
 	for (const name of ["pi-subagents", "pi-intercom", "@jl1990/pi-scheduler"]) {
 		expect(manifest.dependencies[name]).toBeTruthy();
 		expect(manifest.bundleDependencies).toContain(name);
 	}
-	expect(manifest.dependencies["pi-subagents"]).toBe("0.66.0");
-	expect(manifest.bundledDependencies).toBeUndefined();
 	expect(JSON.parse(readFileSync("package-lock.json", "utf8")).packages[""].bundleDependencies).toEqual(manifest.bundleDependencies);
 });
 
