@@ -263,11 +263,11 @@ export const soloRole = "Solo mode: implement the approved plan directly; do not
 export function soloNotice(planPath: string): string {
 	return `User authorized solo work on ${planPath} after confirming no other writer remains. ${soloRole}`;
 }
-export function attachNotice(planPath: string, solo: boolean, notedWorker: string | undefined): string {
-	return `Attached to the existing plan ${planPath}; read it and its evidence without restarting completed work or re-deriving settled decisions. ${notedWorker ? `Recorded worker session: ${notedWorker}; inspect liveness before resume.` : ""} ${solo ? soloRole : "Present /goals review or /goals ready; no implementation before approval."}`;
-}
-
 export const nativeMessages = {
+	externalOwnershipUnknown: (path: string, worker?: { intercomId?: string; sessionFile?: string; paneId?: string; identity?: { paneId?: string } }) => {
+		const pane = worker?.identity?.paneId || worker?.paneId;
+		return `Cannot verify ownership of ${path}: the supported Intercom roster does not identify per-plan supervisors; a missing row is not exit proof. Original supervisor unknown. Current context and authority unchanged; no adoption or takeover authorized. Read-only inspection: read({path:${JSON.stringify(path)}}). ${worker ? `Current worker only (not proof of the target's owner): ${worker.intercomId ? `intercom action:list, locate exact ID ${worker.intercomId}. ` : ""}${worker.sessionFile ? `read({path:${JSON.stringify(worker.sessionFile)}}). ` : ""}${pane ? `herdr pane process-info --pane ${JSON.stringify(pane)}. ` : ""}` : ""}Use /goals status for current references. Return to the original supervisor's saved context only when independently identified; no target can be inferred here.`;
+	},
 	samePlanRestored: "Plan context refreshed; mode and worker binding unchanged. No new work authorized.",
 	workerPause: (paused: boolean) => `Worker ${paused ? "paused" : "unpaused"} locally; no new task submitted and no approval authority granted.`,
 	taskRequired: "Supply an explicit bounded proposed task for a new worker context.",

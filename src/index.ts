@@ -13,7 +13,6 @@ import { FOLD_LINE, foldPlan, GOAL_LINE, planRequirements as requirements } from
 import { planViews } from "./plan-view.js";
 import {
 	attachGoalPlanDescription,
-	attachNotice,
 	childPlanAttached,
 	childPlanRole,
 	completeGoalDescription,
@@ -311,12 +310,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 		} else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
-	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
+	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string): Promise<boolean> {
+		if (target !== state.plan || state.mode === "chat") { ctx.ui.notify(nativeMessages.externalOwnershipUnknown(target, state.worker), "warning"); return false; }
 		if (opening) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
 		const stamp = generation;
 		const revision = workerRevision;
-		const confirmation = solo ? "Worker confirmed stopped" : "Previous supervisor confirmed stopped";
-		const choice = await ctx.ui.select(solo ? "Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?" : "Confirm no other supervisor owns this plan. Preserve any existing worker session and reconnect rather than starting another writer.", [confirmation, "Cancel"]);
+		const confirmation = "Worker confirmed stopped";
+		const choice = await ctx.ui.select("Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?", [confirmation, "Cancel"]);
 		if (stamp !== generation || revision !== workerRevision) return false;
 		if (choice !== confirmation) return false;
 		if (readFileSync(target, "utf8") !== text) { ctx.ui.notify("Plan changed during takeover; confirm again.", "warning"); return false; }
@@ -695,14 +695,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						notice = true; fullPlanContextDue = true; refresh(ctx);
 						ctx.ui.notify(nativeMessages.samePlanRestored, "info"); return;
 					}
-					if (!solo && ((state.worker && !state.workerStopped) || state.mode === "supervising")) { ctx.ui.notify("Exit and resolve the existing worker before replacing the plan. The current plan is preserved.", "warning"); return; }
 					const noted = /^-\s*worker session:\s*(\S+)/im.exec(foldPlan(text))?.[1];
-					if (!(await confirmOwnership(ctx, target, text, solo))) return;
+					if (!(await confirmOwnership(ctx, target, text))) return;
 					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
-					state = { mode: solo ? "solo" : "planning", plan: target, worker, workerStopped: solo || (!noted && state.workerStopped) };
+					state = { mode: "solo", plan: target, worker, workerStopped: true };
 					generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
-					if (solo) enterSolo(ctx);
-					else send(attachNotice(target, false, noted));
+					enterSolo(ctx);
 					return;
 				}
 				if (command === "exit") {
