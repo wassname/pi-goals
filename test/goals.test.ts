@@ -665,7 +665,9 @@ it("external attach solo cannot turn a noted worker or stop checkbox into owners
 it("retains current solo authority and stopped-session reference when external adoption is blocked", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.launch({ id: "child", sessionFile: "/tmp/prior.jsonl" });
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
+	const binding = f.entries.at(-1).data.worker;
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command(`attach ${f.path} solo`);
+	expect(f.entries.at(-1).data.worker).toEqual(binding);
 	const other = join(f.ctx.cwd, "another.md"); writeFileSync(other, "- [ ] goal: next\n## Log\n");
 	const before = f.entries.at(-1), messageCount = f.messages.length;
 	f.ctx.ui.select.mockResolvedValueOnce("Previous supervisor confirmed stopped");

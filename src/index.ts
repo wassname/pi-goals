@@ -697,9 +697,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					}
 					const noted = /^-\s*worker session:\s*(\S+)/im.exec(foldPlan(text))?.[1];
 					if (!(await confirmOwnership(ctx, target, text))) return;
-					const worker = noted ? { sessionFile: resolve(ctx.cwd, noted) } : state.workerStopped ? state.worker : undefined;
-					state = { mode: "solo", plan: target, worker, workerStopped: true };
-					generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
+					if (noted && !state.worker) state.worker = { sessionFile: resolve(ctx.cwd, noted) };
 					enterSolo(ctx);
 					return;
 				}
