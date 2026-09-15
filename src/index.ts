@@ -304,14 +304,17 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	function sendAttachment(plan: string, session: string, text: string) {
 		pi.sendMessage({ customType: "pi-goals-supervision", content: workerAttachment(plan, session, text), display: true }, { triggerTurn: false });
 	}
-	function send(content: string, triggerTurn = true) {
+	function send(content: string, triggerTurn = true, collapse = false) {
 		// sendMessage(triggerTurn:true) bypasses before_agent_start in Pi 0.85.1.
 		// A normal saved prompt prepares the current role before starting the turn.
 		if (triggerTurn) {
 			const prompt = `[pi-goals]\n${content}`;
 			notices.mirror(prompt);
 			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-		} else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
+		} else {
+			if (collapse) notices.mirror(content);
+			pi.sendMessage({ customType: "pi-goals-supervision", content, display: !collapse }, { deliverAs: "nextTurn" });
+		}
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string, solo = true): Promise<boolean> {
 		if (opening) { ctx.ui.notify("A worker launch/resume is still pending; inspect its result before takeover.", "warning"); return false; }
@@ -368,7 +371,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
 		pi.appendEntry(REPORT, report);
-		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}`), false);
+		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}`), false, true);
 		if (wake && ctx.isIdle()) remindReports(ctx);
 	}
 	function remindReports(ctx: ExtensionContext) {

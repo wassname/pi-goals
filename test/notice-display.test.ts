@@ -30,6 +30,11 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	expect(expanded.render(80)).toEqual(new Markdown(content, 0, 0, getMarkdownTheme()).render(80));
 	expect(expanded.render(80).join("\n")).toContain("Final evidence line");
 
+	const review = "[pi-goals]\n## Worker revision reviews\n\n- revision run-1: output ready (reportId worker:run-1)";
+	display.mirror(review);
+	const reviewCollapsed = render({ type: "custom", customType: "pi-goals-notice", data: { content: review } }, { expanded: false }, theme);
+	expect(reviewCollapsed.render(80).join("\n")).toContain("Worker revisions · review requested");
+
 	display.restore({ sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext);
 	expect(transform(content, { messageType: "user" })).toBe(content);
 	display.restore({ sessionManager: { getBranch: () => [entry] } } as unknown as ExtensionContext);

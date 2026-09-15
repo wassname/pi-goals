@@ -1103,8 +1103,10 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: undefined } });
 	expect(f.messages).toHaveLength(count);
 	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
+	expect(f.messages.at(-2)).toMatchObject({ message: { customType: "pi-goals-supervision", display: false, content: expect.stringContaining("## Worker revision report") } });
 	expect(f.messages.at(-2)?.message.content).toContain("Blocked: input missing");
-	expect(f.messages.at(-1)?.message.content).toContain("Pending worker revision reviews:");
+	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-notice" && entry.data.content.includes("## Worker revision report"))).toBe(true);
+	expect(f.messages.at(-1)?.message.content).toContain("## Worker revision reviews");
 	const afterFirstRevision = f.messages.length;
 	for (const text of ["Done: output.txt", "Error: execution failed"]) f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text } });
 	expect(f.messages).toHaveLength(afterFirstRevision);
@@ -1189,7 +1191,7 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 	if (model) {
 		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
 		expect(f.messages.at(-2)?.message.content).toContain("missing/unavailable is unavailable");
-		expect(f.messages.at(-1)?.message.content).toContain("Pending worker revision reviews:");
+		expect(f.messages.at(-1)?.message.content).toContain("## Worker revision reviews");
 	}
 
 });
