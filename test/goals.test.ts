@@ -1290,21 +1290,32 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	parent.hooks.get("session_start")({}, parent.ctx); // Reconcile the missed stop from real saved worker history.
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(missed);
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
 	form.report = missed; await review(); // Old-plan blocked review remains deliverable after retargeting.
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain(missed);
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
+	const afterReview = parent.messages.length;
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
+	parent.hooks.get("session_start")({}, parent.ctx);
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
+	expect(parent.messages).toHaveLength(afterReview); // Shrinking/restoring the same backlog does not wake again.
 	const ordinary = (id: string, text: string, links = {}, sender = workerId) => {
 		const details = { from: { id: sender }, message: { id, timestamp: Date.now(), content: { text }, ...links } };
 		parent.ctx.sessionManager.getBranch().push({ type: "custom_message", id, customType: "intercom_message", content: text, details });
 		parent.hooks.get("message_end")({ message: { role: "custom", customType: "intercom_message", content: text, details } }, parent.ctx);
 	};
+	const beforeOrdinary = parent.messages.length;
 	ordinary("ordinary-a", "Partial output needs review");
 	ordinary("ordinary-b", "Corrected output needs review", { supersedes: "ordinary-a" });
 	ordinary("retry-b", "Corrected output needs review", { retryOf: "ordinary-b" });
 	ordinary("retry-again", "Corrected output needs review", { retryOf: "retry-b" });
 	ordinary("ack-only", "OK"); ordinary("foreign", "Unowned report", {}, "foreign-peer");
-	parent.hooks.get("session_start")({}, parent.ctx); await parent.command("status");
+	expect(parent.messages).toHaveLength(beforeOrdinary); // No second body beside Intercom's saved/displayed original.
+	parent.hooks.get("session_start")({}, parent.ctx);
+	await parent.hooks.get("agent_settled")({}, parent.ctx);
+	expect(parent.messages).toHaveLength(beforeOrdinary + 1); // The new/revised obligation still wakes once.
+	await parent.command("status");
 	const pending = parent.ctx.ui.notify.mock.lastCall?.[0];
 	expect(pending).toContain(`${workerId}:ordinary-b`);
 	for (const excluded of ["ordinary-a", "retry-b", "retry-again", "ack-only", "foreign-peer"]) expect(pending).not.toContain(excluded);

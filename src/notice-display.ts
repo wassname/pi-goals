@@ -10,7 +10,7 @@ export function noticeDisplay(pi: ExtensionAPI) {
 		context.messageType === "user" && mirrored.has(markdown) ? "" : markdown);
 	pi.registerEntryRenderer(NOTICE, (entry, { expanded }, theme) => {
 		const { content } = entry.data as { content: string };
-		const label = content.includes("\nPlan changed.") ? "Plan changed · review requested" : "Goal instructions";
+		const label = content.includes("\nPlan changed") ? "Plan changed · review requested" : content.includes("\nPending worker reviews:") ? "Worker reviews pending" : "Goal instructions";
 		if (expanded) return new Markdown(content, 0, 0, getMarkdownTheme());
 		return {
 			render: (width) => [truncateToWidth(theme.fg("muted", `[pi-goals] ${label} · ${keyHint("app.tools.expand", "expand")}`), width)],

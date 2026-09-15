@@ -193,9 +193,9 @@ export function workerAttachment(plan: string, session: string, text: string): s
 // Pi/OpenAI: supervisor-authored report reviews, separate from goal completion.
 export const reportReviewDescription = "Review an owned worker report after inspecting its actual artifacts. Quote the assigned goal/task and evidence from files (optional saved-session entryId selects decoded message text). State observations and unmet requirements; use accepted, changes_requested or blocked. Changes requested need a concrete continuation. Text quotes are checked, not their relevance or quality. Non-text evidence needs a nonempty capture and specific observation. Delivery stays pending until the worker saves the visible review. Acceptance never completes a goal or wakes/closes the worker.";
 export const reportReviewContent = (report: string, sessionFile: string, sources: string[], observation: string, unmet: string, verdict: string, continuation: string) => `Worker review: ${verdict}\nReport: ${report}\nSaved session: ${sessionFile}\n\nAssigned goal/task:\n${sources[0]}\n\nEvidence:\n${sources.slice(1).join("\n\n")}\n\nInspected: ${observation}\nUnmet: ${unmet}\nContinuation: ${continuation || "none"}\nThis is a report review, not CompleteGoal.\n— Pi supervisor`;
-export const pendingReportReviews = (reports: string[]) => `Pending worker reviews: ${reports.join(", ")}. Inspect their saved reports and actual artifacts, then use review_subagent. Independent authorized work may continue; receipts and generic replies do not resolve reviews.`;
-export function workerReview(plan: string, session: string, text: string): string {
-	return `Worker event for ${plan}, exact Intercom session ${session}:\n${text}\nThis is a report, not completion approval. Inspect actual artifacts and saved messages; if correction is needed, send it to the same session. Preserve its visible review conversation. Respect pauses; do not reply merely to acknowledge.`;
+export const pendingReportReviews = (reports: string[]) => `Pending worker reviews: ${reports.join(", ")}. Inspect reports and artifacts; use review_subagent. Independent authorized work may continue.`;
+export function workerReview(report: string, text: string): string {
+	return `Worker report ${report}:\n${text}`;
 }
 
 export function manualReview(planPath: string, text: string): string {

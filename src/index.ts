@@ -357,18 +357,19 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	}
 	const records = <T,>(ctx: ExtensionContext, type: string): T[] => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === type ? [entry.data as T] : []);
 	const pendingReports = (ctx: ExtensionContext) => records<Report>(ctx, REPORT).filter(report => !records<ReportReview>(ctx, REVIEW).some(review => review.report === report.id) && !records<Report>(ctx, REPORT).some(newer => newer.session === report.session && newer.supersedes === report.id));
-	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
+	function recordReport(ctx: ExtensionContext, report: Report, wake = true, show = true) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
 		pi.appendEntry(REPORT, report);
-		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}`), false);
+		if (show) send(workerReview(report.id, report.text), false);
 		if (wake && ctx.isIdle()) remindReports(ctx);
 	}
 	function remindReports(ctx: ExtensionContext) {
 		if (state.child || state.mode !== "supervising") return;
 		const ids = pendingReports(ctx).map(report => report.id);
-		const fingerprint = digest(JSON.stringify(ids));
-		if (!ids.length || records<string>(ctx, REVIEW_REMINDER).at(-1) === fingerprint) return;
-		pi.appendEntry(REVIEW_REMINDER, fingerprint);
+		const branch = ctx.sessionManager.getBranch();
+		const sinceReminder = branch.slice(branch.map(entry => entry.type === "custom" ? entry.customType : "").lastIndexOf(REVIEW_REMINDER) + 1);
+		if (!sinceReminder.some(entry => entry.type === "custom" && entry.customType === REPORT && ids.includes((entry.data as Report).id))) return;
+		pi.appendEntry(REVIEW_REMINDER);
 		send(pendingReportReviews(ids));
 	}
 	pi.registerEntryRenderer(REVIEW, entry => new Text((entry.data as ReportReview).content, 0, 0));
@@ -458,7 +459,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (retry && records<Report>(ctx, REPORT).some(report => report.id === retry && report.text === message.content!.text)) { aliases.set(id, retry); continue; }
 			aliases.set(id, id);
 			const supersedes = message.supersedes ? aliases.get(`${sender}:${message.supersedes}`) || `${sender}:${message.supersedes}` : undefined;
-			recordReport(ctx, { id, session: sender, sessionFile: owner.worker.sessionFile, plan: owner.plan, requestId: owner.worker.requestId, text: message.content.text, supersedes }, false);
+			recordReport(ctx, { id, session: sender, sessionFile: owner.worker.sessionFile, plan: owner.plan, requestId: owner.worker.requestId, text: message.content.text, supersedes }, false, false); // Intercom already displays and saves this report.
 		}
 		if (ctx.isIdle()) remindReports(ctx);
 	}
