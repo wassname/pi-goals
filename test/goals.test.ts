@@ -1107,7 +1107,7 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(worker).toMatchObject({ paneId: "native-pane", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
 	expect(f.messages.at(-1)).toMatchObject({ message: { customType: "pi-goals-supervision", display: true, content: expect.stringContaining("Metadata only; no acknowledgement or review turn requested") }, options: { triggerTurn: false } });
 	expect(f.messages.at(-1).savedPrompt).toBeUndefined();
-	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "revision-1", text: "Blocked: input missing" };
+	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "revision-1", kind: "blocker", text: "Blocked: input missing" };
 	const count = f.messages.length;
 	for (const fromSessionId of [worker.parentId, "foreign-id"]) f.event({ type: "message", fromSessionId, payload: notice });
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, plan: "/foreign.md" } });
@@ -1124,6 +1124,11 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	const afterFirstRevision = f.messages.length;
 	for (const text of ["Done: output.txt", "Error: execution failed"]) f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text } });
 	expect(f.messages).toHaveLength(afterFirstRevision);
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "waiting-1", kind: "waiting", text: "Pueue 1552 is running." } });
+	expect(f.messages.at(-1)?.message.content).toContain("## Worker status: waiting");
+	await f.command("status");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Latest worker status event: waiting");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("waiting-1");
 	expect(readFileSync(f.path, "utf8")).not.toContain("[✓]");
 	await f.command("stop");
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New report during pause" } });
@@ -1203,9 +1208,10 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 	await f.command("status");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Last observed worker model: offline/inherited"), "info");
 	if (model) {
-		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
-		expect(f.messages.at(-2)?.message.content).toContain("missing/unavailable is unavailable");
-		expect(f.messages.at(-1)?.message.content).toContain("## Worker revision reviews");
+		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", kind: "progress", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
+		expect(f.messages.at(-1)?.message.content).toContain("## Worker status: progress");
+		await f.command("status");
+		expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	}
 
 });
@@ -1222,15 +1228,21 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	await parent.tools.get("OpenGoalWorker").execute("open", { task: "Implement first output" }, undefined, undefined, parent.ctx);
 	const requestId = parent.entries.at(-1).data.worker.requestId;
 	await worker.tools.get("AttachGoalPlan").execute("attach", { path: parent.path, parent: "parent-intercom", requestId }, undefined, undefined, worker.ctx);
-	const report = (text: string, stopReason = "stop") => {
+	const report = async (text: string, kind = "review_request", stopReason = "stop") => {
 		worker.hooks.get("agent_start")({}, worker.ctx);
+		await worker.tools.get("ReportGoalEvent").execute("event", { kind, summary: text }, undefined, undefined, worker.ctx);
 		const message = { role: "assistant", content: [{ type: "text", text }], stopReason, timestamp: Date.now(), api: "openai-completions", provider: "offline", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 		sm.appendMessage(message as any);
 		worker.hooks.get("agent_end")({ messages: [message] }, worker.ctx);
 		return `${workerId}:${worker.channel.publish.mock.lastCall?.[0].entryId}`;
 	};
+	const noOp = { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Operation aborted", timestamp: Date.now(), api: "openai-completions", provider: "offline", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+	worker.hooks.get("agent_start")({}, worker.ctx); sm.appendMessage(noOp as any); worker.hooks.get("agent_end")({ messages: [noOp] }, worker.ctx);
+	expect(worker.channel.publish.mock.lastCall?.[0]).toMatchObject({ kind: "aborted", text: "Operation aborted" });
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	parent.ctx.isIdle.mockReturnValue(false); // Another authorized task is still running.
-	const id = report("Output is ready.");
+	const id = await report("Output is ready.");
 	const before = parent.messages.length;
 	await parent.hooks.get("agent_settled")({}, parent.ctx);
 	expect(parent.messages).toHaveLength(before + 1);
@@ -1277,7 +1289,7 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("native pane: restored-pane");
 	await parent.command("stop");
 	expect(parent.messages.at(-1)?.message.content).toContain("native pane restored-pane");
-	form.reportId = report("Revision failed", "error");
+	form.reportId = await report("Revision failed", "blocker", "error");
 	const paused = parent.messages.length;
 	await parent.hooks.get("agent_settled")({}, parent.ctx);
 	expect(parent.messages).toHaveLength(paused);
@@ -1286,7 +1298,7 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	await expect(review()).rejects.toThrow("concrete continuation");
 	await parent.tools.get("review_subagent").execute("revision", { ...form, unmet: "Output still needs correction", continuation: "Correct output.txt and rerun verification." }, undefined, undefined, parent.ctx);
 	expect(worker.messages.at(-1)).toMatchObject({ savedPrompt: true, message: { content: expect.stringContaining("Correct output.txt") } });
-	form.reportId = report("Cancelled while correcting", "aborted"); form.verdict = "blocked";
+	form.reportId = await report("Cancelled while correcting", "blocker", "aborted"); form.verdict = "blocked";
 	await review(); await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	expect(readFileSync(parent.path, "utf8")).not.toContain("[✓]");
@@ -1294,8 +1306,10 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	// Lost notification and cancellation before any new assistant message: durable run identity.
 	worker.hooks.get("agent_start")({}, worker.ctx);
 	worker.channel.publish.mockImplementationOnce(() => {});
+	await worker.tools.get("ReportGoalEvent").execute("missed", { kind: "blocker", summary: "Blocked before an assistant summary." }, undefined, undefined, worker.ctx);
 	worker.hooks.get("agent_end")({ messages: [] }, worker.ctx);
-	const missed = `${workerId}:${worker.channel.publish.mock.lastCall?.[0].entryId}`;
+	const missedStop = sm.getBranch().filter((entry: any) => entry.customType === "pi-goals-worker-stop").at(-1) as any;
+	const missed = `${workerId}:${missedStop.data.entryId}`;
 	expect(missed).not.toBe(form.reportId);
 	// Same preserved worker, newly approved plan and request: old reviews stay in history.
 	const history = sm.getBranch(), oldPlan = readFileSync(parent.path, "utf8");
@@ -1315,7 +1329,7 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	expect(parent.entries.at(-1).data.worker).toMatchObject({ intercomId: workerId, requestId: nextRequest, sessionFile: sm.getSessionFile() });
 	expect(sm.getBranch().slice(0, history.length)).toEqual(history);
 	await attach({ path: nextPlan }); // Context restoration does not require new authorization.
-	const nextReport = report("New-plan output needs inspection");
+	const nextReport = await report("New-plan output needs inspection");
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
 	expect(worker.channel.publish.mock.lastCall?.[0]).toMatchObject({ type: "stopped", plan: nextPlan, requestId: nextRequest });

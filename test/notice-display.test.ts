@@ -35,6 +35,11 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	const reviewCollapsed = render({ type: "custom", customType: "pi-goals-notice", data: { content: review } }, { expanded: false }, theme);
 	expect(reviewCollapsed.render(80).join("\n")).toContain("Worker revisions · review requested");
 
+	const status = "[pi-goals: worker status]\n## Worker status: waiting\n\nPueue 1552 is running.";
+	display.mirror(status);
+	const statusCollapsed = render({ type: "custom", customType: "pi-goals-notice", data: { content: status } }, { expanded: false }, theme);
+	expect(statusCollapsed.render(80).join("\n")).toContain("Worker status");
+
 	const deliveredReview = "## Worker review: changes_requested\n\nCorrect output.txt.";
 	display.hide(deliveredReview);
 	expect(transform(deliveredReview, { messageType: "user" })).toBe("");

@@ -13,6 +13,7 @@ export function noticeDisplay(pi: ExtensionAPI) {
 		const label = content.includes("\nPlan changed") ? "Plan changed · review requested"
 			: content.includes("## Worker revision reviews") ? "Worker revisions · review requested"
 			: content.includes("## Worker revision report") ? "Worker revision report"
+			: content.includes("## Worker status:") ? "Worker status"
 			: "Goal instructions";
 		if (expanded) return new Markdown(content, 0, 0, getMarkdownTheme());
 		return {
