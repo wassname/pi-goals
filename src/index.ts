@@ -421,8 +421,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					sendAttachment(state.plan, event.fromSessionId, nativeMessages.attached(data.sessionFile));
 				}
 				if (data.type === "stopped" && event.fromSessionId === worker.intercomId && typeof data.text === "string") {
+					const id = `${event.fromSessionId}:${data.entryId || digest(data.text)}`;
+					if (records<Report>(ctx, REPORT).some(report => report.id === id)) return;
 					if (data.identity) { worker.identity = data.identity; worker.sessionFile = data.identity.sessionFile; save(); }
-					const report: Report = { id: `${event.fromSessionId}:${data.entryId || digest(data.text)}`, plan: state.plan, session: event.fromSessionId, sessionFile: worker.sessionFile!, requestId: data.requestId, text: data.text };
+					const report: Report = { id, plan: state.plan, session: event.fromSessionId, sessionFile: worker.sessionFile!, requestId: data.requestId, text: data.text };
 					recordReport(ctx, report);
 				}
 			},
@@ -649,7 +651,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						`Last observed worker model: ${state.worker?.identity?.model ?? "unconfirmed"}; verify current choice before claiming configuration.`,
 						`Pending report reviews: ${pendingReports(ctx).map(report => report.id).join(", ") || "none"}`,
 						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
-						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.paneId ?? "unconfirmed"}`,
+						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.identity?.paneId || state.worker?.paneId || "unconfirmed"}`,
 						notedPlanValue("worker session") ? `Worker session noted in plan: ${notedPlanValue("worker session")}` : "",
 						`Check-in: session-scoped pi-scheduler task ${JSON.stringify(`goals-${ctx.sessionManager.getSessionId()}`)} (default 1h; /schedules all shows current recurrence; manage_scheduled_task updates it)`,
 						"Inspect the exact Intercom session and native pane; a binding or idle status is not completion.",

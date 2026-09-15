@@ -1237,7 +1237,14 @@ it("reviews a saved worker revision through inspection, silent delivery, retry a
 	await parent.command("status");
 	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending report reviews: none");
 	worker.hooks.get("session_start")({}, worker.ctx);
+	const staleStop = worker.channel.publish.mock.lastCall?.[0];
+	vi.stubEnv("HERDR_PANE_ID", "restored-pane");
+	await worker.tools.get("AttachGoalPlan").execute("restore", { path: parent.path }, undefined, undefined, worker.ctx);
+	parent.event({ type: "message", fromSessionId: workerId, payload: staleStop });
+	await parent.command("status");
+	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("native pane: restored-pane");
 	await parent.command("stop");
+	expect(parent.messages.at(-1)?.message.content).toContain("native pane restored-pane");
 	form.report = report("Revision failed", "error");
 	const paused = parent.messages.length;
 	await parent.hooks.get("agent_settled")({}, parent.ctx);
