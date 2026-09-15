@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { foldPlan, goalAcceptanceSignature } from "../src/plan.js";
+import { foldPlan, planRequirements } from "../src/plan.js";
 
 const plan = `# Plan
 
@@ -54,7 +54,7 @@ describe("foldPlan (current goals are above Log; durable memory is below it)", (
 	});
 });
 
-const acceptancePlan = `# Plan
+const requirementPlan = `# Plan
 ## User-visible result
 Produce a verified result.
 - preferred worker model: provider/model
@@ -76,22 +76,16 @@ it.each([
 	["[ ] goal: first", "[x] goal: first"],
 	["[ ] write output", "[x] write output"],
 	["proof.log", "new-proof.log"],
-	["goal: second", "goal: changed second"],
 	["provider/model", "provider/other"],
 	["/worker.jsonl", "/resumed.jsonl"],
 	["Old progress", "More history"],
-])("approval ignores maintenance change %s", (before, after) => {
-	expect(goalAcceptanceSignature(acceptancePlan.replace(before, after), "first")).toBe(goalAcceptanceSignature(acceptancePlan, "first"));
+])("requirement context ignores maintenance change %s", (before, after) => {
+	expect(planRequirements(requirementPlan.replace(before, after))).toBe(planRequirements(requirementPlan));
 });
 
 it.each([
 	["exact bytes", "a different acceptance criterion"],
 	["Produce a verified result.", "Produce two verified results."],
-])("approval changes when requirement %s changes", (before, after) => {
-	expect(goalAcceptanceSignature(acceptancePlan.replace(before, after), "first")).not.toBe(goalAcceptanceSignature(acceptancePlan, "first"));
-});
-
-it("does not give a signature to missing or duplicate goals", () => {
-	expect(goalAcceptanceSignature(acceptancePlan, "missing")).toBeUndefined();
-	expect(goalAcceptanceSignature(acceptancePlan.replace("goal: second", "goal: first"), "first")).toBeUndefined();
+])("requirement context changes when %s changes", (before, after) => {
+	expect(planRequirements(requirementPlan.replace(before, after))).not.toBe(planRequirements(requirementPlan));
 });

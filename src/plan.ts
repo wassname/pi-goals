@@ -1,5 +1,5 @@
 // Pi/OpenAI: Log, at any heading level, is the single boundary between current work and history.
-export const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*goal:\s*(.*)$/i;
+export const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*goal:\s*(.*)$/i;
 export const FOLD_LINE = /^#{1,6}[ \t]+Log[ \t]*\r?$/im;
 const identity = /^[ \t]*[-*]\s*(?:active worker|worker session|worker intercom session|preferred worker model):/i;
 
@@ -44,22 +44,14 @@ export function planContextView(plan: string, tier: "short" | "medium" | "full")
 	return [short, ...(userVoice.length ? ["", ...userVoice] : []), ...(goalsHeading && goalLines.length ? ["", goalsHeading, ...goalLines] : [])].join("\n").trimEnd();
 }
 
-// Pi/OpenAI: Approval covers shared requirements and this goal, not checkbox/task/evidence maintenance.
-export function goalAcceptanceSignature(plan: string, goal: string): string | undefined {
-	const lines = foldPlan(plan).split("\n");
-	const goals = lines.flatMap((line, index) => {
-		const match = GOAL_LINE.exec(line);
-		return match ? [{ index, subject: match[2].trim().toLowerCase() }] : [];
-	});
-	const matches = goals.filter(item => item.subject === goal.trim().toLowerCase());
-	if (matches.length !== 1) return undefined;
-	const selected = matches[0];
-	const end = goals.find(item => item.index > selected.index)?.index ?? lines.length;
-	const content = [...lines.slice(0, goals[0].index), `goal: ${selected.subject}`, ...lines.slice(selected.index + 1, end)];
+// Pi/OpenAI: Requirement changes request full supervisor context, never automatic approval changes.
+export function planRequirements(plan: string): string {
+	const content = foldPlan(plan).split("\n").map(line => line.replace(GOAL_LINE, (_, _box, subject) => `goal: ${subject.trim()}`));
 	const kept: string[] = [];
 	let omittedIndent: number | undefined;
 	let omittedHeading: number | undefined;
 	for (const line of content) {
+		if (line.startsWith("goal: ")) { omittedIndent = undefined; omittedHeading = undefined; }
 		if (identity.test(line)) continue;
 		const heading = /^(#{1,6})\s+(.+)$/.exec(line);
 		if (heading) {

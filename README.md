@@ -74,6 +74,8 @@ The worker like it! The supervisors seem very focused.
 
 ## Plan.md
 
+Goal status is held only in the plan: `[ ]` open, `[/]` active, `[x]` reported done, `[✓]` reviewed by `CompleteGoal`, and `[-]` cancelled. Requirements changes wake the supervisor to inspect and reopen goals if needed; they do not automatically rewrite status. Review evidence stays in Log. Old `[x]` goals are not automatically certified. <!-- Pi/OpenAI -->
+
 The plan file looks like this:
 
 ```md
@@ -122,15 +124,15 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Requires Herdr. Includes [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents), pi-intercom and pi-schedule-prompt. 
+Requires Herdr. Includes [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) 0.66.0, pi-intercom and @jl1990/pi-scheduler 0.5.0, pinned to its official registry archive and lockfile integrity.
 
 ```bash
 pi install git:github.com/wassname/pi-goals
 ```
 
-Copy [`agents/goals-worker.md`](agents/goals-worker.md) into `~/.pi/agent/agents/`, then start a fresh Pi session. Use one pi-goals installation and disable separately installed copies of its bundled companions; duplicate scheduler instances send duplicate prompts.
+Start a fresh Pi session. No worker agent file is needed: `OpenGoalWorker` uses Nico's public `project.open` surface, then the peer explicitly attaches with `AttachGoalPlan`. Use one pi-goals installation and disable separately installed copies of its bundled companions; duplicate scheduler instances send duplicate prompts.
 
-The bundled pi-schedule-prompt 0.4.1 reads project schedules even when Pi project trust is declined. Until that upstream issue is fixed, use this bundle only in repositories you trust.
+The scheduler stores tasks under `~/.pi/agent/state/scheduler/tasks.json`, or `PI_SCHEDULER_STATE_FILE` when set. A separate Pi profile alone does not isolate this store. Goal check-ins use session scope; shared cwd/global tasks are not owned by pi-goals. Existing legacy check-ins need explicit ownership and prompt-byte review before migration; custom multiline prompts are not silently flattened.
 
 For development, register the checkout so workers also discover its extensions:
 
@@ -138,8 +140,6 @@ For development, register the checkout so workers also discover its extensions:
 git clone https://github.com/wassname/pi-goals
 cd pi-goals && npm install
 pi install .
-mkdir -p ~/.pi/agent/agents
-cp agents/goals-worker.md ~/.pi/agent/agents/
 pi
 ```
 
@@ -149,7 +149,15 @@ pi
 /goals
 ```
 
-`/goals` shows actions for the current mode. Drafts offer Edit, Discuss and Approve. Discuss returns to chat and waits for your input. Menu New asks for optional instructions before creating a plan; submit blank to use the conversation, or cancel to leave things unchanged. Typed `/goals new <instructions>` still starts directly. Quit (`exit` or `clear`) leaves the original plan unchanged, removes this session's goal check-in, and clears goal state without a model call. Matching check-in names with missing or different session bindings are left unchanged with a warning. Worker processes are unchanged; manage them through `/subagents`. New creates a separate draft without overwriting earlier plans, named `.pi/plan/<last-six-session-characters>-vN.md` using the next version after existing files. The title stays inside the plan; old files are not renamed. The widget shows a plain `✓` and the relative plan path (the fallback for unverified terminal links).
+`/goals` shows actions for the current mode. Drafts offer Edit, Discuss and Approve. Discuss returns to chat and waits for your input. Menu New asks for optional instructions before creating a plan; submit blank to use the conversation, or cancel to leave things unchanged. Typed `/goals new <instructions>` still starts directly. Quit (`exit` or `clear`) leaves the original plan unchanged, clears goal state and requests removal of this session's goal check-in without a model call. Clear uses verified public scheduler commands; missing commands or an unobservable result leave removal unconfirmed. Inspect `/schedules all` for the result. Matching check-in names with missing or different session scope are left unchanged with a warning. Worker processes are unchanged; inspect their native panes and use their exact Intercom identities for steering. New creates a separate draft without overwriting earlier plans, named `.pi/plan/<last-six-session-characters>-vN.md` using the next version after existing files. The title stays inside the plan; old files are not renamed. The widget shows a plain `✓` and the relative plan path for inside-project plans. External plans use the filename with an `(external)` marker; `/goals status` keeps the full location. These are plain labels, not terminal links.
+
+### Native worker lifecycle and limits
+
+The parent and worker keep separate native conversations. Worker attachment and stop notices use stock Intercom extension channels; assignments, reports and corrections remain visible Pi messages. Attachment metadata is saved and displayed without requesting a model acknowledgement (at a safe turn boundary when busy); blocked, done and error reports still request supervisor review. A pane-open receipt, idle state or delivery receipt does not approve a goal.
+
+`OpenGoalWorker` supplies startup only to a newly created stock Pi context. An existing live binding receives no message, so opening it does not replace its conversation or editor draft. The new worker calls `AttachGoalPlan`, reports its exact Intercom identity/model/saved-session path, and waits for a direct parent assignment. Revisions use that same session. A model preference is an instruction for agent-led configuration and verification, not a CLI override; later human changes take precedence.
+
+There is no custom fresh/recover operation. Inspect stopped workers' saved history and partial results, preserve drafts/queued input, and confirm the exact writer stopped before stock `project.close`/`project.open`. Stock close checks ownership and idle state, but cannot establish editor-draft safety. If uncertain, retain the pane and inspect it. Before a new goals-managed worker, archive obsolete worker identity notes into Log and clear/reattach the plan after confirming stop; do not discard history or replay completed work. Automatic ownership transfer is not provided. — Pi/OpenAI
 
 ## Context delivery
 
@@ -157,7 +165,7 @@ New injected `[pi-goals]` prompts display as a compact notice; `Ctrl+O` expands 
 
 Startup, attachment/resume, session restore, successful compaction and changed requirements restore the active plan above Log at the next ordinary prompt. This includes current preferences and User voice, but leaves historical Log on disk. Routine context and requested reviews quote unfinished or unreviewed goal lines. After eight unchanged turns, the next ordinary prompt carries an upkeep reminder with its reason, those goal lines and the plan path. It omits preferences, role prose and rotating quotations. Reviewed, cancelled and paused work receives no periodic upkeep; manual ticks remain unreviewed. A fresh plan refresh replaces pending upkeep; edits, pause, exit and session navigation invalidate obsolete reminders. Failed or cancelled compaction does not schedule a refresh. Missing plans are retried. Compaction still uses Pi's configured threshold.
 
-Plan-change notices direct the agent to read the current file, including changed constraints or a final cancellation. Only our own pending notice is coalesced; unrelated queued input does not suppress it. The editable hourly `schedule_prompt` check-in remains separate.
+Plan-change notices direct the agent to read the current file, including changed constraints or a final cancellation. Only our own pending notice is coalesced; unrelated queued input does not suppress it. The editable hourly `schedule_task` check-in remains separate. It uses an explicit prompt action, session scope and a short one-line wake that reads the current attached plan. Inspect recurrence with `/schedules all`; change the interval through `manage_scheduled_task` without resending the prompt. Pause disables the owned check-in and retains its prompt/interval; resume may enable only the unchanged job recorded by that pause. Disabled jobs survive reload.
 
 The first request to complete the final non-cancelled goal queues a review without recording sign-off. The reviewer must read the complete plan file and actual evidence, then call `CompleteGoal` again in that review run. The review survives intervening inspection tool rounds and same-run queued delivery, but a plan edit invalidates it. Routine messages do not paste the archive. <!-- Pi/OpenAI -->
 
@@ -184,6 +192,8 @@ node scripts/session-usage.mjs <supervisor.jsonl> <worker.jsonl>
 ```
 
 This separates output, uncached input and repeated cached input. It excludes subprocess API calls. [Isolated Herdr test setup](scripts/prepare-trial.mjs).
+
+For deterministic fixtures, run `node scripts/prepare-trial.mjs INSTALLED_PI_ROOT --offline LOOPBACK_MODEL_URL` with an existing HTTP loopback model server. This route loads only the candidate's required packages and the existing offline model fixture, without reading your profile or copying credentials. Without `--offline`, the helper retains your installed packages and model settings. Both routes isolate scheduler storage and only prepare files; neither launches Pi. <!-- Pi/OpenAI -->
 
 ## License
 

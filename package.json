@@ -28,7 +28,6 @@
   },
   "files": [
     "src",
-    "agents",
     "README.md"
   ],
   "publishConfig": {
@@ -56,9 +55,9 @@
   "pi": {
     "extensions": [
       "./src/index.ts",
-      "./node_modules/pi-subagents/src/index.ts",
+      "./node_modules/pi-subagents/index.ts",
       "./node_modules/pi-intercom/index.ts",
-      "./node_modules/pi-schedule-prompt/src/index.ts"
+      "./node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"
     ],
     "image": "https://github.com/user-attachments/assets/35feaa15-f022-4491-bcc2-fc31cb878a9f",
     "skills": [
@@ -66,13 +65,13 @@
     ]
   },
   "dependencies": {
-    "pi-subagents": "git+https://github.com/edxeth/pi-subagents.git#953c6f6d2fc7d8a5c956c30cd77c51bad697c2a4",
+    "@jl1990/pi-scheduler": "https://registry.npmjs.org/@jl1990/pi-scheduler/-/pi-scheduler-0.5.0.tgz",
     "pi-intercom": "0.13.0",
-    "pi-schedule-prompt": "0.4.1"
+    "pi-subagents": "0.66.0"
   },
-  "bundledDependencies": [
+  "bundleDependencies": [
     "pi-subagents",
     "pi-intercom",
-    "pi-schedule-prompt"
+    "@jl1990/pi-scheduler"
   ]
 }

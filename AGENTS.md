@@ -2,7 +2,7 @@
 
 ## Design
 
-The main chat discusses the plan with the user, then supervises an interactive `goals-worker` in Herdr. Use stock pi-subagents, pi-intercom and pi-schedule-prompt; do not build another transport, scheduler or worker runtime.
+The main chat discusses the plan with the user, then supervises an interactive `goals-worker` in Herdr. Use stock pi-subagents, pi-intercom and @jl1990/pi-scheduler; do not build another transport, scheduler or worker runtime.
 
 > the hope is we can have a smart supervisor like you, with judgment and context. But it doesn't use many tokens as it checks in and sees an overview.
 >
@@ -37,7 +37,7 @@ Run `npm test`, `npm run typecheck` and `npm run lint` before committing.
 
 For functional acceptance, read `herdr --skill`, confirm `HERDR_ENV=1`, and use `scripts/prepare-trial.mjs` to create an isolated project/profile. Open only new no-focus test panes. Observe the actual planning dialogue and Ready selection, worker attachment, Intercom report, independent artifact inspection and CompleteGoal. Record interventions separately from autonomous success. Preserve nonempty byte/test evidence. Never reload or operate active user research panes. Close test panes when finished.
 
-Known stock limits: stop workers before supervisor reload (later worker exit can crash its stale context); disabled scheduler jobs are deleted on reload/shutdown. Test saved-session/solo recovery without repeating completed work; do not claim these package bugs are fixed here.
+Stop workers before reloading legacy supervisor/test sessions: later worker exit can crash their stale context. Legacy pi-schedule-prompt sessions may delete disabled jobs on reload/shutdown; the bundled @jl1990/pi-scheduler 0.5.0 retains disabled tasks. Test saved-session/solo recovery without repeating completed work; do not claim legacy package bugs are fixed here.
 
 Keep temporary plans, audits and captures under ignored `.local/`. Git history retains the removed historical material. Do not add root handovers or duplicate READMEs. Never touch human-named files or credentials.
 

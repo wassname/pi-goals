@@ -70,12 +70,19 @@ describe("RPC review flow", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-rpc-"));
 		const requests: ModelRequest[] = [];
 		const plan = "# Plan\n\n## Goals\n\n1. [ ] goal: name the output\n  - subtle failure mode: the output has no name\n  - discriminator: the plan names the output\n\n## Log\n";
-		let planPath = "";
+		let planPath = "", createTaskName = "";
+		let holdResponse: (() => Promise<void>) | undefined;
 		const server = createServer(async (request, response) => {
 			let body = "";
 			for await (const chunk of request) body += chunk;
 			const modelRequest = JSON.parse(body) as ModelRequest;
 			requests.push(modelRequest);
+			if (holdResponse) { const hold = holdResponse; holdResponse = undefined; await hold(); }
+			if (createTaskName) {
+				const name = createTaskName; createTaskName = "";
+				streamResponse(response, { tool_calls: [{ index: 0, id: "busy-cleanup-task", type: "function", function: { name: "schedule_task", arguments: JSON.stringify({ name, action: "prompt", type: "interval", schedule: "1h", scope: "session", prompt: "Goal check-in." }) } }] }, "tool_calls");
+				return;
+			}
 			if (requests.length === 1) {
 				const pathMatch = systemText(modelRequest).match(/Plan only in (.+?);/);
 				if (!pathMatch) throw new Error("Planning prompt did not name its plan file");
@@ -95,16 +102,18 @@ describe("RPC review flow", () => {
 		if (!address || typeof address === "string") throw new Error("Offline model did not bind a TCP port.");
 
 		const pi = spawn(resolve("node_modules/.bin/pi"), [
-			"--mode", "rpc", "--no-session", "--no-extensions", "--model", "offline/test",
+			"--mode", "rpc", "--no-extensions", "--model", "offline/test",
 			"-e", resolve("test/fixtures/offline-model.ts"),
-			"-e", resolve("test/fixtures/subagent-schema.ts"),
 			"-e", resolve("src/index.ts"),
+			"-e", resolve("node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"),
 		], {
 			cwd,
 			env: {
 				// Pi/gpt-6-astra: test the parent role even when vitest itself runs in a worker.
 				...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PI_SUBAGENT_") && !name.startsWith("PI_GOALS_"))),
 				PI_CODING_AGENT_DIR: join(cwd, ".agent"),
+				PI_OFFLINE: "1",
+				PI_SCHEDULER_STATE_FILE: join(cwd, "scheduler-tasks.json"),
 				PI_GOALS_OFFLINE_MODEL_URL: `http://127.0.0.1:${address.port}`,
 			},
 		});
@@ -176,7 +185,44 @@ describe("RPC review flow", () => {
 				expect(client.messages.some(event => event.type === "message_end" && (event.message as any)?.role === "user" && (event.message as any)?.content[0]?.text === content)).toBe(true);
 				expect(supervisor.messages.filter(message => message.role === "user" && messageText(message.content) === content)).toHaveLength(1);
 			}
-			console.log(`RPC ${choice}: visible automatic proposal; ${choice === "Edit" ? "editor saved exact plan without model call" : "discussion retained planning role without editor"}; Ready request used supervisor role; only write executed.`);
+			const beforeNotice = requests.length, noticeStart = client.messages.length;
+			client.send({ type: "prompt", id: "attachment-notice", message: "/fixture-attachment-notice" });
+			const attachment = await client.waitFor(message => message.type === "message_end" && (message.message as any)?.customType === "pi-goals-supervision", noticeStart);
+			expect(attachment.message).toMatchObject({ display: true, content: expect.stringContaining("Metadata only; no acknowledgement or review turn requested") });
+			await client.waitFor(message => message.type === "response" && message.id === "attachment-notice", noticeStart);
+			expect(requests).toHaveLength(beforeNotice);
+			expect(client.messages.slice(noticeStart).filter(message => message.type === "agent_start")).toEqual([]);
+			const saved = readFileSync((state.data as { sessionFile: string }).sessionFile, "utf8").trim().split("\n").map(line => JSON.parse(line));
+			expect(saved.at(-1)).toMatchObject({ type: "custom_message", customType: "pi-goals-supervision", display: true, content: (attachment.message as any).content });
+			if (choice === "Edit") {
+				// One real scheduler task is fixture setup, not another cadence/wake suite.
+				createTaskName = `goals-${(state.data as { sessionId: string }).sessionId}`;
+				const setupStart = client.messages.length;
+				client.send({ type: "prompt", id: "seed-check-in", message: "Prepare the owned check-in fixture." });
+				await client.waitFor(message => message.type === "agent_settled", setupStart);
+				const task = JSON.parse(readFileSync(join(cwd, "scheduler-tasks.json"), "utf8")).tasks[0];
+				expect(task).toMatchObject({ name: `goals-${(state.data as { sessionId: string }).sessionId}`, scope: "session" });
+				let release!: () => void;
+				const held = new Promise<void>(done => { release = done; });
+				const requested = once(server, "fixture-busy-request", { signal: AbortSignal.timeout(8_000) });
+				holdResponse = () => { server.emit("fixture-busy-request"); return held; };
+				const busyStart = client.messages.length, beforeBusy = requests.length;
+				client.send({ type: "prompt", id: "slow-reply", message: "Wait for the fixture's delayed response." });
+				try {
+					await requested;
+					client.send({ type: "prompt", id: "busy-clear", message: "/goals clear" });
+					await client.waitFor(message => message.type === "response" && message.id === "busy-clear", busyStart);
+					// The original observer deadline was five seconds; no turn_end occurs yet.
+					await new Promise(done => setTimeout(done, 6_000));
+				} finally { release(); }
+				await client.waitFor(message => message.type === "agent_settled", busyStart);
+				expect(client.messages.slice(busyStart).filter(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes("removal unconfirmed"))).toEqual([]);
+				await client.waitFor(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes(`Removed scheduled task ${task.id}`), busyStart);
+				expect(JSON.parse(readFileSync(join(cwd, "scheduler-tasks.json"), "utf8")).tasks).toEqual([]);
+				expect(requests).toHaveLength(beforeBusy + 1);
+				console.log(`RPC busy Clear: held beyond 5s; removed ${task.id} after safe flush; requests ${beforeBusy} -> ${requests.length} (only the held response).`);
+			}
+			console.log(`RPC ${choice}: passive attachment saved/displayed without inference; visible automatic proposal; ${choice === "Edit" ? "editor saved exact plan without model call" : "discussion retained planning role without editor"}; Ready request used supervisor role; planning/Ready executed only write.`);
 		} finally {
 			pi.kill();
 			await exited;

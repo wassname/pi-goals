@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { workerAttachment } from "../../src/prompts.js";
 
 export default function offlineModel(pi: ExtensionAPI): void {
+	pi.registerCommand("fixture-attachment-notice", {
+		handler: (_args, ctx) => pi.sendMessage({ customType: "pi-goals-supervision", content: workerAttachment(ctx.cwd, "fixture-peer", "Attachment recorded."), display: true }, { triggerTurn: false }),
+	});
 	pi.registerProvider("offline", {
 		baseUrl: process.env.PI_GOALS_OFFLINE_MODEL_URL!,
 		apiKey: "test",

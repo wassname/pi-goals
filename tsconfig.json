@@ -6,6 +6,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "paths": { "pi-subagents/project-panes": ["./src/project-panes.d.ts"] },
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true
