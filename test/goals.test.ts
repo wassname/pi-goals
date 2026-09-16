@@ -3,7 +3,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEditTool, type ExtensionAPI, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { createEditTool, type ExtensionAPI, initTheme, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
@@ -74,6 +74,41 @@ function fixture(child = false) {
 	};
 	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, launch, channel, event: (event: any) => registration.onEvent(event) };
 }
+
+it("reads bounded worker history without changing it, and expands native Markdown", async () => {
+	initTheme("dark");
+	const f = fixture(true), history = f.ctx.sessionManager.getBranch(), timestamp = new Date().toISOString();
+	const entry = (id: string, message: object) => ({ type: "message", id, timestamp, parentId: null, message });
+	history.push(entry("kept", { role: "user", content: "Retained heading requirement" }),
+		{ type: "compaction", id: "checkpoint", timestamp, firstKeptEntryId: "kept", summary: "Earlier output was completed." },
+		entry("failed-call", { role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE_REASONING_SENTINEL" }, { type: "toolCall", id: "read-1", name: "read", arguments: { path: "missing.txt" } }] }),
+		entry("failed-result", { role: "toolResult", toolCallId: "read-1", toolName: "read", isError: true, content: [{ type: "text", text: "Permission denied" }] }),
+		entry("pending-call", { role: "assistant", content: [{ type: "toolCall", id: "job-1", name: "process", arguments: { action: "start", command: "long job", notify: { onSuccess: "turn" }, nested: Array(20).fill({ payload: "x".repeat(100_000) }) } }] }));
+	const before = JSON.stringify(history), published = f.channel.publish.mock.calls.length;
+	const tool = f.tools.get("worker_view"), output = await tool.execute("view", {}, undefined, undefined, f.ctx), text = output.content[0].text;
+	expect(Buffer.byteLength(text)).toBeLessThanOrEqual(12_000);
+	for (const value of ["Permission denied", "onSuccess", "No saved result", "Retained heading requirement", "Earlier output was completed"]) expect(text).toContain(value);
+	expect(text).not.toContain("PRIVATE_REASONING_SENTINEL"); expect(text).not.toContain("vcc_recall");
+	expect(JSON.stringify(history)).toBe(before); expect(f.channel.publish).toHaveBeenCalledTimes(published);
+	for (const width of [40, 80]) {
+		const collapsed = tool.renderResult(output, { expanded: false }).render(width), expanded = tool.renderResult(output, { expanded: true }).render(width);
+		expect(expanded.length).toBeGreaterThan(collapsed.length);
+		expect(collapsed.join("\n")).not.toContain("Permission denied"); expect(expanded.join("\n")).toContain("Permission denied");
+		for (const line of expanded) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+	}
+	// Older verbosity must not hide the newest failure or leave half a fenced block.
+	for (let i = 0; i < 6; i++) history.push(
+		entry(`verbose-call-${i}`, { role: "assistant", content: [{ type: "toolCall", id: `verbose-${i}`, name: "bash", arguments: { command: `diagnostic-${i}`, a: "a".repeat(200), b: "b".repeat(200), c: "c".repeat(200) } }] }),
+		entry(`verbose-result-${i}`, { role: "toolResult", toolCallId: `verbose-${i}`, toolName: "bash", isError: i === 5, content: [{ type: "text", text: i === 5 ? "NEWEST_FAILURE: diagnostic failed" : "Older diagnostic output" }], details: { a: "a".repeat(200), b: "b".repeat(200), c: "c".repeat(200) } }));
+	const fullBefore = JSON.stringify(history), bounded = (await tool.execute("view-again", {}, undefined, undefined, f.ctx)).content[0].text;
+	expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(12_000);
+	expect(bounded).toContain("NEWEST_FAILURE: diagnostic failed"); expect(bounded).toContain("Some history omitted");
+	const retained = [...bounded.matchAll(/call entry verbose-call-(\d)/g)].map(match => Number(match[1]));
+	expect(retained.at(-1)).toBe(5); expect(retained).toEqual([...retained].sort()); expect(retained.length).toBeLessThan(6);
+	let open: string | undefined;
+	for (const fence of bounded.match(/^`{3,}$/gm) ?? []) { if (open) { expect(fence).toBe(open); open = undefined; } else open = fence; }
+	expect(open).toBeUndefined(); expect(JSON.stringify(history)).toBe(fullBefore);
+});
 
 it.each([
 	["chat", ["new", "attach", "help", "quit"]],
@@ -1217,11 +1252,19 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 	expect(startup).toContain(requested ? `User-supplied model preference: ${JSON.stringify(requested)}` : "Inherit the native model");
 	if (requested) expect(startup).toContain("Preserve later human model changes");
 	expect(vi.mocked(openProjectPane).mock.calls[0][0]).not.toHaveProperty("model");
-	const identity = { paneId: "observed-pane", sessionId: "worker", sessionFile: "/tmp/worker.jsonl", model: "offline/inherited" };
+	const identity = { paneId: "observed-pane", sessionId: "11111111-1111-4111-8111-111111111111", sessionFile: join(f.ctx.cwd, "worker.jsonl"), model: "offline/inherited" };
+	writeFileSync(identity.sessionFile, [
+		{ type: "session", version: 3, id: identity.sessionId, timestamp: new Date().toISOString(), cwd: f.ctx.cwd },
+		{ type: "message", id: "inspected", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: "Distinct runtime and Intercom identity evidence", timestamp: Date.now() } },
+	].map(entry => JSON.stringify(entry)).join("\n") + "\n");
 	f.event({ type: "message", fromSessionId: "worker", payload: { type: "attached", to: worker.parentId, requestId: worker.requestId, plan: f.path, sessionFile: identity.sessionFile, identity } });
 	await f.command("status");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Last observed worker model: offline/inherited"), "info");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("native pane: observed-pane"), "info");
+	const view = await f.tools.get("worker_view").execute("view", {}, undefined, undefined, f.ctx);
+	expect(view.content[0].text).toContain("Distinct runtime and Intercom identity evidence");
+	f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "view-inspection", kind: "unclassified", text: "Inspection ended." } });
+	expect(f.messages.at(-1)?.message.content).toContain("Distinct runtime and Intercom identity evidence");
 	if (model) {
 		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", kind: "progress", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
 		expect(f.messages.at(-1)?.message.content).toContain("## Worker status: progress");

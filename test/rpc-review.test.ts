@@ -75,7 +75,9 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 	let holdRole: "parent" | "worker" = "parent";
 	const plan = '# Plan\n\n## User voice\nKeep the greeting readable.\n\n## Goals\n- [ ] goal: deliver greeting\n  - greeting.txt must contain hello.\n\n## Log\nArchived notes stay on disk.\n';
 	const call = (name: string, args: object) => ({ tool_calls: [{ index: 0, id: `fixture-${++serial}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+	const jobs = new Map<string, import("node:http").ServerResponse>();
 	const server = createServer(async (request, response) => {
+		if (request.url?.startsWith("/job/")) { const name = request.url.slice(5); jobs.set(name, response); server.emit(`job-${name}`); return; }
 		let body = ""; for await (const chunk of request) body += chunk;
 		const role = request.url?.startsWith("/worker") ? "worker" : "parent";
 		const input = JSON.parse(body) as ModelRequest; requests[role].push(input);
@@ -174,6 +176,40 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		expect(requests.parent).toHaveLength(parentCount); // inspection/receipt did not wake the supervisor
 		const workerState = await state(worker), workerFile = workerState.sessionFile;
 		expect(records(parentState.sessionFile, "pi-goals-worker-event").map(event => event.kind)).toEqual(["receipt"]);
+		const receiptNotice = entries(parentState.sessionFile).find(entry => entry.customType === "pi-goals-notice" && String(entry.data?.content).includes("Attached and waiting."));
+		expect(Buffer.byteLength(receiptNotice.data.content)).toBeLessThan(1500); // routine status does not carry a history dump
+		// Real native scheduler commands continue after the worker turn. Hold their HTTP
+		// response so inspection observes actual running work, not a fabricated job record.
+		const started = ["followed", "unfollowed"].map(name => once(server, `job-${name}`, { signal: AbortSignal.timeout(8_000) }));
+		await run(worker, "worker", ...["followed", "unfollowed"].map(name => call("schedule_task", {
+			name, action: "shell", type: "once", schedule: "1s", scope: "session",
+			command: `${process.execPath} -e ${JSON.stringify(`fetch('http://127.0.0.1:${port}/job/${name}',{signal:AbortSignal.timeout(8000)}).then(r=>r.text()).then(console.log)`)}`,
+			wakeOn: name === "followed" ? "success" : "never", followUpPrompt: "Inspect the completed fixture command.",
+		})));
+		await Promise.all(started);
+		const unchangedHistory = readFileSync(workerFile, "utf8"), viewAt = parent.messages.length;
+		if (process.env.PI_GOALS_TEST_EVIDENCE) { mkdirSync(process.env.PI_GOALS_TEST_EVIDENCE, { recursive: true }); writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "worker-running.jsonl"), unchangedHistory); }
+		await run(parent, "parent", call("worker_view", {}));
+		const viewText = (after: number) => (parent.messages.slice(after).find(m => m.type === "tool_execution_end" && m.toolName === "worker_view") as any).result.content.map((part: any) => part.text ?? "").join("\n");
+		const runningView = viewText(viewAt);
+		expect(runningView).toContain("wakeOn"); expect(runningView).toContain("success"); expect(runningView).toContain("never");
+		expect(runningView).toContain("Intercom connection observed"); expect(runningView).toContain("execution and job status unverified");
+		expect(runningView).not.toContain("vcc_recall"); expect(Buffer.byteLength(runningView)).toBeLessThanOrEqual(12_000);
+		expect(readFileSync(workerFile, "utf8")).toBe(unchangedHistory); expect(readFileSync(planPath, "utf8")).toBe(approved);
+		const quietWorker = requests.worker.length, quietParent = requests.parent.length;
+		const tasks = () => JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks;
+		jobs.get("unfollowed")!.end("unfollowed-finished");
+		await expect.poll(() => tasks().find((task: any) => task.name === "unfollowed")?.result?.wakeDisposition).toBe("suppressed");
+		expect(requests.worker).toHaveLength(quietWorker);
+		const wakeAt = worker.messages.length; jobs.get("followed")!.end("followed-finished");
+		await worker.waitFor(m => m.type === "agent_settled", wakeAt);
+		expect(requests.worker.length).toBeGreaterThan(quietWorker); expect(requests.parent).toHaveLength(quietParent);
+		const resumedViewAt = parent.messages.length;
+		await run(parent, "parent", call("worker_view", {}));
+		expect(viewText(resumedViewAt)).toContain("followed-finished");
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(0);
+		await run(worker, "worker", ...tasks().map((task: any) => call("manage_scheduled_task", { action: "remove", id: task.id })));
+		expect(tasks()).toEqual([]);
 		const greeting = join(cwd, "greeting.txt");
 		const workerAt = worker.messages.length;
 		let releaseWorker!: () => void; const heldWorker = new Promise<void>(done => { releaseWorker = done; });
@@ -191,6 +227,11 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		await run(parent, "parent");
 		expect(systemText(requests.parent.at(-1)!)).toContain(failure.id);
 		expect(failure.kind).toBe("blocker"); expect(failure.text).toContain("Fixture execution failed after progress");
+		const failedViewAt = parent.messages.length;
+		await run(parent, "parent", call("worker_view", {}));
+		expect(viewText(failedViewAt)).toContain("Fixture execution failed after progress");
+		expect(viewText(failedViewAt)).toContain("greeting.txt");
+		expect(entries(parentState.sessionFile).some(entry => entry.type === "custom_message" && String(entry.content).includes("## Worker view"))).toBe(true);
 		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(1); // receipts/progress/normal stops stayed quiet
 
 		const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -270,6 +311,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 			for (const [name, text] of Object.entries({ "requests.json": JSON.stringify(requests), "parent.jsonl": readFileSync(parentState.sessionFile, "utf8"), "worker.jsonl": readFileSync(workerFile, "utf8"), "events.json": JSON.stringify(clients.map(client => ({ pid: client.process.pid, events: client.messages, stderr: client.stderr }))) })) writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, name), text);
 		}
 	} finally {
+		for (const response of jobs.values()) if (!response.writableEnded) response.end("fixture cleanup");
 		if (process.env.PI_GOALS_TEST_EVIDENCE) {
 			mkdirSync(process.env.PI_GOALS_TEST_EVIDENCE, { recursive: true });
 			writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "last-attempt.json"), JSON.stringify({ requests, parent: parent.messages, worker: worker?.messages }));

@@ -54,7 +54,12 @@ import {
 	workerAttachment,
 	workerReview,
 	workerStatus,
+	workerViewDescription,
+	workerViewPresence,
+	workerViewText,
+	workerViewUnavailable,
 } from "./prompts.js";
+import { buildWorkerView, viewClip } from "./worker-view.js";
 
 const STATE = "pi-goals-main-supervisor-v1";
 const WORKER = "goals-worker";
@@ -376,17 +381,26 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const plainTask = report.task?.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`~<>]/g, "").trim().replace(/\s+/g, " ").slice(0, 100);
 		return `revision ${revision}${plainTask ? ` — ${plainTask}` : ""} (reportId ${report.id})`;
 	};
+	function savedWorkerView(ctx: ExtensionContext, source: { runtimeId?: string; sessionFile?: string; task?: string }, presence?: string) {
+		if (!source.sessionFile) return workerViewUnavailable(workerViewText.noHistory);
+		try {
+			const history = source.runtimeId === ctx.sessionManager.getSessionId() ? ctx.sessionManager : savedSession(source.sessionFile);
+			if (source.runtimeId && history.getSessionId() !== source.runtimeId) return workerViewUnavailable(workerViewText.identityMismatch);
+			return buildWorkerView(history.getBranch(), source.sessionFile, source.task ?? "", presence);
+		} catch (error) { return workerViewUnavailable(viewClip(String(error), 300)); }
+	}
 	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
 		pi.appendEntry(REPORT, report);
-		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}`), false, true);
+		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}\n\n${savedWorkerView(ctx, { ...report, runtimeId: state.worker?.identity?.sessionId })}`), false, true);
 		if (wake && ctx.isIdle()) remindReports(ctx);
 	}
 	function recordWorkerEvent(ctx: ExtensionContext, event: WorkerEvent, wake = true) {
 		if (REVIEWABLE_EVENTS.has(event.kind)) { recordReport(ctx, event, wake); return; }
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === event.id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === event.id)) return;
 		pi.appendEntry(WORKER_EVENT, event);
-		send(workerStatus(event.plan, event.session, event.id, event.kind, event.text), false, true);
+		const context = ["waiting", "aborted", "unclassified"].includes(event.kind) ? `${event.text}\n\n${savedWorkerView(ctx, { ...event, runtimeId: state.worker?.identity?.sessionId })}` : event.text;
+		send(workerStatus(event.plan, event.session, event.id, event.kind, context), false, true);
 	}
 	function remindReports(ctx: ExtensionContext) {
 		if (state.child || state.mode !== "supervising") return;
@@ -793,6 +807,26 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				state = { mode: "planning", plan: path, worker: state.worker, workerStopped: state.workerStopped }; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx); watchPlan(ctx);
 				send(planningSeed(objective, path));
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
+		},
+	});
+	pi.registerTool({
+		name: "worker_view", label: "Worker view", description: workerViewDescription,
+		parameters: Type.Object({}),
+		renderResult(output, { expanded }) {
+			const body = output.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+			return new Markdown(expanded ? body : `${body.split("\n").slice(0, 5).join("\n")}\n${keyHint("app.tools.expand", workerViewText.expand)}`, 0, 0, getMarkdownTheme());
+		},
+		async execute(_id, _params, _signal, _update, ctx) {
+			const worker = state.worker, intercomId = worker?.intercomId, stamp = generation;
+			const source = state.child ? { runtimeId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile() }
+				: { runtimeId: worker?.identity?.sessionId, sessionFile: worker?.sessionFile, task: worker?.task };
+			let presence: string | undefined;
+			if (!state.child && worker?.intercomId && channel?.snapshot().connected && channel.snapshot().supported) {
+				const peers = await channel.listSessions().catch(() => undefined);
+				if (peers?.some(peer => peer.id === intercomId)) presence = workerViewPresence(new Date().toISOString());
+			}
+			if (stamp !== generation || worker !== state.worker || intercomId !== state.worker?.intercomId || (!state.child && source.sessionFile !== state.worker?.sessionFile)) return result(messages.cancelled);
+			return result(savedWorkerView(ctx, source, presence));
 		},
 	});
 	pi.registerTool({

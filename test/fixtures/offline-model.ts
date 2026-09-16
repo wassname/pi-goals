@@ -32,7 +32,8 @@ export default function offlineModel(pi: ExtensionAPI): void {
 			name: "Offline test model",
 			reasoning: false,
 			input: ["text"],
-			contextWindow: 16_000,
+			// Scripted action replies are not compaction replies; this story retains its history.
+			contextWindow: 128_000,
 			maxTokens: 1_000,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}],

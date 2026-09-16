@@ -66,6 +66,7 @@
   },
   "dependencies": {
     "@jl1990/pi-scheduler": "https://registry.npmjs.org/@jl1990/pi-scheduler/-/pi-scheduler-0.5.0.tgz",
+    "@sting8k/pi-vcc": "https://registry.npmjs.org/@sting8k/pi-vcc/-/pi-vcc-0.6.0.tgz",
     "pi-intercom": "0.13.0",
     "pi-subagents": "0.66.0"
   },
