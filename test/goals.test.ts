@@ -1,15 +1,14 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEditTool, type ExtensionAPI, initTheme, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Markdown, visibleWidth } from "@earendil-works/pi-tui";
+import { createEditTool, type ExtensionAPI, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { upkeep, workerAssignment } from "../src/prompts.js";
+import { upkeep } from "../src/prompts.js";
 
 vi.mock("pi-subagents/project-panes", () => ({ openProjectPane: vi.fn(async () => ({ ok: true, data: { bindingPath: "/project/.pi/subagents/project-pane.json", disposition: "opened", binding: { paneId: "native-pane", projectRoot: "/project", command: "pi" } } })) }));
 
@@ -958,11 +957,6 @@ it("does not approve cancelled goals or display current completion for an unavai
 	expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith("goals", [expect.stringContaining("unavailable")]);
 });
 
-it("keeps interactive workers open", () => {
-	const task = workerAssignment("/plan.md", "parent", "request", "bounded task");
-	expect(task).toContain("do not exit, reset, switch session or close the pane");
-});
-
 it.each(["stop", "exit", "edit", "session_tree"])("discards pending upkeep after %s instead of reviving stale work", async change => {
 	const f = fixture(); await f.draft();
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo");
@@ -1153,6 +1147,14 @@ it("ordinary project peer explicitly attaches as worker, never gaining approval 
 	await f.command("ready"); await f.command("solo");
 	const reply = await f.tools.get("CompleteGoal").execute("complete", { goal: "first output", evidence: [path], observation: "claim" }, undefined, undefined, f.ctx);
 	expect(reply.content[0].text).toContain("only to the active parent");
+	const next = join(f.ctx.cwd, "next.md"); writeFileSync(next, f.plan);
+	const before = f.entries.length;
+	await tool.execute("missing", { path: next }, undefined, undefined, f.ctx);
+	f.channel.listSessions.mockResolvedValue([{ id: "live-parent", pid: process.pid + 1 }, { id: "foreign-parent", pid: process.pid + 2 }]);
+	await tool.execute("foreign", { path: next, parent: "foreign-parent", requestId: "next" }, undefined, undefined, f.ctx);
+	expect(f.entries).toHaveLength(before); // neither a missing request nor a live stranger can take over
+	await tool.execute("next", { path: next, parent: "live-parent", requestId: "next" }, undefined, undefined, f.ctx);
+	expect(f.entries.at(-1).data).toMatchObject({ plan: next, parent: { intercomId: "live-parent", requestId: "next" } });
 	f.hooks.get("session_start")({}, f.ctx); f.hooks.get("session_compact")();
 	expect(f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx).systemPrompt).toContain("delegated implementation worker");
 	const assistant = { role: "assistant", content: [{ type: "text", text: "Result at output.txt" }], stopReason: "stop" };
@@ -1203,10 +1205,11 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 	expect(startup).toContain(requested ? `User-supplied model preference: ${JSON.stringify(requested)}` : "Inherit the native model");
 	if (requested) expect(startup).toContain("Preserve later human model changes");
 	expect(vi.mocked(openProjectPane).mock.calls[0][0]).not.toHaveProperty("model");
-	const identity = { paneId: "native-pane", sessionId: "worker", sessionFile: "/tmp/worker.jsonl", model: "offline/inherited" };
+	const identity = { paneId: "observed-pane", sessionId: "worker", sessionFile: "/tmp/worker.jsonl", model: "offline/inherited" };
 	f.event({ type: "message", fromSessionId: "worker", payload: { type: "attached", to: worker.parentId, requestId: worker.requestId, plan: f.path, sessionFile: identity.sessionFile, identity } });
 	await f.command("status");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Last observed worker model: offline/inherited"), "info");
+	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("native pane: observed-pane"), "info");
 	if (model) {
 		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", kind: "progress", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
 		expect(f.messages.at(-1)?.message.content).toContain("## Worker status: progress");
@@ -1214,157 +1217,4 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 		expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
 	}
 
-});
-
-it("reviews a saved worker revision through inspection, silent delivery, retry and restored pending reminders", async () => {
-	const parent = fixture(), worker = fixture(); await parent.draft(); await parent.command("ready");
-	const sm = SessionManager.create(worker.ctx.cwd, join(worker.ctx.cwd, "sessions"));
-	worker.ctx.sessionManager = sm as any;
-	worker.pi.appendEntry = (type, data) => sm.appendCustomEntry(type, data);
-	const workerId = "worker-intercom"; // Broker identity is distinct from the native saved-session UUID.
-	parent.channel.publish.mockImplementation(payload => worker.event({ type: "message", fromSessionId: "parent-intercom", payload }));
-	worker.channel.publish.mockImplementation(payload => parent.event({ type: "message", fromSessionId: workerId, payload }));
-	worker.channel.listSessions.mockResolvedValue([{ id: "parent-intercom", pid: process.pid + 1 }]);
-	await parent.tools.get("OpenGoalWorker").execute("open", { task: "Implement first output" }, undefined, undefined, parent.ctx);
-	const requestId = parent.entries.at(-1).data.worker.requestId;
-	await worker.tools.get("AttachGoalPlan").execute("attach", { path: parent.path, parent: "parent-intercom", requestId }, undefined, undefined, worker.ctx);
-	const report = async (text: string, kind = "review_request", stopReason = "stop") => {
-		worker.hooks.get("agent_start")({}, worker.ctx);
-		await worker.tools.get("ReportGoalEvent").execute("event", { kind, summary: text }, undefined, undefined, worker.ctx);
-		const message = { role: "assistant", content: [{ type: "text", text }], stopReason, timestamp: Date.now(), api: "openai-completions", provider: "offline", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-		sm.appendMessage(message as any);
-		worker.hooks.get("agent_end")({ messages: [message] }, worker.ctx);
-		return `${workerId}:${worker.channel.publish.mock.lastCall?.[0].entryId}`;
-	};
-	const noOp = { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Operation aborted", timestamp: Date.now(), api: "openai-completions", provider: "offline", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-	worker.hooks.get("agent_start")({}, worker.ctx); sm.appendMessage(noOp as any); worker.hooks.get("agent_end")({ messages: [noOp] }, worker.ctx);
-	expect(worker.channel.publish.mock.lastCall?.[0]).toMatchObject({ kind: "aborted", text: "Operation aborted" });
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
-	parent.ctx.isIdle.mockReturnValue(false); // Another authorized task is still running.
-	const id = await report("Output is ready.");
-	const before = parent.messages.length;
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	expect(parent.messages).toHaveLength(before + 1);
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	expect(parent.messages).toHaveLength(before + 1); // No self-triggered loop.
-	parent.hooks.get("session_start")({}, parent.ctx);
-	expect(parent.hooks.get("before_agent_start")({ systemPrompt: "base" }, parent.ctx).systemPrompt).toContain(id);
-	const artifact = join(parent.ctx.cwd, "output.txt"); writeFileSync(artifact, "first output\n");
-	execFileSync("git", ["init"], { cwd: parent.ctx.cwd });
-	execFileSync("git", ["add", "output.txt"], { cwd: parent.ctx.cwd });
-	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "worker evidence"], { cwd: parent.ctx.cwd });
-	const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: parent.ctx.cwd, encoding: "utf8" }).trim();
-	writeFileSync(artifact, "changed after reported revision\n");
-	const form = { reportId: id, goal: { path: parent.path, quote: "goal: first output" }, evidence: [{ path: `git:${commit}:output.txt`, quote: "invented", observation: "Read the reported revision" }], observation: "Inspected actual output and assigned goal", unmet: "none", verdict: "accepted" };
-	const review = () => parent.tools.get("review_subagent").execute("review", form, undefined, undefined, parent.ctx);
-	await expect(review()).rejects.toThrow("Quote does not match");
-	form.evidence[0].quote = "first output";
-	const workerTurns = worker.messages.length;
-	parent.channel.publish.mockImplementationOnce(() => {}); // Publish success is not saved delivery.
-	await review(); await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(id);
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Implement first output");
-	await review(); await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
-	expect(worker.messages).toHaveLength(workerTurns);
-	expect(readFileSync(sm.getSessionFile()!, "utf8")).toContain("Worker review: accepted");
-	initTheme("dark");
-	const reviewEntry = sm.getBranch().find(entry => entry.type === "custom" && entry.customType === "pi-goals-report-review")!;
-	const reviewRenderer = vi.mocked(worker.pi.registerEntryRenderer).mock.calls.find(([type]) => type === "pi-goals-report-review")![1];
-	const collapsedReview = reviewRenderer(reviewEntry, { expanded: false }, worker.ctx.ui.theme);
-	expect(collapsedReview.render(100).join("\n")).toContain("Worker review: accepted");
-	expect(collapsedReview.render(100).join("\n")).not.toContain("Inspected actual output");
-	expect(reviewRenderer(reviewEntry, { expanded: true }, worker.ctx.ui.theme)).toBeInstanceOf(Markdown);
-	await review(); worker.hooks.get("session_shutdown")();
-	parent.event({ type: "session_left", sessionId: workerId });
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
-	worker.hooks.get("session_start")({}, worker.ctx);
-	const staleStop = worker.channel.publish.mock.lastCall?.[0];
-	vi.stubEnv("HERDR_PANE_ID", "restored-pane");
-	await worker.tools.get("AttachGoalPlan").execute("restore", { path: parent.path }, undefined, undefined, worker.ctx);
-	parent.event({ type: "message", fromSessionId: workerId, payload: staleStop });
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("native pane: restored-pane");
-	await parent.command("stop");
-	expect(parent.messages.at(-1)?.message.content).toContain("native pane restored-pane");
-	form.reportId = await report("Revision failed", "blocker", "error");
-	const paused = parent.messages.length;
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	expect(parent.messages).toHaveLength(paused);
-	await parent.command("resume");
-	form.verdict = "changes_requested";
-	await expect(review()).rejects.toThrow("concrete continuation");
-	await parent.tools.get("review_subagent").execute("revision", { ...form, unmet: "Output still needs correction", continuation: "Correct output.txt and rerun verification." }, undefined, undefined, parent.ctx);
-	expect(worker.messages.at(-1)).toMatchObject({ savedPrompt: true, message: { content: expect.stringContaining("Correct output.txt") } });
-	form.reportId = await report("Cancelled while correcting", "blocker", "aborted"); form.verdict = "blocked";
-	await review(); await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
-	expect(readFileSync(parent.path, "utf8")).not.toContain("[✓]");
-
-	// Lost notification and cancellation before any new assistant message: durable run identity.
-	worker.hooks.get("agent_start")({}, worker.ctx);
-	worker.channel.publish.mockImplementationOnce(() => {});
-	await worker.tools.get("ReportGoalEvent").execute("missed", { kind: "blocker", summary: "Blocked before an assistant summary." }, undefined, undefined, worker.ctx);
-	worker.hooks.get("agent_end")({ messages: [] }, worker.ctx);
-	const missedStop = sm.getBranch().filter((entry: any) => entry.customType === "pi-goals-worker-stop").at(-1) as any;
-	const missed = `${workerId}:${missedStop.data.entryId}`;
-	expect(missed).not.toBe(form.reportId);
-	// Same preserved worker, newly approved plan and request: old reviews stay in history.
-	const history = sm.getBranch(), oldPlan = readFileSync(parent.path, "utf8");
-	await parent.command("clear"); await parent.command("new Next output");
-	const nextPlan = parent.entries.at(-1).data.plan; writeFileSync(nextPlan, parent.plan);
-	await parent.command("ready");
-	await parent.tools.get("OpenGoalWorker").execute("next", { task: "Implement next output" }, undefined, undefined, parent.ctx);
-	const nextRequest = parent.entries.at(-1).data.worker.requestId;
-	const attach = (params: object) => worker.tools.get("AttachGoalPlan").execute("reattach", params, undefined, undefined, worker.ctx);
-	const unchanged = () => expect(sm.getBranch()).toEqual(history);
-	expect((await attach({ path: nextPlan })).content[0].text).toContain("explicit authorization"); unchanged();
-	worker.channel.listSessions.mockResolvedValue([{ id: "parent-intercom", pid: process.pid + 1 }, { id: "foreign-parent", pid: process.pid + 2 }]);
-	expect((await attach({ path: nextPlan, parent: "foreign-parent", requestId: nextRequest })).content[0].text).toContain("Different-parent takeover"); unchanged();
-	worker.channel.listSessions.mockRejectedValueOnce(new Error("offline"));
-	expect((await attach({ path: nextPlan, parent: "parent-intercom", requestId: nextRequest })).content[0].text).toContain("still connecting"); unchanged();
-	await attach({ path: nextPlan, parent: "parent-intercom", requestId: nextRequest });
-	expect(parent.entries.at(-1).data.worker).toMatchObject({ intercomId: workerId, requestId: nextRequest, sessionFile: sm.getSessionFile() });
-	expect(sm.getBranch().slice(0, history.length)).toEqual(history);
-	await attach({ path: nextPlan }); // Context restoration does not require new authorization.
-	const nextReport = await report("New-plan output needs inspection");
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
-	expect(worker.channel.publish.mock.lastCall?.[0]).toMatchObject({ type: "stopped", plan: nextPlan, requestId: nextRequest });
-	parent.hooks.get("session_start")({}, parent.ctx); // Reconcile the missed stop from real saved worker history.
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(missed);
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	form.reportId = missed; await review(); // Old-plan blocked review remains deliverable after retargeting.
-	await parent.command("status");
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).not.toContain(missed);
-	expect(parent.ctx.ui.notify.mock.lastCall?.[0]).toContain(nextReport);
-	const afterReview = parent.messages.length;
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	parent.hooks.get("session_start")({}, parent.ctx);
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	expect(parent.messages).toHaveLength(afterReview); // Shrinking/restoring the same backlog does not wake again.
-	const ordinary = (id: string, text: string, links = {}, sender = workerId) => {
-		const details = { from: { id: sender }, message: { id, timestamp: Date.now(), content: { text }, ...links } };
-		parent.ctx.sessionManager.getBranch().push({ type: "custom_message", id, customType: "intercom_message", content: text, details });
-		parent.hooks.get("message_end")({ message: { role: "custom", customType: "intercom_message", content: text, details } }, parent.ctx);
-	};
-	const beforeOrdinary = parent.messages.length;
-	ordinary("ordinary-a", "Partial output needs review");
-	ordinary("ordinary-b", "Corrected output needs review", { supersedes: "ordinary-a" });
-	ordinary("retry-b", "Corrected output needs review", { retryOf: "ordinary-b" });
-	ordinary("retry-again", "Corrected output needs review", { retryOf: "retry-b" });
-	ordinary("ack-only", "OK"); ordinary("foreign", "Unowned report", {}, "foreign-peer");
-	expect(parent.messages).toHaveLength(beforeOrdinary); // No second body beside Intercom's saved/displayed original.
-	parent.hooks.get("session_start")({}, parent.ctx);
-	await parent.hooks.get("agent_settled")({}, parent.ctx);
-	expect(parent.messages).toHaveLength(beforeOrdinary); // Ordinary Intercom messages remain visible but are not review obligations.
-	await parent.command("status");
-	const pending = parent.ctx.ui.notify.mock.lastCall?.[0];
-	for (const nonReviewable of ["ordinary-a", "ordinary-b", "retry-b", "retry-again", "ack-only", "foreign-peer"]) expect(pending).not.toContain(nonReviewable);
-	expect(pending).toContain(nextReport);
-	expect(readFileSync(parent.path, "utf8")).toBe(oldPlan);
-	expect((await worker.tools.get("CompleteGoal").execute("deny", { goal: "first output", evidence: [], observation: "claim" }, undefined, undefined, worker.ctx)).content[0].text).toContain("only to the active parent");
 });

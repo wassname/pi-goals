@@ -1,16 +1,15 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { foldPlan } from "../src/plan.js";
 
 type RpcMessage = { type: string; id?: string; method?: string; [key: string]: unknown };
 type ModelRequest = { messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
-const messageText = (content: ModelRequest["messages"][number]["content"]) => typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("\n");
 
 class RpcClient {
 	readonly messages: RpcMessage[] = [];
@@ -65,175 +64,199 @@ const isSelect = (message: RpcMessage) => message.type === "extension_ui_request
 const isEditor = (message: RpcMessage) => message.type === "extension_ui_request" && message.method === "editor";
 const systemText = (request: ModelRequest) => request.messages.filter(message => ["system", "developer"].includes(message.role)).map(message => message.content).join("\n");
 
-describe("RPC review flow", () => {
-	it.each(["Edit", "Discuss"])("automatically proposes a draft, handles %s, then enters the supervisor role on Ready", async (choice) => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-goals-rpc-"));
-		const requests: ModelRequest[] = [];
-		const plan = "# Plan\n\n## Goals\n\n1. [ ] goal: name the output\n  - subtle failure mode: the output has no name\n  - discriminator: the plan names the output\n\n## Log\n";
-		let planPath = "", createTaskName = "";
-		let holdResponse: (() => Promise<void>) | undefined;
-		const server = createServer(async (request, response) => {
-			let body = "";
-			for await (const chunk of request) body += chunk;
-			const modelRequest = JSON.parse(body) as ModelRequest;
-			requests.push(modelRequest);
-			if (holdResponse) { const hold = holdResponse; holdResponse = undefined; await hold(); }
-			if (createTaskName) {
-				const name = createTaskName; createTaskName = "";
-				streamResponse(response, { tool_calls: [{ index: 0, id: "busy-cleanup-task", type: "function", function: { name: "schedule_task", arguments: JSON.stringify({ name, action: "prompt", type: "interval", schedule: "1h", scope: "session", prompt: "Goal check-in." }) } }] }, "tool_calls");
-				return;
-			}
-			if (requests.length === 1) {
-				const pathMatch = systemText(modelRequest).match(/Plan only in (.+?);/);
-				if (!pathMatch) throw new Error("Planning prompt did not name its plan file");
-				planPath = pathMatch[1];
-				streamResponse(response, {
-					tool_calls: [{
-						index: 0, id: "write-plan", type: "function",
-						function: { name: "write", arguments: JSON.stringify({ path: planPath, content: plan }) },
-					}],
-				}, "tool_calls");
-				return;
-			}
-			streamResponse(response, { content: "Plan inspected." }, "stop");
-		});
-		await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-		const address = server.address();
-		if (!address || typeof address === "string") throw new Error("Offline model did not bind a TCP port.");
-
-		const pi = spawn(resolve("node_modules/.bin/pi"), [
-			"--mode", "rpc", "--no-extensions", "--model", "offline/test",
-			"-e", resolve("test/fixtures/offline-model.ts"),
-			"-e", resolve("src/index.ts"),
-			"-e", resolve("node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"),
-		], {
-			cwd,
-			env: {
-				// Pi/gpt-6-astra: test the parent role even when vitest itself runs in a worker.
-				...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PI_SUBAGENT_") && !name.startsWith("PI_GOALS_"))),
-				PI_CODING_AGENT_DIR: join(cwd, ".agent"),
-				PI_OFFLINE: "1",
-				PI_SCHEDULER_STATE_FILE: join(cwd, "scheduler-tasks.json"),
-				PI_GOALS_OFFLINE_MODEL_URL: `http://127.0.0.1:${address.port}`,
-			},
-		});
-		const client = new RpcClient(pi);
-		const exited = once(pi, "exit");
-		try {
-			client.send({ type: "prompt", id: "goals", message: "/goals new work out the thing" });
-			const review = await client.waitFor(isSelect);
-			expect(review.options).toEqual(["Ready", "Discuss", "Edit", "Cancel"]);
-			client.send({ type: "get_state", id: "session-name" });
-			const state = await client.waitFor(message => message.type === "response" && message.id === "session-name");
-			expect(basename(planPath)).toBe(`${(state.data as { sessionId: string }).sessionId.slice(-6)}-v1.md`);
-			expect(review.title).toContain(planPath);
-			const proposal = client.messages.find(message => message.type === "message_end" && (message.message as { customType?: string })?.customType === "goal-plan-proposal");
-			expect(proposal?.message).toMatchObject({ content: plan, display: true });
-			expect(readFileSync(planPath, "utf8")).toBe(plan);
-			expect(requests).toHaveLength(2);
-			expect(systemText(requests[0])).toContain("Plan only in");
-
-			const choiceStart = client.messages.length;
-			client.send({ type: "extension_ui_response", id: review.id, value: choice });
-			let approvedPlan = plan;
-			if (choice === "Edit") {
-				const editor = await client.waitFor(isEditor, choiceStart);
-				expect(editor.prefill).toBe(plan);
-				expect(requests).toHaveLength(2);
-				approvedPlan = plan.replace("the plan names the output", "the plan names output.txt and its exact bytes");
-				const editStart = client.messages.length;
-				client.send({ type: "extension_ui_response", id: editor.id, value: approvedPlan });
-				await client.waitFor(message => message.type === "extension_ui_request" && message.method === "setWidget", editStart);
-				expect(readFileSync(planPath, "utf8")).toBe(approvedPlan);
-				expect(requests).toHaveLength(2);
-			} else {
-				await client.waitFor(message => message.type === "agent_settled", choiceStart);
-				client.send({ type: "get_state", id: "idle-discuss" });
-				const idle = await client.waitFor(message => message.type === "response" && message.id === "idle-discuss");
-				expect(idle.data).toMatchObject({ isStreaming: false, pendingMessageCount: 0 });
-				expect(requests).toHaveLength(2);
-				expect(client.messages.slice(choiceStart).filter(message => message.type === "agent_start" || isEditor(message))).toEqual([]);
-				const userStart = client.messages.length;
-				client.send({ type: "prompt", id: "user-discussion", message: "Keep the output name, but explain the failure mode." });
-				await client.waitFor(message => message.type === "agent_settled", userStart);
-				expect(requests).toHaveLength(3);
-				expect(systemText(requests[2])).toContain("Plan only in");
-				expect(JSON.stringify(requests[2].messages)).toContain("Keep the output name, but explain the failure mode.");
-			}
-			const beforeReady = requests.length;
-			const reopenStart = client.messages.length;
-			client.send({ type: "prompt", id: "review", message: "/goals review" });
-			const ready = await client.waitFor(isSelect, reopenStart);
-			expect(requests).toHaveLength(beforeReady);
-			const readyStart = client.messages.length;
-			client.send({ type: "extension_ui_response", id: ready.id, value: "Ready" });
-			await client.waitFor(message => message.type === "agent_end", readyStart);
-			expect(requests).toHaveLength(beforeReady + 1);
-			const supervisor = requests.at(-1)!;
-			expect(systemText(supervisor)).toContain("You are the goal supervisor in the main chat");
-			expect(systemText(supervisor)).not.toContain("Plan only in");
-			expect(JSON.stringify(supervisor.messages)).toContain(JSON.stringify(foldPlan(approvedPlan)).slice(1, -1));
-			const approval = supervisor.messages.filter(message => message.role === "user").map(message => messageText(message.content)).find(text => text.includes("Ready approved this plan:"))!;
-			expect(approval).toContain("[pi-goals: approval — Ready]");
-			expect(approval).toContain(`Plan excerpt (working set before Log) from ${JSON.stringify(planPath)}:\n\x60\x60\x60md\n${foldPlan(approvedPlan)}\n\x60\x60\x60`);
-			expect(client.messages.filter(message => message.type === "tool_execution_start").map(message => message.toolName)).toEqual(["write"]);
-			expect(client.messages.filter(message => message.type === "extension_error")).toEqual([]);
-			const notices = client.messages.filter(message => message.type === "entry_appended" && (message.entry as { customType?: string })?.customType === "pi-goals-notice");
-			expect(notices.length).toBeGreaterThanOrEqual(2);
-			for (const notice of notices) {
-				const content = (notice.entry as { data: { content: string } }).data.content;
-				expect(client.messages.some(event => event.type === "message_end" && (event.message as any)?.role === "user" && (event.message as any)?.content[0]?.text === content)).toBe(true);
-				expect(supervisor.messages.filter(message => message.role === "user" && messageText(message.content) === content)).toHaveLength(1);
-			}
-			const restoreStart = client.messages.length;
-			client.send({ type: "prompt", id: "restore-same-plan", message: `/goals attach ${planPath}` });
-			await client.waitFor(message => message.type === "response" && message.id === "restore-same-plan", restoreStart);
-			expect(client.messages.slice(restoreStart).filter(isSelect)).toEqual([]);
-			expect(client.messages.slice(restoreStart).some(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes("mode and worker binding unchanged"))).toBe(true);
-			expect(requests).toHaveLength(beforeReady + 1);
-			const beforeNotice = requests.length, noticeStart = client.messages.length;
-			client.send({ type: "prompt", id: "attachment-notice", message: "/fixture-attachment-notice" });
-			const attachment = await client.waitFor(message => message.type === "message_end" && (message.message as any)?.customType === "pi-goals-supervision", noticeStart);
-			expect(attachment.message).toMatchObject({ display: true, content: expect.stringContaining("Metadata only; no acknowledgement or review turn requested") });
-			await client.waitFor(message => message.type === "response" && message.id === "attachment-notice", noticeStart);
-			expect(requests).toHaveLength(beforeNotice);
-			expect(client.messages.slice(noticeStart).filter(message => message.type === "agent_start")).toEqual([]);
-			const saved = readFileSync((state.data as { sessionFile: string }).sessionFile, "utf8").trim().split("\n").map(line => JSON.parse(line));
-			expect(saved.at(-1)).toMatchObject({ type: "custom_message", customType: "pi-goals-supervision", display: true, content: (attachment.message as any).content });
-			if (choice === "Edit") {
-				// One real scheduler task is fixture setup, not another cadence/wake suite.
-				createTaskName = `goals-${(state.data as { sessionId: string }).sessionId}`;
-				const setupStart = client.messages.length;
-				client.send({ type: "prompt", id: "seed-check-in", message: "Prepare the owned check-in fixture." });
-				await client.waitFor(message => message.type === "agent_settled", setupStart);
-				const task = JSON.parse(readFileSync(join(cwd, "scheduler-tasks.json"), "utf8")).tasks[0];
-				expect(task).toMatchObject({ name: `goals-${(state.data as { sessionId: string }).sessionId}`, scope: "session" });
-				let release!: () => void;
-				const held = new Promise<void>(done => { release = done; });
-				const requested = once(server, "fixture-busy-request", { signal: AbortSignal.timeout(8_000) });
-				holdResponse = () => { server.emit("fixture-busy-request"); return held; };
-				const busyStart = client.messages.length, beforeBusy = requests.length;
-				client.send({ type: "prompt", id: "slow-reply", message: "Wait for the fixture's delayed response." });
-				try {
-					await requested;
-					client.send({ type: "prompt", id: "busy-clear", message: "/goals clear" });
-					await client.waitFor(message => message.type === "response" && message.id === "busy-clear", busyStart);
-					// The original observer deadline was five seconds; no turn_end occurs yet.
-					await new Promise(done => setTimeout(done, 6_000));
-				} finally { release(); }
-				await client.waitFor(message => message.type === "agent_settled", busyStart);
-				expect(client.messages.slice(busyStart).filter(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes("removal unconfirmed"))).toEqual([]);
-				await client.waitFor(message => message.type === "extension_ui_request" && message.method === "notify" && JSON.stringify(message).includes(`Removed scheduled task ${task.id}`), busyStart);
-				expect(JSON.parse(readFileSync(join(cwd, "scheduler-tasks.json"), "utf8")).tasks).toEqual([]);
-				expect(requests).toHaveLength(beforeBusy + 1);
-				console.log(`RPC busy Clear: held beyond 5s; removed ${task.id} after safe flush; requests ${beforeBusy} -> ${requests.length} (only the held response).`);
-			}
-			console.log(`RPC ${choice}: passive attachment saved/displayed without inference; visible automatic proposal; ${choice === "Edit" ? "editor saved exact plan without model call" : "discussion retained planning role without editor"}; Ready request used supervisor role; planning/Ready executed only write.`);
-		} finally {
-			pi.kill();
-			await exited;
-			await new Promise<void>((done) => server.close(() => done()));
-			rmSync(cwd, { recursive: true, force: true });
+// One real-Pi story: planning, failed work, lost delivery, correction, restored history, cleanup.
+it("plans and reviews the same worker across failure, delivery retry and reload", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-rpc-"));
+	const requests = { parent: [] as ModelRequest[], worker: [] as ModelRequest[] };
+	const replies = { parent: [] as any[], worker: [] as any[] };
+	const clients: RpcClient[] = [];
+	let planPath = "", serial = 0, hold: (() => Promise<void>) | undefined;
+	let holdRole: "parent" | "worker" = "parent";
+	const plan = '# Plan\n\n## User voice\nKeep the greeting readable.\n\n## Goals\n- [ ] goal: deliver greeting\n  - greeting.txt must contain hello.\n\n## Log\nArchived notes stay on disk.\n';
+	const call = (name: string, args: object) => ({ tool_calls: [{ index: 0, id: `fixture-${++serial}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+	const server = createServer(async (request, response) => {
+		let body = ""; for await (const chunk of request) body += chunk;
+		const role = request.url?.startsWith("/worker") ? "worker" : "parent";
+		const input = JSON.parse(body) as ModelRequest; requests[role].push(input);
+		if (hold && role === holdRole) { const pending = hold; hold = undefined; await pending(); }
+		if (response.destroyed) return;
+		let answer = replies[role].shift();
+		if (role === "parent" && requests.parent.length === 1) {
+			planPath = systemText(input).match(/Plan only in (.+?);/)![1];
+			answer = call("write", { path: planPath, content: plan });
 		}
-	}, 25_000);
-});
+		if (answer?.fail) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: { message: "Fixture execution failed after progress" } })); return; }
+		streamResponse(response, answer || { content: "Inspected." }, answer?.tool_calls ? "tool_calls" : "stop");
+	});
+	await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+	const port = (server.address() as import("node:net").AddressInfo).port;
+	function start(role: "parent" | "worker", sessionFile?: string) {
+		const child = spawn(resolve("node_modules/.bin/pi"), ["--mode", "rpc", "--no-extensions", "--model", "offline/test",
+			"-e", resolve("test/fixtures/offline-model.ts"), "-e", resolve("src/index.ts"),
+			"-e", resolve("node_modules/pi-intercom/index.ts"), "-e", resolve("node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"),
+			...(sessionFile ? ["--session", sessionFile] : [])], { cwd, env: {
+			...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PI_SUBAGENT_") && !name.startsWith("PI_GOALS_") && !name.startsWith("HERDR_"))),
+			PI_CODING_AGENT_DIR: join(cwd, "agent"), PI_OFFLINE: "1", PI_INTERCOM_SCOPE_ID: basename(cwd),
+			PI_SCHEDULER_STATE_FILE: join(cwd, "scheduler.json"), PI_GOALS_OFFLINE_MODEL_URL: `http://127.0.0.1:${port}/${role}`,
+		} }); const client = new RpcClient(child); clients.push(client); return client;
+	}
+	async function command(client: RpcClient, message: string) {
+		const after = client.messages.length, id = `command-${++serial}`;
+		client.send({ type: "prompt", id, message });
+		await client.waitFor(m => m.type === "response" && m.id === id, after);
+	}
+	async function run(client: RpcClient, role: "parent" | "worker", ...answers: any[]) {
+		const after = client.messages.length; replies[role].push(...answers);
+		client.send({ type: "prompt", id: `run-${++serial}`, message: "Continue the isolated fixture task." });
+		await client.waitFor(m => m.type === "agent_settled", after);
+	}
+	async function state(client: RpcClient): Promise<any> {
+		const id = `state-${++serial}`; client.send({ type: "get_state", id });
+		return (await client.waitFor(m => m.type === "response" && m.id === id)).data;
+	}
+	const entries = (path: string) => readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
+	const records = (path: string, type: string) => entries(path).filter(e => e.type === "custom" && e.customType === type).map(e => e.data);
+	async function report(parent: RpcClient, after: number) {
+		const event = await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-report", after);
+		await parent.waitFor(m => m.type === "agent_settled", parent.messages.indexOf(event));
+		return (event.entry as any).data;
+	}
+	async function stop(client: RpcClient) { const exited = once(client.process, "exit"); client.process.kill(); await exited; }
+	let parent = start("parent"), worker: RpcClient | undefined;
+	try {
+		parent.send({ type: "prompt", id: "new", message: "/goals new deliver the greeting" });
+		const proposal = await parent.waitFor(isSelect);
+		parent.send({ type: "extension_ui_response", id: proposal.id, value: "Edit" });
+		const editor = await parent.waitFor(isEditor);
+		const approved = plan.replace("contain hello", "contain hello followed by a newline");
+		const editAt = parent.messages.length;
+		parent.send({ type: "extension_ui_response", id: editor.id, value: approved });
+		await parent.waitFor(m => m.type === "extension_ui_request" && m.method === "setWidget", editAt);
+		expect(readFileSync(planPath, "utf8")).toBe(approved); expect(requests.parent).toHaveLength(2);
+		const discussion = parent.messages.length;
+		parent.send({ type: "prompt", id: "discuss", message: "/goals review" });
+		const discuss = await parent.waitFor(isSelect, discussion);
+		parent.send({ type: "extension_ui_response", id: discuss.id, value: "Discuss" });
+		await parent.waitFor(m => m.type === "response" && m.command === "prompt", discussion);
+		const discussionAt = parent.messages.length;
+		parent.send({ type: "prompt", id: "discussion", message: "Keep the edited requirement." });
+		const ready = await parent.waitFor(isSelect, discussionAt);
+		expect(systemText(requests.parent.at(-1)!)).toContain("Plan only in");
+		const readyAt = parent.messages.length;
+		parent.send({ type: "extension_ui_response", id: ready.id, value: "Ready" });
+		const approvedTurn = await parent.waitFor(m => m.type === "agent_end", readyAt);
+		await parent.waitFor(m => m.type === "agent_settled", parent.messages.indexOf(approvedTurn));
+		expect(systemText(requests.parent.at(-1)!)).toContain("goal supervisor");
+		expect(JSON.stringify(requests.parent.at(-1)!.messages)).toContain(JSON.stringify(foldPlan(approved)).slice(1, -1));
+		const initialCount = requests.parent.length;
+		await command(parent, `/goals attach ${planPath}`);
+		expect(requests.parent).toHaveLength(initialCount);
+
+		// Only native pane allocation is replaced by fixture setup; everything below uses real IPC/history.
+		const selfAt = parent.messages.length; await run(parent, "parent", call("intercom", { action: "status" }));
+		const selfResult = parent.messages.slice(selfAt).find(m => m.type === "tool_execution_end" && m.toolName === "intercom") as any;
+		const parentId = JSON.stringify(selfResult.result.content).match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/)![0];
+		await command(parent, `/fixture-worker-binding ${JSON.stringify({ parentId, requestId: "rpc-assignment", task: "Deliver greeting" })}`);
+		const parentState = await state(parent);
+		worker = start("worker");
+		await run(worker, "worker", call("intercom", { action: "list" }));
+		await run(worker, "worker", call("AttachGoalPlan", { path: planPath, parent: parentId, requestId: "rpc-assignment" }), call("ReportGoalEvent", { kind: "receipt", summary: "Attached and waiting." }));
+		const workerState = await state(worker), workerFile = workerState.sessionFile;
+		expect(records(parentState.sessionFile, "pi-goals-worker-event").map(event => event.kind)).toEqual(["receipt"]);
+		const greeting = join(cwd, "greeting.txt");
+		const workerAt = worker.messages.length;
+		let releaseWorker!: () => void; const heldWorker = new Promise<void>(done => { releaseWorker = done; });
+		const workerRequested = once(server, "worker-held", { signal: AbortSignal.timeout(8_000) });
+		holdRole = "worker"; hold = () => { server.emit("worker-held"); return heldWorker; };
+		replies.worker.push(call("write", { path: greeting, content: "helo\n" }), call("ReportGoalEvent", { kind: "progress", summary: "Greeting written; verifying." }), { fail: true });
+		const workerId = records(parentState.sessionFile, "pi-goals-main-supervisor-v1").at(-1).worker.intercomId;
+		try {
+			await run(parent, "parent", call("intercom", { action: "send", to: workerId, message: "Explicit assignment: deliver greeting.txt per the plan, verify it and report the result." }));
+			await workerRequested; await stop(parent); // lose notification while retaining the real worker history
+		} finally { releaseWorker(); }
+		await worker.waitFor(m => m.type === "agent_settled", workerAt);
+		parent = start("parent", parentState.sessionFile); await state(parent);
+		const failure = records(parentState.sessionFile, "pi-goals-report").at(-1);
+		await run(parent, "parent");
+		expect(systemText(requests.parent.at(-1)!)).toContain(failure.id);
+		expect(failure.kind).toBe("blocker"); expect(failure.text).toContain("Fixture execution failed after progress");
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(1); // receipts/progress/normal stops stayed quiet
+
+		const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+		git("init", "--quiet"); git("add", "greeting.txt");
+		git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Initial artifact");
+		const revision = git("rev-parse", "HEAD");
+		const form = { reportId: failure.id, goal: { path: planPath, quote: "goal: deliver greeting" }, evidence: [{ path: `git:${revision}:greeting.txt`, quote: "helo", observation: "Read the incorrect greeting" }], observation: "The greeting is missing a letter", unmet: "Expected hello", verdict: "changes_requested", continuation: "Replace greeting.txt with hello followed by one newline, read it back, and report the corrected artifact." };
+		await run(parent, "parent", call("read", { path: greeting }), call("review_subagent", { ...form, evidence: [{ ...form.evidence[0], quote: "invented bytes" }] }));
+		expect(records(parentState.sessionFile, "pi-goals-report-review")).toHaveLength(0);
+		await stop(worker); // exact exit, not disappearance; failed delivery must remain pending
+		await run(parent, "parent", call("review_subagent", form));
+		expect(records(parentState.sessionFile, "pi-goals-report-review")).toHaveLength(0);
+		worker = start("worker", workerFile); await state(worker);
+		const inspectionAt = parent.messages.length;
+		await run(worker, "worker", call("intercom", { action: "list" }));
+		await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-worker-event", inspectionAt);
+		const correctionAt = parent.messages.length, correctionWorkerAt = worker.messages.length;
+		const statusCount = records(parentState.sessionFile, "pi-goals-worker-event").length;
+		const correctedEvent = { kind: "review_request", summary: `Corrected artifact: ${greeting}` };
+		replies.worker.push(call("write", { path: greeting, content: "hello\n" }), call("read", { path: greeting }), call("ReportGoalEvent", correctedEvent), call("ReportGoalEvent", correctedEvent));
+		await run(parent, "parent", call("review_subagent", form));
+		const correction = await report(parent, correctionAt);
+		await worker.waitFor(m => m.type === "agent_settled", correctionWorkerAt);
+		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(statusCount);
+		expect(correction.id).not.toBe(failure.id); expect(correction.sessionFile).toBe(workerFile);
+		expect(readFileSync(greeting, "utf8")).toBe("hello\n");
+		const workerCount = requests.worker.length;
+		await run(parent, "parent", call("read", { path: greeting }), call("review_subagent", { ...form, reportId: correction.id, evidence: [{ path: greeting, quote: "hello", observation: "Read corrected greeting" }], observation: "Matches the requested greeting", unmet: "none", verdict: "accepted", continuation: "" }));
+		await command(parent, "/goals status");
+		expect(requests.worker).toHaveLength(workerCount); // acceptance does not wake or close worker
+		expect(worker.process.exitCode).toBeNull(); expect(worker.process.signalCode).toBeNull();
+		const savedReviews = records(workerFile, "pi-goals-report-review");
+		expect(savedReviews.map(r => r.verdict)).toEqual(["changes_requested", "accepted"]);
+		expect(savedReviews.map(r => r.report)).toEqual([failure.id, correction.id]); // old consumers key this wire field
+		expect(records(parentState.sessionFile, "pi-goals-report-review")).toEqual(savedReviews);
+		await command(worker, "/fixture-reload"); // real shutdown/start after a formal event stays quiet
+		expect(requests.worker).toHaveLength(workerCount);
+		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(statusCount);
+		expect(records(workerFile, "pi-goals-report-review")).toEqual(savedReviews);
+		const abortAt = worker.messages.length, abortParentAt = parent.messages.length;
+		let releaseAbort!: () => void; const abortedRequest = new Promise<void>(done => { releaseAbort = done; });
+		const abortRequested = once(server, "aborting", { signal: AbortSignal.timeout(8_000) });
+		holdRole = "worker"; hold = () => { server.emit("aborting"); return abortedRequest; };
+		worker.send({ type: "prompt", id: "interrupted", message: "Wait for the interruption fixture." });
+		try { await abortRequested; worker.send({ type: "abort", id: "abort" }); await worker.waitFor(m => m.type === "agent_settled", abortAt); } finally { releaseAbort(); }
+		await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-worker-event" && (m.entry as any).data.kind === "aborted", abortParentAt);
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(2); // intentional interruption is not another formal review
+		await command(parent, "/fixture-legacy-supersession");
+		await run(parent, "parent");
+		expect(systemText(requests.parent.at(-1)!)).not.toContain("Pending worker revision reviews:");
+		expect(readFileSync(planPath, "utf8")).toBe(approved); // reviews never CompleteGoal
+
+		// Retain the existing busy-Clear discriminator: passive scheduler output can flush after five seconds.
+		await run(parent, "parent", call("schedule_task", { name: `goals-${parentState.sessionId}`, action: "prompt", type: "interval", schedule: "1h", scope: "session", prompt: "Goal check-in." }));
+		const task = JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks[0];
+		expect(task.sessionFile).toBe(parentState.sessionFile);
+		let release!: () => void; const held = new Promise<void>(done => { release = done; });
+		const requested = once(server, "held", { signal: AbortSignal.timeout(8_000) });
+		holdRole = "parent"; hold = () => { server.emit("held"); return held; };
+		const count = requests.parent.length, busyAt = parent.messages.length;
+		parent.send({ type: "prompt", id: "busy", message: "Wait for delayed fixture response." });
+		try { await requested; await command(parent, "/goals clear"); await new Promise(done => setTimeout(done, 6_000)); } finally { release(); }
+		await parent.waitFor(m => m.type === "agent_settled", busyAt);
+		await parent.waitFor(m => m.type === "extension_ui_request" && m.method === "notify" && JSON.stringify(m).includes(`Removed scheduled task ${task.id}`), busyAt);
+		expect(JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks).toEqual([]);
+		expect(requests.parent).toHaveLength(count + 1);
+		if (process.env.PI_GOALS_TEST_EVIDENCE) {
+			mkdirSync(process.env.PI_GOALS_TEST_EVIDENCE, { recursive: true });
+			for (const [name, text] of Object.entries({ "requests.json": JSON.stringify(requests), "parent.jsonl": readFileSync(parentState.sessionFile, "utf8"), "worker.jsonl": readFileSync(workerFile, "utf8"), "events.json": JSON.stringify(clients.map(client => ({ pid: client.process.pid, events: client.messages, stderr: client.stderr }))) })) writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, name), text);
+		}
+	} finally {
+		if (process.env.PI_GOALS_TEST_EVIDENCE) {
+			mkdirSync(process.env.PI_GOALS_TEST_EVIDENCE, { recursive: true });
+			writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "last-attempt.json"), JSON.stringify({ requests, parent: parent.messages, worker: worker?.messages }));
+		}
+		for (const { process: child } of clients) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill(); await exited; }
+		if (process.env.PI_GOALS_TEST_EVIDENCE) writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "cleanup.json"), JSON.stringify(clients.map(({ process: child }) => ({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode }))));
+		await new Promise<void>(done => server.close(() => done())); rmSync(cwd, { recursive: true, force: true });
+	}
+}, 45_000);

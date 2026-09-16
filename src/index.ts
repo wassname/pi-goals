@@ -63,7 +63,7 @@ const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop", WORKER_EVENT =
 type GoalEventKind = "review_request" | "decision" | "blocker" | "completion" | "progress" | "running" | "waiting" | "receipt" | "no_change" | "aborted" | "unclassified";
 const REVIEWABLE_EVENTS = new Set<GoalEventKind>(["review_request", "decision", "blocker", "completion"]);
 interface WorkerStop { type: "stopped"; entryId: string; to: string; requestId: string; plan: string; text: string; identity: Peer; kind?: GoalEventKind; }
-interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; task?: string; text: string; kind: GoalEventKind; }
+interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; task?: string; text: string; kind: GoalEventKind; supersedes?: string; }
 type WorkerEvent = Report;
 interface ReportReview { id: string; reportId?: string; report?: string; verdict: string; content: string; continuation: string; }
 const reviewedReportId = (review: ReportReview) => review.reportId ?? review.report;
@@ -366,15 +366,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			paneId: process.env.HERDR_PANE_ID ?? "", model: ctx.model ? ctx.model.provider + "/" + ctx.model.id : undefined };
 	}
 	const records = <T,>(ctx: ExtensionContext, type: string): T[] => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === type ? [entry.data as T] : []);
-	const pendingReports = (ctx: ExtensionContext) => records<Report>(ctx, REPORT).filter(report =>
-		!records<ReportReview>(ctx, REVIEW).some(review => reviewedReportId(review) === report.id));
+	const pendingReports = (ctx: ExtensionContext) => {
+		const reports = records<Report>(ctx, REPORT), reviews = records<ReportReview>(ctx, REVIEW);
+		return reports.filter(report => !reviews.some(review => reviewedReportId(review) === report.id)
+			&& !reports.some(newer => newer.session === report.session && newer.supersedes === report.id));
+	};
 	const reportLabel = (report: Report) => {
-		const revision = report.id.slice(report.id.lastIndexOf(":") + 1);
+		const revision = report.id.split(":").at(-1)!.slice(0, 8);
 		const plainTask = report.task?.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`~<>]/g, "").trim().replace(/\s+/g, " ").slice(0, 100);
 		return `revision ${revision}${plainTask ? ` — ${plainTask}` : ""} (reportId ${report.id})`;
 	};
 	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
-		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === report.id)) return;
+		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
 		pi.appendEntry(REPORT, report);
 		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}`), false, true);
 		if (wake && ctx.isIdle()) remindReports(ctx);
@@ -398,7 +401,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.registerEntryRenderer(REVIEW, (entry, { expanded }, theme) => {
 		const review = entry.data as ReportReview;
 		if (expanded) return new Markdown(review.content, 0, 0, getMarkdownTheme());
-		const revision = reviewedReportId(review)?.split(":").at(-1) ?? "unknown";
+		const revision = reviewedReportId(review)?.split(":").at(-1)?.slice(0, 8) ?? "unknown";
 		return {
 			render: (width) => [truncateToWidth(theme.fg("muted", `[pi-goals] Worker review: ${review.verdict} · revision ${revision} · ${keyHint("app.tools.expand", "expand")}`), width)],
 			invalidate() {},
@@ -417,7 +420,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						const run = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1);
 						const stop = branch.filter(entry => entry.type === "custom" && entry.customType === STOP).at(-1);
 						const stopped = stop?.type === "custom" ? stop.data as WorkerStop : undefined;
-						if (run && run.id !== stopped?.entryId) entryId = `${run.id}:disconnected`;
+						if (run && (!stopped || stopped.entryId !== run.id && !stopped.entryId.startsWith(`${run.id}:`))) { entryId = `${run.id}:disconnected`; kind = "blocker"; }
 						else if (stopped) { entryId = stopped.entryId; text = stopped.text; kind = stopped.kind ?? "unclassified"; }
 						else entryId = branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id || entryId;
 					} catch { /* Unknown history remains visible without inventing completion or review debt. */ }
@@ -460,7 +463,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				}
 				if (data.type === "stopped" && event.fromSessionId === worker.intercomId && typeof data.entryId === "string" && data.entryId && typeof data.text === "string") {
 					const id = `${event.fromSessionId}:${data.entryId}`;
-					if (records<Report>(ctx, REPORT).some(report => report.id === id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === id)) return;
+					if (records<Report>(ctx, REPORT).some(report => report.id === id) || !REVIEWABLE_EVENTS.has(data.kind ?? "unclassified") && records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === id)) return;
 					if (data.identity) { worker.identity = data.identity; worker.sessionFile = data.identity.sessionFile; save(); }
 					const report: Report = { id, plan: state.plan, session: event.fromSessionId, sessionFile: worker.sessionFile!, requestId: data.requestId, task: worker.task, text: data.text, kind: data.kind ?? "unclassified" };
 					recordWorkerEvent(ctx, report);
@@ -476,7 +479,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			const worker = owner.worker!;
 			try {
 				for (const entry of savedSession(worker.sessionFile!).getBranch()) {
-					if (entry.type !== "custom" || entry.customType !== STOP) continue;
+					if (entry.type !== "custom" || ![STOP, WORKER_EVENT].includes(entry.customType)) continue;
 					const stopped = entry.data as WorkerStop;
 					if (stopped.to !== worker.parentId || stopped.requestId !== worker.requestId || stopped.plan !== owner.plan) continue;
 					recordWorkerEvent(ctx, { id: `${worker.intercomId}:${stopped.entryId}`, plan: stopped.plan, session: worker.intercomId!, sessionFile: worker.sessionFile!, requestId: stopped.requestId, task: worker.task, text: stopped.text, kind: stopped.kind ?? "unclassified" }, false);
@@ -485,16 +488,26 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 		if (ctx.isIdle()) remindReports(ctx);
 	}
-	const reportStop = (text: string, kind: GoalEventKind) => {
+	const reportStop = (text: string, kind: GoalEventKind, automatic = false) => {
 		if (!state.child || !state.parent || !state.plan || !liveContext) return;
 		const branch = liveContext.sessionManager.getBranch();
-		const entryId = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1)?.id
+		const runId = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1)?.id
 			|| branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id;
-		if (!entryId) return;
-		let stopped = records<WorkerStop>(liveContext, STOP).find(saved => saved.entryId === entryId);
-		if (stopped) return stopped;
-		stopped = { type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text: Buffer.from(text).subarray(0, 6000).toString("utf8"), entryId, identity: identity(liveContext), kind };
-		pi.appendEntry(STOP, stopped);
+		if (!runId) return;
+		const inRun = (saved: WorkerStop) => saved.requestId === state.parent?.requestId && saved.plan === state.plan && (saved.entryId === runId || saved.entryId?.startsWith(`${runId}:`));
+		if (automatic && kind === "unclassified") {
+			const ended = records<WorkerStop>(liveContext, STOP).filter(inRun).at(-1);
+			if (ended) return ended;
+			const status = records<WorkerStop>(liveContext, WORKER_EVENT).filter(inRun).at(-1);
+			if (status) { pi.appendEntry(STOP, status); return status; } // Finish this run without another status or wake.
+		}
+		const type = automatic || REVIEWABLE_EVENTS.has(kind) ? STOP : WORKER_EVENT;
+		const entryId = `${runId}:${digest(`${state.parent.requestId}:${state.plan}:${kind}:${text}`)}`;
+		let stopped = records<WorkerStop>(liveContext, type).find(saved => saved.entryId === entryId);
+		if (!stopped) {
+			stopped = { type: "stopped", to: state.parent.intercomId, requestId: state.parent.requestId, plan: state.plan, text: Buffer.from(text).subarray(0, 6000).toString("utf8"), entryId, identity: identity(liveContext), kind };
+			pi.appendEntry(type, stopped);
+		}
 		try {
 			if (!channel?.snapshot().connected) throw new Error("disconnected");
 			channel.publish(stopped, { audience: "capable" });
@@ -505,7 +518,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		restore(ctx); registerChannel(ctx); reconcileReports(ctx);
 	});
 	pi.on("session_tree", (_e, ctx) => restore(ctx));
-	pi.on("session_shutdown", () => { reportStop(nativeMessages.shuttingDown, "unclassified"); cancelCheckInRemoval(); agentRunActive = false; pauseCheckIn = false; channel = undefined; liveContext = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
+	pi.on("session_shutdown", () => { reportStop(nativeMessages.shuttingDown, "unclassified", true); cancelCheckInRemoval(); agentRunActive = false; pauseCheckIn = false; channel = undefined; liveContext = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
 	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
 	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
@@ -538,7 +551,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.on("agent_end", (event, ctx) => {
 		const last = event.messages.filter(message => message.role === "assistant").at(-1);
 		const text = last?.role === "assistant" ? last.errorMessage || last.content.filter(part => part.type === "text").map(part => part.text).join("\n") || last.stopReason : nativeMessages.noAssistant;
-		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : "unclassified");
+		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : last?.role === "assistant" && (last.stopReason === "error" || last.errorMessage) ? "blocker" : "unclassified", true);
 		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
 	let proposedDraft = "";
 	let proposing = false;
@@ -829,7 +842,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (stamp !== generation || signal?.aborted) return result(messages.cancelled);
 				if (!peers.some(peer => peer.id === params.parent && peer.pid !== process.pid)) return result(nativeMessages.parentUnavailable);
 				try { if (readFileSync(params.path, "utf8") !== text) return result(messages.invalidAttachment); } catch { return result(messages.invalidAttachment); }
-				if (!state.child) state = { ...initial(), child: true, mode: "solo" };
+				if (!state.child) {
+					state = { ...initial(), child: true, mode: "solo" };
+					// First attachment can occur after agent_start in an ordinary chat.
+					if (agentRunActive) pi.appendEntry(RUN, { plan: params.path, parent: { intercomId: params.parent, requestId: params.requestId }, session: identity(ctx) });
+				}
 				state.parent = { intercomId: params.parent!, requestId: params.requestId! };
 			}
 			state.plan = params.path; generation++; notice = true; fullPlanContextDue = true; save(); refresh(ctx);
@@ -849,7 +866,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (!params.summary.trim()) throw new Error("Supply the canonical event summary and exact artifact paths when applicable.");
 			const stopped = reportStop(params.summary.trim(), kind);
 			if (!stopped) throw new Error("No active worker run is available for this event.");
-			if (stopped.kind !== kind || stopped.text !== Buffer.from(params.summary.trim()).subarray(0, 6000).toString("utf8")) throw new Error(`This worker run already reported ${stopped.kind ?? "an unclassified stop"}; send later guidance through Intercom.`);
 			return result(REVIEWABLE_EVENTS.has(kind) ? "Recorded one canonical event for parent review." : "Recorded one visible status event without formal review.");
 		},
 	});
@@ -892,7 +908,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				return `${path}${source.entryId ? `#${source.entryId}` : ""}\n${source.quote ? `> ${source.quote}` : "[non-text capture]"}${"observation" in source ? `\nObserved: ${source.observation}` : ""}`;
 			});
 			const content = reportReviewContent(report.id, report.sessionFile, sources, params.observation, params.unmet, params.verdict, params.continuation || "");
-			const review: ReportReview = { id: digest(content), reportId: report.id, verdict: params.verdict, content, continuation: params.continuation || "" };
+			const review: ReportReview = { id: digest(content), reportId: report.id, report: report.id, verdict: params.verdict, content, continuation: params.continuation || "" };
 			if (records<ReportReview>(ctx, REVIEW).some(saved => reviewedReportId(saved) === report.id)) return result("This worker revision already has a delivered review; a later stop report is a new revision.");
 			if (!channel?.snapshot().connected || !channel.snapshot().supported || signal?.aborted) throw new Error("Review delivery unavailable; report remains pending.");
 			const payload = { type: "review", to: report.session, sessionFile: report.sessionFile, requestId: report.requestId, plan: report.plan, review };

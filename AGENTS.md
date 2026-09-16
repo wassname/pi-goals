@@ -33,7 +33,7 @@ The supervisor should:
 
 Run `npm test`, `npm run typecheck` and `npm run lint` before committing.
 
-`test/goals.test.ts` exercises current state, file updates and role restrictions with a Pi API mock. `test/rpc-review.test.ts` starts real Pi with a deterministic local model and schema-only worker tools: it checks automatic proposal, editor/discussion and Ready role transition without credits or launching workers. It does not prove Herdr rendering, live message delivery or model judgment.
+`test/rpc-review.test.ts` runs a deterministic parent/worker story using real Pi, saved sessions and stock Intercom: planning/Ready, failure after progress, offline recovery, sourced review, delivery retry, same-worker correction, reload, intentional interruption and busy Clear. The RPC fixture seeds the launch binding rather than calling OpenGoalWorker. It does not prove native pane allocation/rendering or model judgment. `test/goals.test.ts` retains focused file-mutation, ownership and lifecycle checks that are cheaper to exercise at the Pi API boundary. Run targeted tests through `npm test -- <file>` so ignored investigations stay outside discovery. <!-- Pi/OpenAI -->
 
 For functional acceptance, read `herdr --skill`, confirm `HERDR_ENV=1`, and use `scripts/prepare-trial.mjs` to create an isolated project/profile. Open only new no-focus test panes. Observe the actual planning dialogue and Ready selection, worker attachment, Intercom report, independent artifact inspection and CompleteGoal. Record interventions separately from autonomous success. Preserve nonempty byte/test evidence. Never reload or operate active user research panes. Close test panes when finished.
 
