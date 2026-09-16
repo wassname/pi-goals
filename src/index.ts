@@ -235,7 +235,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 		const items = goals(snapshot.text);
 		const accepted = items.filter((g) => g.status === "done").length;
-		ctx.ui.setStatus("goals", `👀 ${accepted}/${items.length} goals`);
+		const stage = { planning: "📝 planning", supervising: "👀 supervising", paused: "⏸ paused", solo: "🛠 solo" }[state.mode];
+		ctx.ui.setStatus("goals", `${stage} ${accepted}/${items.length} goals`);
 		const mark = (status: GoalStatus) => status === "done" ? "✓" : status === "reported" ? "x" : status === "active" ? "◼" : status === "cancelled" ? "✗" : "◻";
 		const priority: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, done: 3, cancelled: 4 };
 		const sorted = [...items].sort((a, b) => priority[a.status] - priority[b.status]);

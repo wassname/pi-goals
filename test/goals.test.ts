@@ -111,17 +111,19 @@ it("reads bounded worker history without changing it, and expands native Markdow
 });
 
 it.each([
-	["chat", ["new", "attach", "help", "quit"]],
-	["planning", ["edit", "discuss", "ready", "model", "help", "quit"]],
-	["supervising", ["review", "stop", "model", "help", "quit"]],
-	["paused", ["resume", "model", "help", "quit"]],
-	["solo", ["stop", "help", "quit"]],
-])("shows only applicable %s actions without starting work", async (mode, expected) => {
+	["chat", ["new", "attach", "help", "quit"], undefined],
+	["planning", ["edit", "discuss", "ready", "model", "help", "quit"], "📝 planning"],
+	["supervising", ["review", "stop", "model", "help", "quit"], "👀 supervising"],
+	["paused", ["resume", "model", "help", "quit"], "⏸ paused"],
+	["solo", ["stop", "help", "quit"], "🛠 solo"],
+])("shows applicable %s actions and stage without starting work", async (mode, expected, badge) => {
 	const f = fixture();
 	if (mode !== "chat") await f.draft();
 	if (mode === "supervising" || mode === "paused") await f.command("ready");
 	if (mode === "paused") await f.command("stop");
 	if (mode === "solo") { f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped"); await f.command("solo"); }
+	await f.command("status");
+	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", badge ? `${badge} 0/2 goals` : undefined);
 	const before = f.messages.length;
 	f.ctx.ui.select.mockResolvedValueOnce(undefined as any);
 	await f.command("");
@@ -377,7 +379,7 @@ it("requires actual nonempty evidence, distinguishes manual ticks, and retains r
 	await f.command(`attach ${f.path}`);
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[ ] goal: second", "[x] goal: second"));
 	f.hooks.get("session_start")({}, f.ctx);
-	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 1/2 goals");
+	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 supervising 1/2 goals");
 	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toContain("✓ G1: first output");
 	expect(f.ctx.ui.setWidget.mock.lastCall?.[1]).toContain("x G2: second output");
 	f.hooks.get("before_agent_start")({ systemPrompt: "base" }, f.ctx);
@@ -387,10 +389,10 @@ it("requires actual nonempty evidence, distinguishes manual ticks, and retains r
 	expect(reminder).not.toContain("first output");
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[✓] goal: first", "[ ] goal: first"));
 	f.hooks.get("agent_end")({ messages: [] }, f.ctx);
-	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 0/2 goals");
+	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 supervising 0/2 goals");
 	writeFileSync(f.path, readFileSync(f.path, "utf8").replace("[ ] goal: first", "[x] goal: first"));
 	f.hooks.get("agent_end")({ messages: [] }, f.ctx);
-	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 0/2 goals");
+	expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("goals", "👀 supervising 0/2 goals");
 	f.shutdown();
 });
 
