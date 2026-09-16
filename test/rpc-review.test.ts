@@ -7,6 +7,7 @@ import { basename, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { expect, it } from "vitest";
 import { foldPlan } from "../src/plan.js";
+import { upkeepNudges } from "../src/prompts.js";
 
 type RpcMessage = { type: string; id?: string; method?: string; [key: string]: unknown };
 type ModelRequest = { messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
@@ -94,9 +95,10 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const child = spawn(resolve("node_modules/.bin/pi"), ["--mode", "rpc", "--no-extensions", "--model", "offline/test",
 			"-e", resolve("test/fixtures/offline-model.ts"), "-e", resolve("src/index.ts"),
 			"-e", resolve("node_modules/pi-intercom/index.ts"), "-e", resolve("node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"),
+			...(role === "worker" ? ["-e", resolve("node_modules/pi-subagents/index.ts")] : []),
 			...(sessionFile ? ["--session", sessionFile] : [])], { cwd, env: {
 			...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PI_SUBAGENT_") && !name.startsWith("PI_GOALS_") && !name.startsWith("HERDR_"))),
-			PI_CODING_AGENT_DIR: join(cwd, "agent"), PI_OFFLINE: "1", PI_INTERCOM_SCOPE_ID: basename(cwd),
+			PI_CODING_AGENT_DIR: join(cwd, "agent"), PI_OFFLINE: "1", PI_INTERCOM_SCOPE_ID: basename(cwd), PI_SUBAGENTS_TEMP_ROOT: join(cwd, "subagents"),
 			PI_SCHEDULER_STATE_FILE: join(cwd, "scheduler.json"), PI_GOALS_OFFLINE_MODEL_URL: `http://127.0.0.1:${port}/${role}`,
 		} }); const client = new RpcClient(child); clients.push(client); return client;
 	}
@@ -160,7 +162,16 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const parentState = await state(parent);
 		worker = start("worker");
 		await run(worker, "worker", call("intercom", { action: "list" }));
-		await run(worker, "worker", call("AttachGoalPlan", { path: planPath, parent: parentId, requestId: "rpc-assignment" }), call("ReportGoalEvent", { kind: "receipt", summary: "Attached and waiting." }));
+		const inspectAt = worker.messages.length, parentCount = requests.parent.length;
+		await run(worker, "worker", call("AttachGoalPlan", { path: planPath, parent: parentId, requestId: "rpc-assignment" }),
+			call("subagent", { action: "list", capabilities: true, agentScope: "project" }), call("subagent", { action: "status" }),
+			call("OpenGoalWorker", { task: "Must remain blocked in the attached worker" }), call("ReportGoalEvent", { kind: "receipt", summary: "Attached and waiting." }));
+		const inspections = worker.messages.slice(inspectAt).filter(m => m.type === "tool_execution_end" && m.toolName === "subagent");
+		expect(inspections).toHaveLength(2);
+		for (const inspection of inspections) { expect(inspection.isError).not.toBe(true); expect((inspection.result as any).details.results).toEqual([]); }
+		expect((inspections.at(-1)!.result as any).details.spawnBudget.used).toBe(0);
+		expect(worker.messages.slice(inspectAt).find(m => m.type === "tool_execution_end" && m.toolName === "OpenGoalWorker")?.isError).toBe(true);
+		expect(requests.parent).toHaveLength(parentCount); // inspection/receipt did not wake the supervisor
 		const workerState = await state(worker), workerFile = workerState.sessionFile;
 		expect(records(parentState.sessionFile, "pi-goals-worker-event").map(event => event.kind)).toEqual(["receipt"]);
 		const greeting = join(cwd, "greeting.txt");
@@ -215,6 +226,14 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		expect(savedReviews.map(r => r.verdict)).toEqual(["changes_requested", "accepted"]);
 		expect(savedReviews.map(r => r.report)).toEqual([failure.id, correction.id]); // old consumers key this wire field
 		expect(records(parentState.sessionFile, "pi-goals-report-review")).toEqual(savedReviews);
+		const upkeepAt = requests.parent.length, ordinaryTurns = 17; // two eight-turn periods plus prompt preparation
+		for (let turn = 0; turn < ordinaryTurns; turn++) await run(parent, "parent");
+		expect(requests.parent).toHaveLength(upkeepAt + ordinaryTurns); // nudges join ordinary prompts, never create a turn
+		expect(requests.worker).toHaveLength(workerCount);
+		const notes = entries(parentState.sessionFile).filter(entry => entry.type === "custom_message" && entry.customType === "pi-goals-upkeep");
+		const delivered = upkeepNudges.filter(nudge => notes.some(entry => entry.content.includes(nudge)));
+		expect(delivered.length).toBeGreaterThan(1);
+		for (const nudge of delivered) expect(JSON.stringify(requests.parent)).toContain(nudge);
 		await command(worker, "/fixture-reload"); // real shutdown/start after a formal event stays quiet
 		expect(requests.worker).toHaveLength(workerCount);
 		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(statusCount);

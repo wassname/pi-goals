@@ -8,7 +8,6 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { upkeep } from "../src/prompts.js";
 
 vi.mock("pi-subagents/project-panes", () => ({ openProjectPane: vi.fn(async () => ({ ok: true, data: { bindingPath: "/project/.pi/subagents/project-pane.json", disposition: "opened", binding: { paneId: "native-pane", projectRoot: "/project", command: "pi" } } })) }));
 
@@ -125,6 +124,7 @@ it.each(["menu", "command"])("enters planning conversation through %s without a 
 	expect(f.messages).toHaveLength(1);
 	expect(f.messages[0].message.content).toContain(route === "menu" ? "Initial idea: supplied instructions" : "Use the existing conversation");
 	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
+	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status" } })).toBeUndefined();
 });
 
 it("cancelled menu New creates nothing and sends nothing", async () => {
@@ -569,6 +569,7 @@ it("requires confirmed worker stop before solo takeover and never lets two write
 	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
 	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker" }).block).toBe(true);
 	expect(f.hooks.get("tool_call")({ toolName: "read" })).toBeUndefined();
+	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status" } })).toBeUndefined();
 	mkdirSync(join(f.ctx.cwd, "evidence")); writeFileSync(join(f.ctx.cwd, "evidence/pass.log"), "bytes\n");
 	const text = (await f.tools.get("CompleteGoal").execute("t", { goal: "first output", evidence: ["evidence/pass.log"], observation: "inspected" }, undefined, undefined, f.ctx)).content[0].text;
 	expect(text).toContain("self-verification");
@@ -894,15 +895,19 @@ it.each(["supervising", "solo"])("%s repeats concise upkeep every eight unchange
 	f.hooks.get("session_compact")();
 	expect(prepare().message.customType).toBe("pi-goals-plan");
 	const sent = f.messages.length;
+	let previous: string | undefined;
 	for (let round = 0; round < 2; round++) {
 		for (let turn = 0; turn < 7; turn++) f.hooks.get("turn_end")({}, f.ctx);
 		expect(prepare().message).toBeUndefined();
 		f.hooks.get("turn_end")({}, f.ctx);
 		expect(f.messages).toHaveLength(sent);
-		expect(prepare().message).toMatchObject({
-			customType: "pi-goals-upkeep",
-			content: upkeep(f.path, f.plan.split("\n").filter(line => line.includes("goal:")).join("\n")),
-		});
+		const reminder = prepare().message;
+		expect(reminder.customType).toBe("pi-goals-upkeep");
+		expect(reminder.content).toContain("goal: first output");
+		if (previous && mode === "supervising") expect(reminder.content).not.toBe(previous);
+		if (previous && mode === "solo") expect(reminder.content).toBe(previous);
+		f.ctx.sessionManager.getBranch().push({ type: "custom_message", ...reminder }); // host saves returned messages
+		previous = reminder.content;
 		expect(prepare().message).toBeUndefined();
 	}
 });
@@ -1145,6 +1150,13 @@ it("ordinary project peer explicitly attaches as worker, never gaining approval 
 	expect(f.entries.at(-1).data).toMatchObject({ child: true, parent: { intercomId: "live-parent", requestId: "assignment-id" }, plan: path });
 	expect(f.channel.publish).toHaveBeenCalledWith(expect.objectContaining({ type: "attached", to: "live-parent", sessionFile: f.ctx.sessionManager.getSessionFile(), identity: expect.objectContaining({ model: "offline/inherited" }) }), { audience: "capable" });
 	await f.command("ready"); await f.command("solo");
+	await f.command("stop"); // inspection remains available while paused; it does not authorize continuation
+	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status" } })).toBeUndefined();
+	for (const action of [undefined, "resume", "schedule.create", "update", "project.open", "unknown.action", ["status"]]) {
+		expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action, agent: "reviewer" } }).block).toBe(true);
+	}
+	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker", input: { action: "status" } }).block).toBe(true);
+	await f.command("resume");
 	const reply = await f.tools.get("CompleteGoal").execute("complete", { goal: "first output", evidence: [path], observation: "claim" }, undefined, undefined, f.ctx);
 	expect(reply.content[0].text).toContain("only to the active parent");
 	const next = join(f.ctx.cwd, "next.md"); writeFileSync(next, f.plan);

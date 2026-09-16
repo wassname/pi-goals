@@ -600,7 +600,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, fullPlanContextDue ? snapshot.text : unfinishedGoals(snapshot.text), fullPlanContextDue ? "full" : "short"), display: false }
 				: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
 				&& ["supervising", "solo"].includes(state.mode) && unfinishedGoals(snapshot.text)
-				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, unfinishedGoals(snapshot.text)), display: false } : undefined;
+				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, unfinishedGoals(snapshot.text), state.mode === "supervising" ? ctx.sessionManager.getBranch().filter(entry => entry.type === "custom_message" && entry.customType === "pi-goals-upkeep").length : undefined), display: false } : undefined;
 		if (message) turnsStale = 0;
 		notice = false;
 		fullPlanContextDue = false;
@@ -637,6 +637,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (owned && typeof input.prompt === "string" && input.prompt !== input.prompt.trim().replace(/\s+/g, " ")) return { block: true, reason: schedulerMessages.format };
 		}
 		if (event.toolName !== "subagent" && event.toolName !== "OpenGoalWorker") return;
+		// Stock inspection actions do not authorize execution or extra goal workers.
+		if (event.toolName === "subagent" && typeof event.input?.action === "string" && ["list", "get", "models", "guide", "status", "children.list", "project.status"].includes(event.input.action)) return;
 		if (state.child || ["planning", "paused", "solo"].includes(state.mode)) return { block: true, reason: goalToolBlocked(state.child ? "worker" : state.mode) };
 	});
 
@@ -798,6 +800,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		parameters: Type.Object({ task: Type.String({ minLength: 1 }), model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })) }),
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
+			// TODO(2026-11+, Pi): Recheck pi-subagents/project-panes v1's one-pane-per-cwd limit before adding multiple visible workers.
 			if (opening || state.worker) return result(nativeMessages.alreadyRecorded);
 			if (!params.task.trim()) return result(nativeMessages.taskRequired);
 			const preference = params.model?.trim() || notedPlanValue("preferred worker model");

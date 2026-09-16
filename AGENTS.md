@@ -29,6 +29,17 @@ The supervisor should:
 - Keep recoverable solo mode: confirm other writers stopped before taking over. Solo completion is self-verification.
 - Record distinct runtime ID, Intercom ID and saved-session path with provenance. A handle or delivery receipt is not proof of liveness or action. User model changes are authorized; do not silently restore an old preference.
 
+## Waiting and check-in judgment
+
+- Followed long job: let it run, verify follow-up and check less often.
+- Unfollowed job: arrange coverage through existing controls; do not assume a wake.
+- Owned subagent still running: inspect through its owner; an ended worker turn is not completion.
+- Later wake: inspect new results/failure and continue or steer without replaying completed work.
+
+Reassess cadence by editing the existing owned check-in: slower for reliable long waits, faster when steering is needed. Consider a more capable worker within user model/budget preferences. Preserve custom prompts and foreign jobs; do not add timers.
+
+— wassname's guidance; Pi wording and spelling edits.
+
 ## Tests
 
 Run `npm test`, `npm run typecheck` and `npm run lint` before committing.

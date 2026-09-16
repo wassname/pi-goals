@@ -22,8 +22,9 @@ it.each([true, false])("prepares offline=%s without changing the source profile 
 	let root: string | undefined;
 	try {
 		// An absent source profile/SDK proves the offline route does not read or import them.
-		const prepared = spawnSync(process.execPath, [resolve("scripts/prepare-trial.mjs"), offline ? "unused-sdk" : resolve("node_modules/@earendil-works/pi-coding-agent"), ...(offline ? ["--offline", "http://127.0.0.1:12345"] : [])], { encoding: "utf8", env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_DIR: offline ? join(source, "absent") : source } });
-		expect(prepared.status, prepared.stderr).toBe(0);
+		// Full-suite preparation exceeded 5s; bound the SDK subprocess and allow test cleanup margin.
+		const prepared = spawnSync(process.execPath, [resolve("scripts/prepare-trial.mjs"), offline ? "unused-sdk" : resolve("node_modules/@earendil-works/pi-coding-agent"), ...(offline ? ["--offline", "http://127.0.0.1:12345"] : [])], { encoding: "utf8", timeout: 10_000, env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_DIR: offline ? join(source, "absent") : source } });
+		expect(prepared.status, prepared.error?.message || prepared.stderr).toBe(0);
 		const trial = JSON.parse(prepared.stdout); root = trial.root;
 		const actual = JSON.parse(readFileSync(join(trial.agentDir, "settings.json"), "utf8"));
 		const manifest = JSON.parse(readFileSync(trial.manifest, "utf8"));
@@ -42,4 +43,4 @@ it.each([true, false])("prepares offline=%s without changing the source profile 
 		expect(JSON.parse(readFileSync(join(trial.agentDir, "auth.json"), "utf8"))).toEqual({});
 		expect(JSON.parse(readFileSync(join(trial.agentDir, "models.json"), "utf8"))).toEqual({ providers: {} });
 	} finally { if (root) rmSync(root, { recursive: true, force: true }); rmSync(source, { recursive: true, force: true }); }
-});
+}, 15_000);
