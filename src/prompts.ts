@@ -252,7 +252,7 @@ export function finalReview(planPath: string, text: string): string {
 }
 
 // Check-ins. The installed scheduler owns storage/timing/UI; only new default wakes are one line.
-export const goalCheckInWake = "Goal check-in: only while supervising unfinished goals, read the attached plan and recent worker history. Check for drift, loops and stuck/stopped/blocked work; ensure follow-up. Verify current child/job status when needed; an ended turn may still await work. Steer authorized work towards the goals without duplicating writers and give a brief user-facing plan update. Otherwise do not resume work. Never create a timer from this wake.";
+export const goalCheckInWake = "Goal check-in: only while supervising unfinished goals, read the attached plan and inspect worker_view if available, otherwise the saved worker history. Check for drift, loops and stuck/stopped/blocked work; ensure follow-up. Verify current child/job status when needed; an ended turn may still await work. Steer authorized work towards the goals without duplicating writers and give a brief user-facing plan update. Otherwise do not resume work. Never create a timer from this wake.";
 export const schedulerMessages = {
 	unconfirmed: "Owned check-in removal unconfirmed: no fresh scheduler result could be observed in this saved session. The request is cancelled; later results will not trigger removal. Inspect /schedules all and use exact owned IDs with /schedule-remove.",
 	unavailable: "Owned check-in removal unavailable: verified @jl1990/pi-scheduler commands are not loaded. No model turn or replacement timer was started. Inspect /schedules all.",

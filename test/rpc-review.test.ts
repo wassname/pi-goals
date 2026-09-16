@@ -7,7 +7,7 @@ import { basename, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { expect, it } from "vitest";
 import { foldPlan } from "../src/plan.js";
-import { upkeepNudges } from "../src/prompts.js";
+import { goalCheckInWake, upkeepNudges } from "../src/prompts.js";
 
 type RpcMessage = { type: string; id?: string; method?: string; [key: string]: unknown };
 type ModelRequest = { model?: string; tools?: Array<{ function: { name: string } }>; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
@@ -74,6 +74,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 	let planPath = "", serial = 0, hold: (() => Promise<void>) | undefined;
 	let helperId = "", helperDir = "", helperFinished = false;
 	let holdRole: "parent" | "worker" | "helper" = "parent";
+	const customCheckIn = `${goalCheckInWake} Preserve this custom fixture instruction.`;
 	const plan = '# Plan\n\n## User voice\nKeep the greeting readable.\n\n## Goals\n- [ ] goal: deliver greeting\n  - greeting.txt must contain hello.\n\n## Log\nArchived notes stay on disk.\n';
 	const call = (name: string, args: object) => ({ tool_calls: [{ index: 0, id: `fixture-${++serial}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
 	const jobs = new Map<string, import("node:http").ServerResponse>();
@@ -83,6 +84,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const input = JSON.parse(body) as ModelRequest;
 		const role = input.model === "helper" ? "helper" : request.url?.startsWith("/worker") ? "worker" : "parent";
 		requests[role].push(input);
+		if (role === "parent" && JSON.stringify(input.messages.filter(message => message.role === "user").at(-1)?.content).includes(customCheckIn)) server.emit("owned-check-in");
 		if (hold && role === holdRole) { const pending = hold; hold = undefined; await pending(); }
 		if (response.destroyed) return;
 		let answer = replies[role].shift();
@@ -154,12 +156,17 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		parent.send({ type: "prompt", id: "discussion", message: "Keep the edited requirement." });
 		const ready = await parent.waitFor(isSelect, discussionAt);
 		expect(systemText(requests.parent.at(-1)!)).toContain("Plan only in");
+		const startupState = await state(parent), checkInName = `goals-${startupState.sessionId}`;
+		replies.parent.push(call("list_scheduled_tasks", { includeAll: true }), call("schedule_task", { name: checkInName, action: "prompt", type: "interval", schedule: "1h", scope: "session", prompt: goalCheckInWake }));
 		const readyAt = parent.messages.length;
 		parent.send({ type: "extension_ui_response", id: ready.id, value: "Ready" });
 		const approvedTurn = await parent.waitFor(m => m.type === "agent_end", readyAt);
 		await parent.waitFor(m => m.type === "agent_settled", parent.messages.indexOf(approvedTurn));
+		const normalTask = (parent.messages.slice(readyAt).find(m => m.type === "tool_execution_end" && m.toolName === "schedule_task") as any).result.details.task;
+		expect(normalTask).toMatchObject({ name: checkInName, scope: "session", sessionFile: startupState.sessionFile, schedule: "1h" });
 		expect(systemText(requests.parent.at(-1)!)).toContain("goal supervisor");
 		expect(JSON.stringify(requests.parent.at(-1)!.messages)).toContain(JSON.stringify(foldPlan(approved)).slice(1, -1));
+		await run(parent, "parent", call("manage_scheduled_task", { action: "update", id: normalTask.id, schedule: "2h", prompt: customCheckIn }));
 		const initialCount = requests.parent.length;
 		await command(parent, `/goals attach ${planPath}`);
 		expect(requests.parent).toHaveLength(initialCount);
@@ -205,7 +212,8 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		expect(runningView).not.toContain("vcc_recall"); expect(Buffer.byteLength(runningView)).toBeLessThanOrEqual(12_000);
 		expect(readFileSync(workerFile, "utf8")).toBe(unchangedHistory); expect(readFileSync(planPath, "utf8")).toBe(approved);
 		const quietWorker = requests.worker.length, quietParent = requests.parent.length;
-		const tasks = () => JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks;
+		const allTasks = () => JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks;
+		const tasks = () => allTasks().filter((task: any) => task.sessionFile === workerFile);
 		jobs.get("unfollowed")!.end("unfollowed-finished");
 		await expect.poll(() => tasks().find((task: any) => task.name === "unfollowed")?.result?.wakeDisposition).toBe("suppressed");
 		expect(requests.worker).toHaveLength(quietWorker);
@@ -347,10 +355,33 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		expect(systemText(requests.parent.at(-1)!)).not.toContain("Pending worker revision reviews:");
 		expect(readFileSync(planPath, "utf8")).toBe(approved); // reviews never CompleteGoal
 
-		// Retain the existing busy-Clear discriminator: passive scheduler output can flush after five seconds.
-		await run(parent, "parent", call("schedule_task", { name: `goals-${parentState.sessionId}`, action: "prompt", type: "interval", schedule: "1h", scope: "session", prompt: "Goal check-in." }));
-		const task = JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks[0];
-		expect(task.sessionFile).toBe(parentState.sessionFile);
+		// The Ready-created owned timer survived the existing reconnect/reload story.
+		const owned = () => allTasks().find((task: any) => task.id === normalTask.id);
+		expect(owned()).toMatchObject({ schedule: "2h", prompt: customCheckIn, sessionFile: parentState.sessionFile });
+		expect(allTasks().filter((task: any) => task.name === checkInName)).toHaveLength(1);
+		await run(worker, "worker", call("schedule_task", { name: checkInName, action: "prompt", type: "interval", schedule: "1h", scope: "session", prompt: "Foreign session check-in stays untouched." }));
+		const foreign = allTasks().find((task: any) => task.sessionFile === workerFile);
+		const pauseAt = parent.messages.length;
+		replies.parent.push(call("list_scheduled_tasks", { includeAll: true }), call("manage_scheduled_task", { action: "disable", id: normalTask.id }));
+		await command(parent, "/goals stop"); await parent.waitFor(m => m.type === "agent_settled", pauseAt);
+		expect(owned().enabled).toBe(false);
+		expect(records(parentState.sessionFile, "pi-goals-main-supervisor-v1").at(-1).pausedCheckIns[normalTask.id]).toBe(owned().disabledAt);
+		await command(parent, "/fixture-reload");
+		expect(owned()).toMatchObject({ enabled: false, schedule: "2h", prompt: customCheckIn });
+		const resumeAt = parent.messages.length;
+		replies.parent.push(call("list_scheduled_tasks", { includeAll: true }), call("manage_scheduled_task", { action: "enable", id: normalTask.id }));
+		await command(parent, "/goals resume"); await parent.waitFor(m => m.type === "agent_settled", resumeAt);
+		expect(owned()).toMatchObject({ enabled: true, schedule: "2h", prompt: customCheckIn });
+		const woke = once(server, "owned-check-in", { signal: AbortSignal.timeout(8_000) }), checkInAt = parent.messages.length;
+		await run(parent, "parent", call("manage_scheduled_task", { action: "update", id: normalTask.id, schedule: "1s" }), { content: "Cadence edited." }, call("worker_view", {}), call("manage_scheduled_task", { action: "update", id: normalTask.id, schedule: "2h" }));
+		await woke;
+		const wakeView = await parent.waitFor(m => m.type === "tool_execution_end" && m.toolName === "worker_view", checkInAt);
+		await parent.waitFor(m => m.type === "agent_settled", parent.messages.indexOf(wakeView));
+		expect(owned()).toMatchObject({ schedule: "2h", prompt: customCheckIn });
+		expect(allTasks().find((task: any) => task.id === foreign.id)).toEqual(foreign);
+		if (process.env.PI_GOALS_TEST_EVIDENCE) writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "owned-check-in.json"), JSON.stringify({ initial: normalTask, afterWake: owned(), foreign }, null, 2));
+		// Retain the busy-Clear discriminator: passive scheduler output can flush after five seconds.
+		const task = owned();
 		let release!: () => void; const held = new Promise<void>(done => { release = done; });
 		const requested = once(server, "held", { signal: AbortSignal.timeout(8_000) });
 		holdRole = "parent"; hold = () => { server.emit("held"); return held; };
@@ -359,7 +390,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		try { await requested; await command(parent, "/goals clear"); await new Promise(done => setTimeout(done, 6_000)); } finally { release(); }
 		await parent.waitFor(m => m.type === "agent_settled", busyAt);
 		await parent.waitFor(m => m.type === "extension_ui_request" && m.method === "notify" && JSON.stringify(m).includes(`Removed scheduled task ${task.id}`), busyAt);
-		expect(JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks).toEqual([]);
+		expect(allTasks()).toEqual([foreign]);
 		expect(requests.parent).toHaveLength(count + 1);
 		if (process.env.PI_GOALS_TEST_EVIDENCE) {
 			mkdirSync(process.env.PI_GOALS_TEST_EVIDENCE, { recursive: true });
