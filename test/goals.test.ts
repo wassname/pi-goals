@@ -601,7 +601,7 @@ it("requires confirmed worker stop before solo takeover and never lets two write
 	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
 	await f.command("solo");
 	expect(f.entries.at(-1).data.mode).toBe("solo");
-	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
+	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "scout", async: true } })).toBeUndefined();
 	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker" }).block).toBe(true);
 	expect(f.hooks.get("tool_call")({ toolName: "read" })).toBeUndefined();
 	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status" } })).toBeUndefined();
@@ -1173,6 +1173,11 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 });
 
 it("ordinary project peer explicitly attaches as worker, never gaining approval authority", async () => {
+	vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+	const helperApi = { on: vi.fn(), registerTool: vi.fn() };
+	goalsExtension(helperApi as unknown as ExtensionAPI);
+	expect(helperApi.on).not.toHaveBeenCalled(); expect(helperApi.registerTool).not.toHaveBeenCalled();
+	vi.unstubAllEnvs();
 	const f = fixture(); const path = join(f.ctx.cwd, "supplied.md"); writeFileSync(path, f.plan);
 	Object.assign(f.ctx, { model: { provider: "offline", id: "inherited" } });
 	const tool = f.tools.get("AttachGoalPlan");
@@ -1191,7 +1196,10 @@ it("ordinary project peer explicitly attaches as worker, never gaining approval 
 		expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action, agent: "reviewer" } }).block).toBe(true);
 	}
 	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker", input: { action: "status" } }).block).toBe(true);
+	for (const action of ["stop", "interrupt"]) expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action, id: "owned-helper" } })).toBeUndefined();
 	await f.command("resume");
+	for (const input of [{ agent: "scout", async: true }, { workflowScript: "return runs.run('helper', {agent:'scout',task:'Inspect'});", async: true }, { action: "resume", id: "owned-helper" }]) expect(f.hooks.get("tool_call")({ toolName: "subagent", input })).toBeUndefined();
+	for (const action of ["project.open", "project.close"]) expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action } }).block).toBe(true);
 	const reply = await f.tools.get("CompleteGoal").execute("complete", { goal: "first output", evidence: [path], observation: "claim" }, undefined, undefined, f.ctx);
 	expect(reply.content[0].text).toContain("only to the active parent");
 	const next = join(f.ctx.cwd, "next.md"); writeFileSync(next, f.plan);

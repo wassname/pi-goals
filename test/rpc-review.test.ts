@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -10,7 +10,7 @@ import { foldPlan } from "../src/plan.js";
 import { upkeepNudges } from "../src/prompts.js";
 
 type RpcMessage = { type: string; id?: string; method?: string; [key: string]: unknown };
-type ModelRequest = { messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
+type ModelRequest = { model?: string; tools?: Array<{ function: { name: string } }>; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
 
 class RpcClient {
 	readonly messages: RpcMessage[] = [];
@@ -68,22 +68,28 @@ const systemText = (request: ModelRequest) => request.messages.filter(message =>
 // One real-Pi story: planning, failed work, lost delivery, correction, restored history, cleanup.
 it("plans and reviews the same worker across failure, delivery retry and reload", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-rpc-"));
-	const requests = { parent: [] as ModelRequest[], worker: [] as ModelRequest[] };
-	const replies = { parent: [] as any[], worker: [] as any[] };
+	const requests = { parent: [] as ModelRequest[], worker: [] as ModelRequest[], helper: [] as ModelRequest[] };
+	const replies = { parent: [] as any[], worker: [] as any[], helper: [] as any[] };
 	const clients: RpcClient[] = [];
 	let planPath = "", serial = 0, hold: (() => Promise<void>) | undefined;
-	let holdRole: "parent" | "worker" = "parent";
+	let helperId = "", helperDir = "", helperFinished = false;
+	let holdRole: "parent" | "worker" | "helper" = "parent";
 	const plan = '# Plan\n\n## User voice\nKeep the greeting readable.\n\n## Goals\n- [ ] goal: deliver greeting\n  - greeting.txt must contain hello.\n\n## Log\nArchived notes stay on disk.\n';
 	const call = (name: string, args: object) => ({ tool_calls: [{ index: 0, id: `fixture-${++serial}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
 	const jobs = new Map<string, import("node:http").ServerResponse>();
 	const server = createServer(async (request, response) => {
 		if (request.url?.startsWith("/job/")) { const name = request.url.slice(5); jobs.set(name, response); server.emit(`job-${name}`); return; }
 		let body = ""; for await (const chunk of request) body += chunk;
-		const role = request.url?.startsWith("/worker") ? "worker" : "parent";
-		const input = JSON.parse(body) as ModelRequest; requests[role].push(input);
+		const input = JSON.parse(body) as ModelRequest;
+		const role = input.model === "helper" ? "helper" : request.url?.startsWith("/worker") ? "worker" : "parent";
+		requests[role].push(input);
 		if (hold && role === holdRole) { const pending = hold; hold = undefined; await pending(); }
 		if (response.destroyed) return;
 		let answer = replies[role].shift();
+		if (role === "helper") {
+			if (JSON.stringify(input.messages.filter(message => message.role === "user").at(-1)?.content).includes("HELPER_EXPECTED_FAILURE")) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: { message: "HELPER_EXPECTED_FAILURE: deliberate provider fault" } })); return; }
+			answer = input.messages.at(-1)?.role === "tool" ? { content: "HELPER_SUCCESS: inspected the approved plan without edits." } : call("read", { path: planPath });
+		}
 		if (role === "parent" && requests.parent.length === 1) {
 			planPath = systemText(input).match(/Plan only in (.+?);/)![1];
 			answer = call("write", { path: planPath, content: plan });
@@ -93,6 +99,8 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 	});
 	await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
 	const port = (server.address() as import("node:net").AddressInfo).port;
+	mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "agents", "fixture-helper.md"), `---\nname: fixture-helper\ndescription: Read-only deterministic helper\ntools: read\nextensions: ${resolve("test/fixtures/offline-model.ts")}, ${resolve("src/index.ts")}\nmodel: offline/helper\ndefaultContext: fresh\nacceptanceRole: read-only\n---\nInspect only the supplied fixture path. Do not edit, delegate, approve goals or change execution modes.\n`);
 	function start(role: "parent" | "worker", sessionFile?: string) {
 		const child = spawn(resolve("node_modules/.bin/pi"), ["--mode", "rpc", "--no-extensions", "--model", "offline/test",
 			"-e", resolve("test/fixtures/offline-model.ts"), "-e", resolve("src/index.ts"),
@@ -210,6 +218,53 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(0);
 		await run(worker, "worker", ...tasks().map((task: any) => call("manage_scheduled_task", { action: "remove", id: task.id })));
 		expect(tasks()).toEqual([]);
+		// One stock async workflow, serial read-only helpers; no extra interactive worker.
+		const discoveryAt = worker.messages.length;
+		await run(worker, "worker", call("subagent", { action: "list", capabilities: true, agentScope: "project" }));
+		const capability = (worker.messages.slice(discoveryAt).find(m => m.type === "tool_execution_end" && m.toolName === "subagent") as any).result.details.agentCapabilities.agents.find((agent: any) => agent.name === "fixture-helper");
+		expect(capability?.executable).toBe(true);
+		if (capability.runner.type === "external-cli") expect(capability.runner.available).toBe(true);
+		let releaseHelper!: () => void;
+		const heldHelper = new Promise<void>(done => { releaseHelper = done; });
+		const helperStarted = once(server, "helper-held", { signal: AbortSignal.timeout(8_000) });
+		holdRole = "helper"; hold = () => { server.emit("helper-held"); return heldHelper; };
+		const helperAt = worker.messages.length;
+		try {
+			await run(worker, "worker", call("subagent", { async: true, context: "fork", agentScope: "project", mission: false,
+				workflowScript: `const first = await runs.run('inspect', {agent:'fixture-helper',task:'Read the approved plan ${planPath}. Return HELPER_SUCCESS. No edits.',output:'inspected.md'}); const failure = await runs.run('expected-failure', {agent:'fixture-helper',task:'HELPER_EXPECTED_FAILURE: exercise a deliberate provider fault; no retry, fallback or edits.',output:'failure.md'}); return {first:first.outputReference,failure:failure.output,artifacts:failure.artifactPaths};` }));
+			const launched = worker.messages.slice(helperAt).find(m => m.type === "tool_execution_end" && m.toolName === "subagent") as any;
+			expect(launched.isError, JSON.stringify(launched)).not.toBe(true);
+			helperId = launched.result.details.asyncId; helperDir = launched.result.details.asyncDir;
+			expect(typeof helperId).toBe("string"); await helperStarted;
+			await command(worker, "/goals stop");
+			const pausedAt = worker.messages.length;
+			await run(worker, "worker", call("subagent", { action: "status", id: helperId }), call("subagent", { agent: "fixture-helper", task: "Must stay paused", async: true }), call("subagent", { action: "resume", id: helperId, message: "Must stay paused" }));
+			const pausedTools = worker.messages.slice(pausedAt).filter(m => m.type === "tool_execution_end" && m.toolName === "subagent");
+			expect(pausedTools.map(m => Boolean(m.isError))).toEqual([false, true, true]); expect(requests.helper).toHaveLength(1);
+			await command(worker, "/goals resume");
+			const wakeAt = worker.messages.length, ownerRequests = requests.worker.length;
+			releaseHelper();
+			await worker.waitFor(m => m.type === "agent_settled", wakeAt);
+			expect(requests.worker.length).toBeGreaterThan(ownerRequests);
+			const resultAt = worker.messages.length;
+			await run(worker, "worker", call("subagent", { action: "status", id: helperId }));
+			const helperStatus = (worker.messages.slice(resultAt).find(m => m.type === "tool_execution_end" && m.toolName === "subagent") as any).result;
+			expect(JSON.stringify(helperStatus)).toContain("HELPER_EXPECTED_FAILURE"); helperFinished = true;
+			expect(helperStatus.details.workflowChildren.children.map((child: any) => child.state)).toEqual(["completed", "failed"]);
+			const receipt = JSON.parse(readFileSync(helperStatus.details.workflowReceiptPath, "utf8")), output = receipt.entries.inspect.outputReference;
+			const readAt = worker.messages.length;
+			await run(worker, "worker", call("read", { path: output }), call("ReportGoalEvent", { kind: "progress", summary: `Inspected stock helper ${helperId}: success output ${output}; deliberate failure surfaced; no fallback or goal completion.` }));
+			expect(JSON.stringify(worker.messages.slice(readAt).find(m => m.type === "tool_execution_end" && m.toolName === "read"))).toContain("HELPER_SUCCESS");
+			if (process.env.PI_GOALS_TEST_EVIDENCE) cpSync(output, join(process.env.PI_GOALS_TEST_EVIDENCE, "helper-inspected.md"));
+			expect(requests.helper).toHaveLength(3);
+			expect(requests.helper.some(request => request.messages.some(message => message.role === "tool"))).toBe(true);
+			for (const request of requests.helper) {
+				expect(request.tools?.map(tool => tool.function.name)).not.toContain("write");
+				expect(systemText(request)).not.toContain("You are the delegated implementation worker");
+				expect(systemText(request)).not.toContain("You are the goal supervisor");
+			}
+			expect(readFileSync(planPath, "utf8")).toBe(approved); expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(0);
+		} finally { releaseHelper(); }
 		const greeting = join(cwd, "greeting.txt");
 		const workerAt = worker.messages.length;
 		let releaseWorker!: () => void; const heldWorker = new Promise<void>(done => { releaseWorker = done; });
@@ -312,6 +367,11 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		}
 	} finally {
 		for (const response of jobs.values()) if (!response.writableEnded) response.end("fixture cleanup");
+		if (helperId && !helperFinished && worker?.process.exitCode === null && worker.process.signalCode === null) await command(worker, `/subagents-stop ${helperId}`);
+		if (process.env.PI_GOALS_TEST_EVIDENCE && helperDir && existsSync(helperDir)) {
+			cpSync(helperDir, join(process.env.PI_GOALS_TEST_EVIDENCE, "helper-run"), { recursive: true });
+			for (const step of JSON.parse(readFileSync(join(helperDir, "status.json"), "utf8")).steps ?? []) if (step.sessionFile && existsSync(step.sessionFile)) cpSync(step.sessionFile, join(process.env.PI_GOALS_TEST_EVIDENCE, `helper-${step.workflowKey}.jsonl`));
+		}
 		if (process.env.PI_GOALS_TEST_EVIDENCE) {
 			mkdirSync(process.env.PI_GOALS_TEST_EVIDENCE, { recursive: true });
 			writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "last-attempt.json"), JSON.stringify({ requests, parent: parent.messages, worker: worker?.messages }));

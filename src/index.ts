@@ -107,6 +107,9 @@ function goals(text: string) {
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 export default function mainSupervisor(pi: ExtensionAPI) {
+	// Stock background helpers can inherit forked history and ambient extensions,
+	// but must not restore the owner's goal authority, watcher or transport.
+	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	const notices = noticeDisplay(pi);
 	let state = initial();
 	let generation = 0;
@@ -651,9 +654,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (owned && typeof input.prompt === "string" && input.prompt !== input.prompt.trim().replace(/\s+/g, " ")) return { block: true, reason: schedulerMessages.format };
 		}
 		if (event.toolName !== "subagent" && event.toolName !== "OpenGoalWorker") return;
-		// Stock inspection actions do not authorize execution or extra goal workers.
-		if (event.toolName === "subagent" && typeof event.input?.action === "string" && ["list", "get", "models", "guide", "status", "children.list", "project.status"].includes(event.input.action)) return;
-		if (state.child || ["planning", "paused", "solo"].includes(state.mode)) return { block: true, reason: goalToolBlocked(state.child ? "worker" : state.mode) };
+		const action = event.input?.action;
+		// Stock owns helper contracts and capabilities. Inspection and cancellation stay available.
+		if (event.toolName === "subagent" && typeof action === "string" && ["list", "get", "models", "guide", "status", "children.list", "project.status", "stop", "interrupt"].includes(action)) return;
+		const nativeWorkerControl = event.toolName === "OpenGoalWorker" || typeof action === "string" && action.startsWith("project.");
+		if (["planning", "paused"].includes(state.mode)) return { block: true, reason: goalToolBlocked(state.mode) };
+		if (nativeWorkerControl && (state.child || state.mode === "solo")) return { block: true, reason: goalToolBlocked(state.child ? "worker" : state.mode) };
 	});
 
 	pi.registerCommand("goals", {

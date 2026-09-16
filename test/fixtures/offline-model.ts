@@ -27,8 +27,8 @@ export default function offlineModel(pi: ExtensionAPI): void {
 		baseUrl: process.env.PI_GOALS_OFFLINE_MODEL_URL!,
 		apiKey: "test",
 		api: "openai-completions",
-		models: [{
-			id: "test",
+		models: ["test", "helper"].map(id => ({
+			id,
 			name: "Offline test model",
 			reasoning: false,
 			input: ["text"],
@@ -36,6 +36,6 @@ export default function offlineModel(pi: ExtensionAPI): void {
 			contextWindow: 128_000,
 			maxTokens: 1_000,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		}],
+		})),
 	});
 }
