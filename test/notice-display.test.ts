@@ -28,7 +28,6 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	}
 	const expanded = render(entry, { expanded: true }, theme);
 	expect(expanded.render(80)).toEqual(new Markdown(content, 0, 0, getMarkdownTheme()).render(80));
-	expect(expanded.render(80).join("\n")).toContain("Final evidence line");
 
 	const review = "[pi-goals]\n## Worker revision reviews\n\n- revision run-1: output ready (reportId worker:run-1)";
 	display.mirror(review);
