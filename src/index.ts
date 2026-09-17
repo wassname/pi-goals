@@ -66,7 +66,7 @@ const WORKER = "goals-worker";
 const REPORT = "pi-goals-report", REVIEW = "pi-goals-report-review", REVIEW_DRAFT = "pi-goals-review-draft", REVIEW_REMINDER = "pi-goals-review-reminder";
 const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop", WORKER_EVENT = "pi-goals-worker-event";
 type GoalEventKind = "review_request" | "decision" | "blocker" | "completion" | "progress" | "running" | "waiting" | "receipt" | "no_change" | "aborted" | "unclassified";
-const REVIEWABLE_EVENTS = new Set<GoalEventKind>(["review_request", "decision", "blocker", "completion"]);
+const REVIEWABLE_EVENTS = new Set<GoalEventKind>(["review_request", "blocker", "completion"]);
 interface WorkerStop { type: "stopped"; entryId: string; to: string; requestId: string; plan: string; text: string; identity: Peer; kind?: GoalEventKind; }
 interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; task?: string; text: string; kind: GoalEventKind; supersedes?: string; }
 type WorkerEvent = Report;
@@ -404,7 +404,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === event.id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === event.id)) return;
 		pi.appendEntry(WORKER_EVENT, event);
 		const context = ["waiting", "aborted", "unclassified"].includes(event.kind) ? `${event.text}\n\n${savedWorkerView(ctx, { ...event, runtimeId: state.worker?.identity?.sessionId })}` : event.text;
-		send(workerStatus(event.plan, event.session, event.id, event.kind, context), false, true);
+		const needsDirectAttention = event.kind === "decision" && wake && ctx.isIdle();
+		send(workerStatus(event.plan, event.session, event.id, event.kind, context), needsDirectAttention, true);
 	}
 	function remindReports(ctx: ExtensionContext) {
 		if (state.child || state.mode !== "supervising") return;

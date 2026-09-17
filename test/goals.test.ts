@@ -8,6 +8,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
+import { goalCheckInWake, planDrafting, reportGoalEventDescription, supervisor } from "../src/prompts.js";
 
 vi.mock("pi-subagents/project-panes", () => ({ openProjectPane: vi.fn(async () => ({ ok: true, data: { bindingPath: "/project/.pi/subagents/project-pane.json", disposition: "opened", binding: { paneId: "native-pane", projectRoot: "/project", command: "pi" } } })) }));
 
@@ -74,6 +75,30 @@ function fixture(child = false) {
 	};
 	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, launch, channel, event: (event: any) => registration.onEvent(event) };
 }
+
+it("puts exploration, protected decisions and grilling before the plan draft", () => {
+	const explore = planDrafting.indexOf("1. Explore first");
+	const protectedDecisions = planDrafting.indexOf("2. Infer which decisions the human reserves");
+	const grill = planDrafting.indexOf("3. Then use the grilling skill");
+	const draft = planDrafting.indexOf("5. When every goal");
+	expect(explore).toBeGreaterThan(0);
+	expect(explore).toBeLessThan(protectedDecisions);
+	expect(protectedDecisions).toBeLessThan(grill);
+	expect(grill).toBeLessThan(draft);
+	expect(planDrafting).toContain("Read every user-supplied link and resource");
+	expect(planDrafting).toContain("publication approval or editorial voice");
+});
+
+it("reserves formal reviews for approvals, completion and genuine blockers", () => {
+	expect(reportGoalEventDescription).toContain("review_request, blocker and completion create a formal parent review obligation");
+	expect(reportGoalEventDescription).toContain("decision requests prompt supervisor attention and direct steering without review paperwork");
+	const role = supervisor("worker", "/tmp/plan.md", "parent");
+	expect(role).toContain("Goal, Changed, Judgment, Next, Need from you");
+	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
+	expect(role).toContain("Humour is a reflective meta-learning mechanism");
+	expect(role).toContain("Never wait on an inferred or nonexistent pane");
+	expect(goalCheckInWake).toContain("reserve formal review for completion, bounded artifact approval or a genuine accepted blocker");
+});
 
 it("reads bounded worker history without changing it, and expands native Markdown", async () => {
 	initTheme("dark");
@@ -526,7 +551,7 @@ it("requires a full-plan review turn before recording the final goal", async () 
 	expect(readFileSync(f.path, "utf8")).toContain("second output has exact saved bytes");
 	f.hooks.get("turn_end")({}, f.ctx); // Evidence-reading tool round must not invalidate this review.
 	const finalText = (await complete("second output")).content[0].text;
-	expect(finalText).toContain("All non-cancelled goals are reviewed.");
+	expect(finalText).toContain("All non-cancelled goals are reviewed. ヽ(•‿•)ノ");
 	expect(finalText).toContain('name "goals-copy-only"');
 	expect(finalText).toContain("Never use cleanup or change foreign tasks");
 	for (let i = 0; i < 10; i++) f.hooks.get("turn_end")({}, f.ctx);
@@ -1154,7 +1179,7 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages.at(-2)).toMatchObject({ message: { customType: "pi-goals-supervision", display: false, content: expect.stringContaining("## Worker revision report") } });
 	expect(f.messages.at(-2)?.message.content).toContain("Blocked: input missing");
 	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-notice" && entry.data.content.includes("## Worker revision report"))).toBe(true);
-	expect(f.messages.at(-1)?.message.content).toContain("## Worker revision reviews");
+	expect(f.messages.at(-1)?.message.content).toContain("## Formal worker revision reviews");
 	expect(f.messages.at(-1)?.message.content).toContain("cached interruption audit");
 	expect(f.messages.at(-1)?.message.content).not.toContain("](");
 	const afterFirstRevision = f.messages.length;
@@ -1162,9 +1187,14 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages).toHaveLength(afterFirstRevision);
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "waiting-1", kind: "waiting", text: "Pueue 1552 is running." } });
 	expect(f.messages.at(-1)?.message.content).toContain("## Worker status: waiting");
+	const formalReports = f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-report").length;
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "decision-1", kind: "decision", text: "Choose retry A or B." } });
+	expect(f.messages.at(-1)?.message.content).toContain("## Worker status: decision");
+	expect(f.messages.at(-1)?.savedPrompt).toBe(true);
+	expect(f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-report")).toHaveLength(formalReports);
 	await f.command("status");
-	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Latest worker status event: waiting");
-	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("waiting-1");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Latest worker status event: decision");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("decision-1");
 	expect(readFileSync(f.path, "utf8")).not.toContain("[✓]");
 	await f.command("stop");
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New report during pause" } });
