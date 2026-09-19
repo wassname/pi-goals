@@ -336,7 +336,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const stamp = generation;
 		const revision = workerRevision;
 		const confirmation = "Worker confirmed stopped";
-		const choice = await ctx.ui.select("Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?", [confirmation, "Cancel"]);
+		const choice = await ctx.ui.select("Confirm no other supervisor is active and all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?", [confirmation, "Cancel"]);
 		if (stamp !== generation || revision !== workerRevision) return false;
 		if (choice !== confirmation) return false;
 		if (readFileSync(target, "utf8") !== text) { ctx.ui.notify("Plan changed during takeover; confirm again.", "warning"); return false; }
@@ -857,17 +857,24 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
 			// TODO(2026-11+, Pi): Recheck pi-subagents/project-panes v1's one-pane-per-cwd limit before adding multiple visible workers.
-			if (opening || state.worker) return result(nativeMessages.alreadyRecorded);
+			if (opening) return result(nativeMessages.alreadyRecorded);
 			if (!params.task.trim()) return result(nativeMessages.taskRequired);
-			const preference = params.model?.trim() || notedPlanValue("preferred worker model");
-			const model = preference && (preference.includes("/") || !/^(?:none|\(none|default|inherit|not stated)\b/i.test(preference)) ? preference : undefined;
 			if (!channel?.snapshot().connected || !channel.snapshot().supported) return result(nativeMessages.intercomNotReady);
-			const stamp = generation, plan = state.plan;
+			const preflight = generation;
 			const peers = await channel.listSessions().catch(() => undefined);
 			if (!peers) return result(nativeMessages.intercomNotReady);
 			const self = peers.filter(peer => peer.pid === process.pid);
 			if (self.length !== 1) return result(nativeMessages.noIdentity);
-			if (stamp !== generation || opening || state.worker || signal?.aborted) return result(messages.cancelled);
+			if (preflight !== generation || opening || signal?.aborted) return result(messages.cancelled);
+			if (state.worker) {
+				const recorded = JSON.stringify(state.worker);
+				if (!(await confirmOwnership(ctx, state.plan, planText())) || JSON.stringify(state.worker) !== recorded) return result(nativeMessages.alreadyRecorded);
+				state.worker = undefined; state.workerStopped = true; workerRevision++; generation++; save(); refresh(ctx);
+			}
+			const preference = params.model?.trim() || notedPlanValue("preferred worker model");
+			const model = preference && (preference.includes("/") || !/^(?:none|\(none|default|inherit|not stated)\b/i.test(preference)) ? preference : undefined;
+			const plan = state.plan;
+			if (opening || state.worker || signal?.aborted) return result(messages.cancelled);
 			const requestId = randomUUID();
 			state.worker = { requestId, parentId: self[0].id, task: params.task }; state.workerStopped = false; workerRevision++; opening = true; save();
 			try {

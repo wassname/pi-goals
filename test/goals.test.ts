@@ -1220,6 +1220,20 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages).toHaveLength(cleared);
 });
 
+it("releases a confirmed-stopped inherited binding through OpenGoalWorker", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	await f.launch({ id: "old-worker", sessionFile: "/tmp/old-worker.jsonl", task: "Old task" });
+	const oldRequest = f.entries.at(-1).data.worker.requestId;
+	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
+	const opened = await f.tools.get("OpenGoalWorker").execute("replacement", { task: "Continue the approved plan" }, undefined, undefined, f.ctx);
+	expect(opened.content[0].text).toContain('"disposition":"opened"');
+	const replacement = f.entries.at(-1).data.worker;
+	expect(replacement).toMatchObject({ paneId: "native-pane", parentId: "parent-intercom", task: "Continue the approved plan" });
+	expect(replacement.requestId).not.toBe(oldRequest);
+	expect(f.entries.some(entry => entry.data.worker?.intercomId === "old-worker")).toBe(true); // saved history is retained
+	expect(openProjectPane).toHaveBeenCalledTimes(2);
+});
+
 it("automatically reports worker turn end and pauses a rejected attachment", async () => {
 	const f = fixture(); const path = join(f.ctx.cwd, "supplied.md"); writeFileSync(path, f.plan);
 	await f.tools.get("AttachGoalPlan").execute("attach", { path, parent: "live-parent", requestId: "owned-request" }, undefined, undefined, f.ctx);
