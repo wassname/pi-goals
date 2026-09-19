@@ -67,6 +67,7 @@ const REPORT = "pi-goals-report", REVIEW = "pi-goals-report-review", REVIEW_DRAF
 const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop", WORKER_EVENT = "pi-goals-worker-event";
 type GoalEventKind = "review_request" | "decision" | "blocker" | "completion" | "progress" | "running" | "waiting" | "receipt" | "no_change" | "aborted" | "unclassified";
 const REVIEWABLE_EVENTS = new Set<GoalEventKind>(["review_request", "blocker", "completion"]);
+const ATTENTION_EVENTS = new Set<GoalEventKind>(["decision", "aborted", "unclassified"]);
 interface WorkerStop { type: "stopped"; entryId: string; to: string; requestId: string; plan: string; text: string; identity: Peer; kind?: GoalEventKind; }
 interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; task?: string; text: string; kind: GoalEventKind; supersedes?: string; }
 type WorkerEvent = Report;
@@ -397,14 +398,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
 		pi.appendEntry(REPORT, report);
 		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}\n\n${savedWorkerView(ctx, { ...report, runtimeId: state.worker?.identity?.sessionId })}`), false, true);
-		if (wake && ctx.isIdle()) remindReports(ctx);
+		if (wake) remindReports(ctx);
 	}
 	function recordWorkerEvent(ctx: ExtensionContext, event: WorkerEvent, wake = true) {
 		if (REVIEWABLE_EVENTS.has(event.kind)) { recordReport(ctx, event, wake); return; }
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === event.id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === event.id)) return;
 		pi.appendEntry(WORKER_EVENT, event);
 		const context = ["waiting", "aborted", "unclassified"].includes(event.kind) ? `${event.text}\n\n${savedWorkerView(ctx, { ...event, runtimeId: state.worker?.identity?.sessionId })}` : event.text;
-		const needsDirectAttention = event.kind === "decision" && wake && ctx.isIdle();
+		const needsDirectAttention = ATTENTION_EVENTS.has(event.kind) && wake;
 		send(workerStatus(event.plan, event.session, event.id, event.kind, context), needsDirectAttention, true);
 	}
 	function remindReports(ctx: ExtensionContext) {
@@ -447,6 +448,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				}
 				if (event.type !== "message" || !event.payload || typeof event.payload !== "object") return;
 				const data = event.payload as { type?: string; to?: string; requestId?: string; plan?: string; sessionFile?: string; text?: string; identity?: Peer; entryId?: string; kind?: GoalEventKind; review?: ReportReview };
+				if (data.type === "attachment_rejected" && state.child && state.parent && event.fromSessionId === state.parent.intercomId && data.requestId === state.parent.requestId && data.plan === state.plan) {
+					const text = data.text || nativeMessages.attachmentRejected;
+					state.mode = "paused"; state.parent = undefined; generation++; notice = true; save(); refresh(ctx);
+					send(text, true, true);
+					return;
+				}
 				if (data.type === "review" && state.child && state.parent && event.fromSessionId === state.parent.intercomId && records<State>(ctx, STATE).some(saved => saved.child && saved.parent?.intercomId === event.fromSessionId && saved.parent.requestId === data.requestId && saved.plan === data.plan) && data.sessionFile === ctx.sessionManager.getSessionFile() && data.review) {
 					const prior = records<ReportReview>(ctx, REVIEW).find(saved => reviewedReportId(saved) === reviewedReportId(data.review!));
 					const review = prior || data.review;
@@ -472,6 +479,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					return;
 				}
 				const worker = state.worker;
+				if (data.type === "attached" && !state.child && worker?.parentId && data.to === worker.parentId && data.plan === state.plan
+					&& (!data.requestId || data.requestId !== worker.requestId || Boolean(worker.intercomId && worker.intercomId !== event.fromSessionId))) {
+					const text = nativeMessages.uncorrelatedAttachment(worker.requestId, data.requestId, worker.paneId || worker.identity?.paneId);
+					channel?.publish({ type: "attachment_rejected", to: event.fromSessionId, requestId: data.requestId, plan: data.plan, text }, { audience: "capable" });
+					send(workerStatus(data.plan || state.plan || "unknown", event.fromSessionId, `attachment:${data.requestId || "missing"}`, "unclassified", text), true, true);
+					return;
+				}
 				if (state.child || !worker || !state.plan || !worker.parentId || !data.requestId || data.to !== worker.parentId || event.fromSessionId === data.to || data.requestId !== worker.requestId || data.plan !== state.plan) return;
 				if (data.type === "attached" && typeof data.sessionFile === "string" && isAbsolute(data.sessionFile) && (!worker.intercomId || worker.intercomId === event.fromSessionId)) {
 					worker.intercomId = event.fromSessionId; worker.sessionFile = data.sessionFile;
@@ -517,8 +531,6 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (automatic && kind === "unclassified") {
 			const ended = records<WorkerStop>(liveContext, STOP).filter(inRun).at(-1);
 			if (ended) return ended;
-			const status = records<WorkerStop>(liveContext, WORKER_EVENT).filter(inRun).at(-1);
-			if (status) { pi.appendEntry(STOP, status); return status; } // Finish this run without another status or wake.
 		}
 		const type = automatic || REVIEWABLE_EVENTS.has(kind) ? STOP : WORKER_EVENT;
 		const entryId = `${runId}:${digest(`${state.parent.requestId}:${state.plan}:${kind}:${text}`)}`;
@@ -646,6 +658,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 	});
 	pi.on("tool_call", (event, ctx) => {
+		if (state.mode !== "chat" && event.toolName === "intercom" && event.input?.openProjectPaneIfMissing === true) return { block: true, reason: nativeMessages.workerCreationRequiresOpenGoalWorker };
+		if (state.mode !== "chat" && event.toolName === "subagent" && event.input?.action === "project.open") return { block: true, reason: nativeMessages.workerCreationRequiresOpenGoalWorker };
 		if (["schedule_task", "manage_scheduled_task"].includes(event.toolName)) {
 			const input = event.input as Record<string, unknown>;
 			const ids = ownedCheckInIds(ctx);

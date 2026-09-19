@@ -188,9 +188,10 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		for (const inspection of inspections) { expect(inspection.isError).not.toBe(true); expect((inspection.result as any).details.results).toEqual([]); }
 		expect((inspections.at(-1)!.result as any).details.spawnBudget.used).toBe(0);
 		expect(worker.messages.slice(inspectAt).find(m => m.type === "tool_execution_end" && m.toolName === "OpenGoalWorker")?.isError).toBe(true);
-		expect(requests.parent).toHaveLength(parentCount); // inspection/receipt did not wake the supervisor
+		await expect.poll(() => requests.parent.length).toBe(parentCount + 1); // automatic turn end wakes the supervisor; the receipt itself does not
+		expect(JSON.stringify(requests.parent.at(-1)!.messages)).toContain("Worker status: unclassified");
 		const workerState = await state(worker), workerFile = workerState.sessionFile;
-		expect(records(parentState.sessionFile, "pi-goals-worker-event").map(event => event.kind)).toEqual(["receipt"]);
+		expect(records(parentState.sessionFile, "pi-goals-worker-event").map(event => event.kind)).toEqual(["receipt", "unclassified"]); // turn end is independently observable
 		const receiptNotice = entries(parentState.sessionFile).find(entry => entry.customType === "pi-goals-notice" && String(entry.data?.content).includes("Attached and waiting."));
 		expect(Buffer.byteLength(receiptNotice.data.content)).toBeLessThan(1500); // routine status does not carry a history dump
 		// Real native scheduler commands continue after the worker turn. Hold their HTTP

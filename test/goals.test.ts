@@ -96,6 +96,7 @@ it("reserves formal reviews for approvals, completion and genuine blockers", () 
 	expect(role).toContain("Goal, Changed, Judgment, Next, Need from you");
 	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
 	expect(role).toContain("Humour is a reflective meta-learning mechanism");
+	expect(role).toContain("The human can inspect, talk to and change /model in the worker pane directly");
 	expect(role).toContain("Never wait on an inferred or nonexistent pane");
 	expect(goalCheckInWake).toContain("reserve formal review for completion, bounded artifact approval or a genuine accepted blocker");
 });
@@ -1158,6 +1159,11 @@ it("passive pause is visible immediately while its model notice waits safely for
 // The native surface has one project binding; these replace old launch-schema/helper tests.
 it("opens no-focus, records explicit attachment only, and wakes review only for the exact worker", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
+	for (const event of [
+		{ toolName: "intercom", input: { action: "send", cwd: "/tmp/other", openProjectPaneIfMissing: true } },
+		{ toolName: "subagent", input: { action: "project.open", cwd: "/tmp/other" } },
+	]) expect(f.hooks.get("tool_call")(event, f.ctx)).toMatchObject({ block: true, reason: expect.stringContaining("orphan worker") });
+	expect(f.hooks.get("tool_call")({ toolName: "intercom", input: { action: "send", to: "existing" } }, f.ctx)).toBeUndefined();
 	f.channel.listSessions.mockRejectedValueOnce(new Error("Intercom is not connected"));
 	const waiting = await f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
 	expect(waiting.content[0].text).toContain("still connecting"); expect(openProjectPane).not.toHaveBeenCalled();
@@ -1168,6 +1174,10 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(worker).toMatchObject({ paneId: "native-pane", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
 	expect(f.messages.at(-1)).toMatchObject({ message: { customType: "pi-goals-supervision", display: true, content: expect.stringContaining("Metadata only; no acknowledgement or review turn requested") }, options: { triggerTurn: false } });
 	expect(f.messages.at(-1).savedPrompt).toBeUndefined();
+	f.event({ type: "message", fromSessionId: "orphan-worker", payload: { type: "attached", to: worker.parentId, requestId: "invented-request", plan: f.path, sessionFile: "/tmp/orphan.jsonl" } });
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "attachment_rejected", to: "orphan-worker", requestId: "invented-request" }), { audience: "capable" });
+	expect(f.messages.at(-1)?.message.content).toContain("Rejected uncorrelated worker attachment");
+	expect(f.messages.at(-1)?.savedPrompt).toBe(true);
 	const notice = { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "revision-1", kind: "blocker", text: "Blocked: input missing" };
 	const count = f.messages.length;
 	for (const fromSessionId of [worker.parentId, "foreign-id"]) f.event({ type: "message", fromSessionId, payload: notice });
@@ -1192,9 +1202,15 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages.at(-1)?.message.content).toContain("## Worker status: decision");
 	expect(f.messages.at(-1)?.savedPrompt).toBe(true);
 	expect(f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-report")).toHaveLength(formalReports);
+	f.ctx.isIdle.mockReturnValue(false);
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "automatic-stop", kind: "unclassified", text: "Worker turn ended without an explicit event." } });
+	expect(f.messages.at(-1)?.message.content).toContain("## Worker status: unclassified");
+	expect(f.messages.at(-1)?.savedPrompt).toBe(true);
+	expect(f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-report")).toHaveLength(formalReports);
+	f.ctx.isIdle.mockReturnValue(true);
 	await f.command("status");
-	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Latest worker status event: decision");
-	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("decision-1");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Latest worker status event: unclassified");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("automatic-stop");
 	expect(readFileSync(f.path, "utf8")).not.toContain("[✓]");
 	await f.command("stop");
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New report during pause" } });
@@ -1202,6 +1218,22 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	await f.command("clear");
 	const cleared = f.messages.length; f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-3" } });
 	expect(f.messages).toHaveLength(cleared);
+});
+
+it("automatically reports worker turn end and pauses a rejected attachment", async () => {
+	const f = fixture(); const path = join(f.ctx.cwd, "supplied.md"); writeFileSync(path, f.plan);
+	await f.tools.get("AttachGoalPlan").execute("attach", { path, parent: "live-parent", requestId: "owned-request" }, undefined, undefined, f.ctx);
+	f.hooks.get("agent_start")({}, f.ctx);
+	const assistant = { role: "assistant", content: [{ type: "text", text: "Awaiting review." }], stopReason: "stop" };
+	f.ctx.sessionManager.getBranch().push({ type: "message", id: "automatic-stop-turn", message: assistant });
+	await f.tools.get("ReportGoalEvent").execute("waiting", { kind: "waiting", summary: "Awaiting review." }, undefined, undefined, f.ctx);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", requestId: "owned-request", kind: "waiting" }), { audience: "capable" });
+	f.hooks.get("agent_end")({ messages: [assistant] }, f.ctx);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", requestId: "owned-request", kind: "unclassified", text: "Awaiting review." }), { audience: "capable" });
+	f.event({ type: "message", fromSessionId: "live-parent", payload: { type: "attachment_rejected", to: "worker", requestId: "owned-request", plan: path, text: "Parent rejected the uncorrelated attachment." } });
+	expect(f.entries.at(-1).data).toMatchObject({ child: true, mode: "paused", plan: path });
+	expect(f.entries.at(-1).data.parent).toBeUndefined();
+	expect(f.messages.at(-1)?.message.content).toContain("Parent rejected the uncorrelated attachment");
 });
 
 it("ordinary project peer explicitly attaches as worker, never gaining approval authority", async () => {
