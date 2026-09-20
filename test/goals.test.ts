@@ -39,6 +39,7 @@ function fixture(child = false) {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerMarkdownTransformer: vi.fn(),
 		registerEntryRenderer: vi.fn(),
+		registerMessageRenderer: vi.fn(),
 		sendMessage: (message: any, options: any) => messages.push({ message, options }),
 		sendUserMessage: (content: string, options: any) => messages.push({ message: { content }, options, savedPrompt: true }),
 		events: { emit: vi.fn((name, data) => { if (name === "intercom:extension-register") { registration = data; data.onReady(channel); } }) },
@@ -345,6 +346,9 @@ it("keeps Ready in the same chat, sends saved notices and never installs a conte
 	expect(f.hooks.has("context")).toBe(false);
 	const event = { systemPrompt: "original system" };
 	expect(f.hooks.get("before_agent_start")(event, f.ctx).systemPrompt).toContain("original system");
+	await f.command("review");
+	expect(f.messages.at(-1)).toMatchObject({ message: { customType: "pi-goals-prompt", display: true }, options: { triggerTurn: true, deliverAs: "followUp" } });
+	expect(f.messages.at(-1).savedPrompt).toBeUndefined();
 	f.hooks.get("session_compact")();
 	expect(f.hooks.get("before_agent_start")(event, f.ctx).message.content).toContain("Current goal mode: supervising");
 	f.shutdown();

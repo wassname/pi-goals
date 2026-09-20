@@ -6,10 +6,11 @@ import { noticeDisplay } from "../src/notice-display.js";
 it("collapses mirrored prompts only in the UI, expands the exact text, and restores by branch", () => {
 	initTheme("dark");
 	const theme = { fg: (_color: string, text: string) => text };
-	const pi = { registerMarkdownTransformer: vi.fn(), registerEntryRenderer: vi.fn(), appendEntry: vi.fn() };
+	const pi = { registerMarkdownTransformer: vi.fn(), registerEntryRenderer: vi.fn(), registerMessageRenderer: vi.fn(), appendEntry: vi.fn(), sendMessage: vi.fn() };
 	const display = noticeDisplay(pi as unknown as ExtensionAPI);
 	const transform = pi.registerMarkdownTransformer.mock.calls[0][0];
 	const render = pi.registerEntryRenderer.mock.calls[0][1];
+	const renderPrompt = pi.registerMessageRenderer.mock.calls[0][1];
 	const content = "[pi-goals]\nPlan changed. Inspect the evidence.\n\n# Output\n\nKeep this entire requirement.\n\nFinal evidence line.";
 	expect(transform(content, { messageType: "user" })).toBe(content);
 	display.mirror(content);
@@ -17,6 +18,11 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	expect(transform(content, { messageType: "user" })).toBe("");
 	expect(transform(content, { messageType: "assistant" })).toBe(content);
 	expect(transform("[pi-goals]\nA human quotation", { messageType: "user" })).toBe("[pi-goals]\nA human quotation");
+	display.prompt(content);
+	expect(pi.sendMessage).toHaveBeenCalledExactlyOnceWith({ customType: "pi-goals-prompt", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+	const prompt = { role: "custom", customType: "pi-goals-prompt", content, display: true };
+	expect(renderPrompt(prompt, { expanded: false }, theme).render(80).join("\n")).toContain("Plan changed · review requested");
+	expect(renderPrompt(prompt, { expanded: true }, theme).render(80)).toEqual(new Markdown(content, 0, 0, getMarkdownTheme()).render(80));
 
 	const entry = { type: "custom", customType: "pi-goals-notice", data: { content } };
 	const collapsed = render(entry, { expanded: false }, theme);

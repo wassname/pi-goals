@@ -116,6 +116,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let generation = 0;
 	let workerRevision = 0;
 	let finalReviewTurnDigest: string | undefined;
+	let preparedRole: string | undefined;
 	let opening = false;
 	let channel: IntercomExtensionChannel | undefined;
 	let liveContext: ExtensionContext | undefined;
@@ -311,6 +312,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		lastWorkingSet = "";
 		pendingUpkeep = undefined;
 		finalReviewTurnDigest = undefined;
+		preparedRole = undefined;
 		fullPlanContextDue = true;
 		refresh(ctx);
 		watchPlan(ctx);
@@ -318,13 +320,16 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	function sendAttachment(plan: string, session: string, text: string) {
 		pi.sendMessage({ customType: "pi-goals-supervision", content: workerAttachment(plan, session, text), display: true }, { triggerTurn: false });
 	}
-	function send(content: string, triggerTurn = true, collapse = false) {
-		// sendMessage(triggerTurn:true) bypasses before_agent_start in Pi 0.85.1.
-		// A normal saved prompt prepares the current role before starting the turn.
+	const roleKey = () => `${state.child ? "worker" : "parent"}:${state.mode}:${state.plan ?? ""}`;
+	function send(content: string, triggerTurn = true, collapse = false, prepareRole = false) {
+		// Custom messages map to the same user-role model input without an empty user bubble.
+		// Role changes still use a normal prompt because custom triggerTurn bypasses before_agent_start.
 		if (triggerTurn) {
 			const prompt = `[pi-goals]\n${content}`;
-			notices.mirror(prompt);
-			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			if (prepareRole || preparedRole !== roleKey()) {
+				notices.mirror(prompt);
+				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			} else notices.prompt(prompt);
 		} else {
 			if (collapse) notices.mirror(content);
 			pi.sendMessage({ customType: "pi-goals-supervision", content, display: !collapse }, { deliverAs: "nextTurn" });
@@ -552,7 +557,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => { reportStop(nativeMessages.shuttingDown, "unclassified", true); cancelCheckInRemoval(); agentRunActive = false; pauseCheckIn = false; channel = undefined; liveContext = undefined; generation++; finalReviewTurnDigest = undefined; planWatcher?.close(); planWatcher = undefined; clearTimeout(planEditTimer); planEditTimer = undefined; });
 	// Only successful compaction needs resync; failed/cancelled attempts leave pending context alone.
 	// Defer to prompt preparation: same-run continuation retains Pi's current role/context.
-	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; });
+	pi.on("session_compact", () => { notice = true; fullPlanContextDue = true; preparedRole = undefined; });
 	pi.on("turn_end", (_event, ctx) => {
 		if (!["supervising", "solo"].includes(state.mode)) return;
 		const snapshot = readPlan();
@@ -571,7 +576,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	// Queued follow-ups can be consumed inside the same run, without before_agent_start.
 	pi.on("message_end", (event, ctx) => {
 		if (event.message.role === "custom" && event.message.customType === "intercom_message") reconcileReports(ctx);
-		if (event.message.role !== "user") return;
+		if (event.message.role !== "user" && !(event.message.role === "custom" && event.message.customType === "pi-goals-prompt")) return;
 		const content = typeof event.message.content === "string" ? event.message.content : event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
 		if (pendingPlanNotice && content === `[pi-goals]\n${pendingPlanNotice}`) pendingPlanNotice = undefined;
 		if (!state.finalReview || !["supervising", "solo"].includes(state.mode)) return;
@@ -638,6 +643,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		lastWorkingSet = foldPlan(snapshot.text);
 		pendingUpkeep = undefined;
 		const pending = !state.child && state.mode === "supervising" ? pendingReports(ctx) : [];
+		preparedRole = roleKey();
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}${pending.length ? `\n${pendingReportReviews(pending.map(reportLabel))}` : ""}`, ...(message ? { message } : {}) };
 	});
 	pi.on("input", (event, ctx) => {
@@ -1012,7 +1018,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						if (!state.finalReview) {
 							state.finalReview = { planDigest: digest(text) };
 							save();
-							send(finalReview(path, text));
+							send(finalReview(path, text), true, false, true);
 						}
 						return result(finalReviewQueued(matches[0].subject));
 					}
