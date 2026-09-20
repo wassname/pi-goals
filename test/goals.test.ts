@@ -96,6 +96,9 @@ it("leaves stop events informal until the supervisor chooses full review", () =>
 	expect(reportGoalEventDescription).toContain("only the supervisor can choose full review");
 	const role = supervisor("worker", "/tmp/plan.md", "parent");
 	expect(role).toContain("Goal, Changed, Judgment, Next, Need from you");
+	expect(role).toContain("personally perform the high-level diagnosis, research interpretation, experimental design and consequential judgment");
+	expect(role).toContain("do not outsource the central reasoning");
+	expect(role).toContain("Do not invent pass/fail thresholds or turn a ranking metric");
 	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
 	expect(role).toContain("Humour is a reflective meta-learning mechanism");
 	expect(role).toContain("The human can inspect, talk to and change /model in the worker pane directly");
@@ -1333,12 +1336,38 @@ it("automatically reports worker turn end and pauses a rejected attachment", asy
 	f.ctx.sessionManager.getBranch().push({ type: "message", id: "automatic-stop-turn", message: assistant });
 	await f.tools.get("ReportGoalEvent").execute("waiting", { kind: "waiting", summary: "Awaiting review." }, undefined, undefined, f.ctx);
 	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", requestId: "owned-request", kind: "waiting" }), { audience: "capable" });
+	const afterWaiting = f.channel.publish.mock.calls.length;
 	f.hooks.get("agent_end")({ messages: [assistant] }, f.ctx);
-	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", requestId: "owned-request", kind: "unclassified", text: "Awaiting review." }), { audience: "capable" });
+	expect(f.channel.publish).toHaveBeenCalledTimes(afterWaiting); // intentional waiting already describes the stopped turn
+	f.hooks.get("agent_start")({}, f.ctx);
+	const silent = { role: "assistant", content: [{ type: "text", text: "Turn ended without an event." }], stopReason: "stop" };
+	f.ctx.sessionManager.getBranch().push({ type: "message", id: "silent-stop-turn", message: silent });
+	f.hooks.get("agent_end")({ messages: [silent] }, f.ctx);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", requestId: "owned-request", kind: "unclassified", text: "Turn ended without an event." }), { audience: "capable" });
+	f.hooks.get("agent_start")({}, f.ctx);
+	const progress = { role: "assistant", content: [{ type: "text", text: "Implemented the first half." }], stopReason: "stop" };
+	f.ctx.sessionManager.getBranch().push({ type: "message", id: "progress-stop-turn", message: progress });
+	await f.tools.get("ReportGoalEvent").execute("progress", { kind: "progress", summary: "Implemented the first half." }, undefined, undefined, f.ctx);
+	f.hooks.get("agent_end")({ messages: [progress] }, f.ctx);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", requestId: "owned-request", kind: "unclassified", text: "Implemented the first half." }), { audience: "capable" });
 	f.event({ type: "message", fromSessionId: "live-parent", payload: { type: "attachment_rejected", to: "worker", requestId: "owned-request", plan: path, text: "Parent rejected the uncorrelated attachment." } });
 	expect(f.entries.at(-1).data).toMatchObject({ child: true, mode: "paused", plan: path });
 	expect(f.entries.at(-1).data.parent).toBeUndefined();
 	expect(f.messages.at(-1)?.message.content).toContain("Parent rejected the uncorrelated attachment");
+});
+
+it("reports graceful shutdown after an intentional waiting turn", async () => {
+	const f = fixture(); const path = join(f.ctx.cwd, "supplied.md"); writeFileSync(path, f.plan);
+	await f.tools.get("AttachGoalPlan").execute("attach", { path, parent: "live-parent", requestId: "owned-request" }, undefined, undefined, f.ctx);
+	f.hooks.get("agent_start")({}, f.ctx);
+	const assistant = { role: "assistant", content: [{ type: "text", text: "Task 7 is running with a completion follower." }], stopReason: "stop" };
+	f.ctx.sessionManager.getBranch().push({ type: "message", id: "waiting-turn", message: assistant });
+	await f.tools.get("ReportGoalEvent").execute("waiting", { kind: "waiting", summary: "Task 7 is running with a completion follower." }, undefined, undefined, f.ctx);
+	f.hooks.get("agent_end")({ messages: [assistant] }, f.ctx);
+	const afterWaiting = f.channel.publish.mock.calls.length;
+	f.shutdown();
+	expect(f.channel.publish).toHaveBeenCalledTimes(afterWaiting + 1);
+	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", kind: "unclassified", text: expect.stringContaining("shutting down") }), { audience: "capable" });
 });
 
 it("ordinary project peer explicitly attaches as worker, never gaining approval authority", async () => {

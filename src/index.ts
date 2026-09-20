@@ -533,7 +533,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 		if (ctx.isIdle()) remindReports(ctx);
 	}
-	const reportStop = (text: string, kind: GoalEventKind, automatic = false) => {
+	const reportStop = (text: string, kind: GoalEventKind, automatic = false, suppressRoutineTurnEnd = false) => {
 		if (!state.child || !state.parent || !state.plan || !liveContext) return;
 		const branch = liveContext.sessionManager.getBranch();
 		const runId = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1)?.id
@@ -543,6 +543,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (automatic && kind === "unclassified") {
 			const ended = records<WorkerStop>(liveContext, STOP).filter(inRun).at(-1);
 			if (ended) return ended;
+			const explicit = records<WorkerStop>(liveContext, WORKER_EVENT).filter(inRun).at(-1);
+			if (suppressRoutineTurnEnd && explicit && ["running", "waiting", "no_change", "decision"].includes(explicit.kind ?? "")) return explicit;
 		}
 		const type = automatic || POTENTIAL_STOP_EVENTS.has(kind) ? STOP : WORKER_EVENT;
 		const entryId = `${runId}:${digest(`${state.parent.requestId}:${state.plan}:${kind}:${text}`)}`;
@@ -594,7 +596,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.on("agent_end", (event, ctx) => {
 		const last = event.messages.filter(message => message.role === "assistant").at(-1);
 		const text = last?.role === "assistant" ? last.errorMessage || last.content.filter(part => part.type === "text").map(part => part.text).join("\n") || last.stopReason : nativeMessages.noAssistant;
-		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : last?.role === "assistant" && (last.stopReason === "error" || last.errorMessage) ? "blocker" : "unclassified", true);
+		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : last?.role === "assistant" && (last.stopReason === "error" || last.errorMessage) ? "blocker" : "unclassified", true, true);
 		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
 	let proposedDraft = "";
 	let proposing = false;
