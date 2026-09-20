@@ -71,7 +71,7 @@ function compactSummary(summary: string): string {
 	if (Buffer.byteLength(summary) <= 5_500) return summary;
 	const head = Buffer.from(summary).subarray(0, 1_800).toString("utf8");
 	const tail = Buffer.from(summary).subarray(-3_500).toString("utf8");
-	return `${head}\n\n[earlier VCC lines omitted]\n\n${tail}`;
+	return `${head}\n\n[part of this single saved turn omitted; inspect the saved session for exact content]\n\n${tail}`;
 }
 
 function age(timestamp: string | undefined, now = Date.now()): string {
@@ -101,9 +101,9 @@ function outstandingCalls(rows: ReturnType<typeof messageRows>["rows"]) {
 }
 
 const CONTROL_RESULTS = new Set(["process", "subagent", "bg_wait", "schedule_task", "manage_scheduled_task"]);
-function newResultSummaries(rows: ReturnType<typeof messageRows>["rows"], since: number): string[] {
+function newResultSummaries(rows: ReturnType<typeof messageRows>["rows"], since: number, through: number): string[] {
 	const { calls } = callsAndResults(rows);
-	return rows.slice(since).flatMap(row => {
+	return rows.slice(since, through).flatMap(row => {
 		const message = row.message;
 		if (message.role !== "toolResult") return [];
 		const call = calls.get(message.toolCallId), name = call?.name ?? message.toolName;
@@ -112,7 +112,7 @@ function newResultSummaries(rows: ReturnType<typeof messageRows>["rows"], since:
 		const text = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 		const outcome = message.isError ? "failed" : "returned";
 		return [`${name} ${outcome}${text ? `: ${text.slice(0, 220)}` : ""}`];
-	}).slice(-5);
+	});
 }
 
 export function descendantProcesses(rootPid: number): WorkerProcess[] {
@@ -120,7 +120,8 @@ export function descendantProcesses(rootPid: number): WorkerProcess[] {
 	const stdout = execFileSync("ps", ["-eo", "pid=,ppid=,comm=,args="], { encoding: "utf8" });
 	const processes = stdout.trim().split("\n").flatMap(line => {
 		const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line);
-		return match && match[3] !== "ps" ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3], args: match[4] }] : [];
+		const ownSnapshot = match?.[3] === "ps" && match[4].includes("-eo pid=,ppid=,comm=,args=");
+		return match && !ownSnapshot ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3], args: match[4] }] : [];
 	});
 	const descendants: WorkerProcess[] = [];
 	const parents = new Set([rootPid]);
@@ -145,39 +146,55 @@ export function buildWorkerView(
 	const anchor = sameHistory && previous.through ? rows.findIndex(row => row.id === previous.through) : -1;
 	const since = anchor >= 0 ? anchor + 1 : 0;
 	const fresh = rows.slice(since);
-	const summary = compactSummary(cleanCompile(fresh.map(row => row.message)));
-	const results = newResultSummaries(rows, since);
-	const allSummary = cleanCompile(rows.map(row => row.message));
-	const progress = [section(allSummary, "Files And Changes"), section(allSummary, "Commits")].filter(Boolean).join("\n\n");
-	const progressKey = createHash("sha256").update(progress).digest("hex");
-	const stale = fresh.length && sameHistory && previous.progressKey === progressKey ? previous.stale + 1 : 0;
 	const pending = outstandingCalls(rows);
+	const pendingNames = pending.length ? `${pending.slice(0, 8).map(call => call.name).join(", ")}${pending.length > 8 ? ` (+${pending.length - 8} more)` : ""}` : "none";
 	const processes = runtime.processes;
-	const piChildren = processes?.filter(item => item.command === "pi") ?? [];
+	const piChildren = processes?.filter(item => item.command === "pi" || /(?:^|\/)(?:pi|pi-coding-agent)(?:[\s/]|$)/.test(item.args)) ?? [];
 	const lastTimestamp = rows.at(-1)?.timestamp;
-	const status = runtime.connected === false ? "disconnected" : runtime.status || (runtime.connected ? "connected" : "saved history only");
-	const model = runtime.model ? `${runtime.model}${runtime.contextPct === undefined ? "" : `, ${runtime.contextPct}% context used`}` : "unknown";
-	const background = runtime.processError ? `process snapshot unavailable: ${runtime.processError}`
+	const status = runtime.connected === false ? "disconnected" : (runtime.status || (runtime.connected ? "connected" : "saved history only")).slice(0, 120);
+	const modelName = runtime.model?.slice(0, 160);
+	const model = modelName ? `${modelName}${runtime.contextPct === undefined ? "" : `, ${runtime.contextPct}% context used`}` : "unknown";
+	const background = runtime.processError ? `process snapshot unavailable: ${viewClip(runtime.processError, 300)}`
 		: processes === undefined ? "process snapshot not available"
-		: `${processes.length} child OS process${processes.length === 1 ? "" : "es"}; ${piChildren.length} child Pi process${piChildren.length === 1 ? "" : "es"}`;
-	const lines = [
-		"## Worker view",
-		`Task: ${task.replace(/\s+/g, " ").trim().slice(0, 400) || "unknown"}`,
-		`Status: ${status}; last saved activity ${age(lastTimestamp)} ago`,
-		`Model: ${model}`,
-		`Background: ${background}; unanswered tool calls: ${pending.length ? pending.map(call => call.name).join(", ") : "none"}`,
-		...(stale ? [`Progress: no new file or commit for ${stale} view${stale === 1 ? "" : "s"} with new turns`] : []),
-		"",
-		"### VCC summary of new turns",
-		summary,
-		...(results.length ? ["", "### New result summaries", ...results.map(result => `- ${result}`)] : []),
-	];
-	if (diagnostic) {
-		lines.push("", "### Diagnostics", `Saved session: ${sessionFile}`, `Through entry: ${entries.at(-1)?.id ?? "unknown"}`,
-			`Unanswered calls: ${pending.length ? pending.map(call => `${call.name} (${call.id})`).join(", ") : "none"}`,
-			`Child processes: ${processes?.length ? processes.slice(0, 8).map(item => `${item.pid} ${item.command} ${viewClip(item.args, 120)}`).join("; ") : runtime.processError || "none observed"}`,
-			"Detached queues and jobs are not inferred from the process tree; check their native owner when the saved turns name one.");
+		: `${processes.length} child OS process${processes.length === 1 ? "" : "es"}; ${piChildren.length} probable child Pi process${piChildren.length === 1 ? "" : "es"}`;
+	let consumed = fresh;
+	let text = "";
+	let progressKey = previous?.progressKey ?? createHash("sha256").update("").digest("hex");
+	let stale = 0;
+	for (;;) {
+		const through = since + consumed.length;
+		const compiled = cleanCompile(consumed.map(row => row.message));
+		const summary = compactSummary(compiled);
+		const results = newResultSummaries(rows, since, through);
+		const visibleSummary = cleanCompile(rows.slice(0, through).map(row => row.message));
+		const progress = [section(visibleSummary, "Files And Changes"), section(visibleSummary, "Commits")].filter(Boolean).join("\n\n");
+		progressKey = createHash("sha256").update(progress).digest("hex");
+		stale = consumed.length && sameHistory && previous?.progressKey === progressKey ? previous.stale + 1 : 0;
+		const remaining = fresh.length - consumed.length;
+		const lines = [
+			"## Worker view",
+			`Task: ${task.replace(/\s+/g, " ").trim().slice(0, 400) || "unknown"}`,
+			`Status: ${status}; last saved activity ${age(lastTimestamp)} ago`,
+			`Model: ${model}`,
+			`Background: ${background}; unanswered tool calls: ${pendingNames}`,
+			...(stale ? [`Progress: no new file or commit for ${stale} view${stale === 1 ? "" : "s"} with new turns`] : []),
+			"",
+			"### VCC summary of new turns",
+			summary,
+			...(results.length ? ["", "### New result summaries", ...results.map(result => `- ${result}`)] : []),
+			...(remaining ? ["", `${remaining} newer saved turn${remaining === 1 ? "" : "s"} remain; call worker_view again.`] : []),
+		];
+		if (diagnostic) {
+			lines.push("", "### Diagnostics", `Saved session: ${sessionFile}`, `Summary through entry: ${consumed.at(-1)?.id ?? previous?.through ?? "none"}`, `Latest saved entry: ${entries.at(-1)?.id ?? "unknown"}`,
+				`Unanswered calls: ${pending.length ? `${pending.slice(0, 8).map(call => `${call.name} (${call.id})`).join(", ")}${pending.length > 8 ? ` (+${pending.length - 8} more)` : ""}` : "none"}`,
+				`Child processes: ${processes?.length ? processes.slice(0, 8).map(item => `${item.pid} ${item.command} ${viewClip(item.args, 120)}`).join("; ") : runtime.processError || "none observed"}`,
+				"Detached queues and jobs are not inferred from the process tree; check their native owner when the saved turns name one.");
+		}
+		text = lines.join("\n");
+		if (consumed.length <= 1 || Buffer.byteLength(compiled) <= 5_500 && Buffer.byteLength(text) <= MAX_WORKER_VIEW_BYTES) break;
+		consumed = fresh.slice(0, Math.max(1, Math.floor(consumed.length / 2)));
 	}
-	const text = viewClip(lines.join("\n"), MAX_WORKER_VIEW_BYTES);
-	return { text, cursor: { sessionFile, boundary: current.boundary, through: rows.at(-1)?.id ?? "", turns: rows.length, progressKey, stale } };
+	text = viewClip(text, MAX_WORKER_VIEW_BYTES);
+	const through = consumed.at(-1)?.id ?? (sameHistory ? previous?.through : "") ?? "";
+	return { text, cursor: { sessionFile, boundary: current.boundary, through, turns: since + consumed.length, progressKey, stale } };
 }

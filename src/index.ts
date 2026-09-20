@@ -441,7 +441,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						const stop = branch.filter(entry => entry.type === "custom" && entry.customType === STOP).at(-1);
 						const stopped = stop?.type === "custom" ? stop.data as WorkerStop : undefined;
 						if (run && (!stopped || stopped.entryId !== run.id && !stopped.entryId.startsWith(`${run.id}:`))) { entryId = `${run.id}:${episode}`; kind = "blocker"; }
-						else if (stopped) { entryId = stopped.entryId; text = stopped.text; kind = stopped.kind ?? "unclassified"; }
+						else if (stopped) {
+							entryId = `${stopped.entryId}:${episode}`;
+							text = `Worker disconnected after its recorded ${stopped.kind ?? "unclassified"} event ${stopped.entryId}.`;
+							kind = "receipt";
+						}
 						else {
 							const assistant = branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id;
 							if (assistant) entryId = `${assistant}:${episode}`;
@@ -476,7 +480,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					const report = records<Report>(ctx, REPORT).find(report => report.id === (draft && reviewedReportId(draft)));
 					if (!draft || !report || event.fromSessionId !== report.session || data.requestId !== report.requestId || !records<State>(ctx, STATE).some(saved => saved.worker && saved.worker.parentId === data.to && saved.worker.requestId === report.requestId && saved.worker.intercomId === report.session) || data.plan !== report.plan) return;
 					try {
-						const saved = savedSession(report.sessionFile).getBranch().some(entry => entry.type === "custom" && entry.customType === REVIEW && JSON.stringify(entry.data) === JSON.stringify(draft));
+						const saved = savedSession(report.sessionFile).getBranch().some(entry => {
+							if (entry.type !== "custom" || entry.customType !== REVIEW) return false;
+							const review = entry.data as ReportReview;
+							return review.id === draft.id && reviewedReportId(review) === report.id && review.verdict === draft.verdict
+								&& review.content === draft.content && review.continuation === draft.continuation;
+						});
 						if (saved && !records<ReportReview>(ctx, REVIEW).some(review => review.id === draft.id)) pi.appendEntry(REVIEW, draft);
 					} catch { ctx.ui.notify("Worker review delivery remains unverified; inspect its saved session and retry review_subagent.", "warning"); }
 					return;
@@ -992,11 +1001,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			});
 			const content = reportReviewContent(report.id, report.sessionFile, sources, params.observation, params.unmet, params.verdict, params.continuation || "");
 			const review: ReportReview = { id: digest(content), reportId: report.id, report: report.id, verdict: params.verdict, content, continuation: params.continuation || "" };
+			const payload = { type: "review", to: report.session, sessionFile: report.sessionFile, requestId: report.requestId, plan: report.plan, review };
+			if (Buffer.byteLength(JSON.stringify(payload)) > 16000) throw new Error("Review exceeds Intercom's 16 KiB limit; shorten the quotes and retain source references.");
 			if (records<ReportReview>(ctx, REVIEW).some(saved => reviewedReportId(saved) === report.id)) return result("This worker stop already has a delivered review; a later stop is a new event.");
 			if (!selected) pi.appendEntry(REPORT, report);
 			if (!channel?.snapshot().connected || !channel.snapshot().supported || signal?.aborted) throw new Error("Review delivery unavailable; the selected stop remains pending.");
-			const payload = { type: "review", to: report.session, sessionFile: report.sessionFile, requestId: report.requestId, plan: report.plan, review };
-			if (Buffer.byteLength(JSON.stringify(payload)) > 16000) throw new Error("Review exceeds Intercom's 16 KiB limit; shorten the quotes and retain source references.");
 			if (!records<ReportReview>(ctx, REVIEW_DRAFT).some(saved => saved.id === review.id)) pi.appendEntry(REVIEW_DRAFT, review);
 			channel.publish(payload, { audience: "capable" });
 			return result("Review sent for saving in the worker conversation. Obligation remains pending until the exact saved review is verified; use /goals status to inspect delivery.");

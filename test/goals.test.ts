@@ -9,6 +9,7 @@ import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
 import { goalCheckInWake, planDrafting, reportGoalEventDescription, supervisor } from "../src/prompts.js";
+import { buildWorkerView } from "../src/worker-view.js";
 
 vi.mock("pi-subagents/project-panes", () => ({ openProjectPane: vi.fn(async () => ({ ok: true, data: { bindingPath: "/project/.pi/subagents/project-pane.json", disposition: "opened", binding: { paneId: "native-pane", projectRoot: "/project", command: "pi" } } })) }));
 
@@ -145,6 +146,23 @@ it("shows incremental VCC Markdown without raw tool results or compaction dumps"
 	expect(diagnostic).toContain("### Diagnostics");
 	expect(diagnostic).toContain("Saved session:");
 	expect(diagnostic).not.toContain("RESULT_TAIL_MUST_STAY_HIDDEN");
+});
+
+it("paginates oversized worker history without advancing past omitted turns", () => {
+	const timestamp = new Date().toISOString();
+	const entries = Array.from({ length: 48 }, (_, index) => ({
+		type: "message" as const, id: `large-${index}`, parentId: index ? `large-${index - 1}` : null, timestamp,
+		message: { role: "assistant" as const, content: [{ type: "text" as const, text: `TURN_${index} ${String(index).repeat(900)}` }], stopReason: "stop" as const, timestamp: Date.now() },
+	}));
+	const runtime = { connected: true, processes: [{ pid: 7, ppid: 1, command: "node", args: "node /opt/pi-coding-agent/dist/cli.js" }] };
+	let view = buildWorkerView(entries as any, "/tmp/worker.jsonl", "large history", runtime);
+	expect(view.text).toContain("newer saved turns remain");
+	expect(view.text).toContain("1 probable child Pi process");
+	expect(view.cursor.through).not.toBe("large-47");
+	const first = view.cursor.through;
+	for (let page = 0; page < 64 && view.cursor.through !== "large-47"; page++) view = buildWorkerView(entries as any, "/tmp/worker.jsonl", "large history", runtime, view.cursor);
+	expect(view.cursor.through).toBe("large-47");
+	expect(view.cursor.through).not.toBe(first);
 });
 
 it.each([
@@ -1240,6 +1258,43 @@ it("records separate disconnect episodes when saved worker history is unavailabl
 	f.event({ type: "session_left", sessionId: "worker-id" });
 	const disconnects = f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-worker-event" && entry.data.id.includes("disconnect-"));
 	expect(disconnects.map((entry: any) => entry.data.id)).toEqual(["worker-id:disconnect-1", "worker-id:disconnect-2"]);
+});
+
+it("records a passive disconnect receipt after an already-visible stop", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	const sessionFile = join(f.ctx.cwd, "worker.jsonl");
+	const timestamp = new Date().toISOString();
+	writeFileSync(sessionFile, [
+		{ type: "session", version: 3, id: "worker-id", timestamp, cwd: f.ctx.cwd },
+		{ type: "custom", id: "saved-stop", parentId: null, timestamp, customType: "pi-goals-worker-stop", data: { type: "stopped", entryId: "run:completion", to: "parent-intercom", requestId: "placeholder", plan: f.path, text: "Finished output", kind: "completion" } },
+	].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+	await f.launch({ id: "worker-id", sessionFile });
+	const worker = f.entries.at(-1).data.worker;
+	const saved = SessionManager.open(sessionFile);
+	const stop = saved.getBranch().find((entry: any) => entry.customType === "pi-goals-worker-stop") as any;
+	stop.data.requestId = worker.requestId;
+	stop.data.to = worker.parentId;
+	writeFileSync(sessionFile, [saved.getHeader(), stop].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+	const before = f.messages.length;
+	f.event({ type: "session_left", sessionId: "worker-id" });
+	const receipt = f.ctx.sessionManager.getBranch().find((entry: any) => entry.customType === "pi-goals-worker-event" && entry.data.id.includes("run:completion:disconnect-1"));
+	expect(receipt?.data).toMatchObject({ kind: "receipt", text: expect.stringContaining("disconnected after its recorded completion event") });
+	expect(f.messages).toHaveLength(before + 1);
+	expect(f.messages.at(-1)?.options).toEqual({ deliverAs: "nextTurn" });
+});
+
+it("rejects an oversized review before selecting formal review", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	await f.launch({ id: "worker-id", sessionFile: join(f.ctx.cwd, "worker.jsonl") });
+	const worker = f.entries.at(-1).data.worker;
+	const eventId = "worker-id:completion-oversized";
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "completion-oversized", kind: "completion", text: "Potential completion" } });
+	const quote = "q".repeat(17_000); writeFileSync(join(f.ctx.cwd, "proof.txt"), quote);
+	await expect(f.tools.get("review_subagent").execute("review", {
+		eventId, goal: { path: f.path, quote: "goal: first output" }, evidence: [{ path: "proof.txt", quote, observation: "Read exact proof" }],
+		observation: "Inspected proof", unmet: "none", verdict: "accepted", continuation: "",
+	}, undefined, undefined, f.ctx)).rejects.toThrow("16 KiB");
+	expect(f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-report")).toHaveLength(0);
 });
 
 it("supersedes an inherited worker binding when the supervisor opens a replacement", async () => {

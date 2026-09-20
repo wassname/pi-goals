@@ -341,9 +341,11 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const delivered = upkeepNudges.filter(nudge => notes.some(entry => entry.content.includes(nudge)));
 		expect(delivered.length).toBeGreaterThan(1);
 		for (const nudge of delivered) expect(JSON.stringify(requests.parent)).toContain(nudge);
-		await command(worker, "/fixture-reload"); // real shutdown/start after a formal event stays quiet
+		await command(worker, "/fixture-reload"); // reload records liveness without waking or reopening formal review
 		expect(requests.worker).toHaveLength(workerCount);
-		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(reviewedStatusCount);
+		const postReloadEvents = records(parentState.sessionFile, "pi-goals-worker-event");
+		expect(postReloadEvents).toHaveLength(reviewedStatusCount + 1);
+		expect(postReloadEvents.at(-1)).toMatchObject({ kind: "receipt", text: expect.stringContaining("disconnected after its recorded") });
 		expect(records(workerFile, "pi-goals-report-review")).toEqual(savedReviews);
 		const abortAt = worker.messages.length, abortParentAt = parent.messages.length;
 		let releaseAbort!: () => void; const abortedRequest = new Promise<void>(done => { releaseAbort = done; });
