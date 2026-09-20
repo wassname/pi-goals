@@ -18,6 +18,10 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	expect(transform(content, { messageType: "user" })).toBe("");
 	expect(transform(content, { messageType: "assistant" })).toBe(content);
 	expect(transform("[pi-goals]\nA human quotation", { messageType: "user" })).toBe("[pi-goals]\nA human quotation");
+	const rolePrompt = "[pi-goals]\nFor this plan, continue as the supervisor.";
+	display.compact(rolePrompt);
+	expect(pi.appendEntry).toHaveBeenLastCalledWith("pi-goals-compact-prompt", { content: rolePrompt });
+	expect(transform(rolePrompt, { messageType: "user" })).toBe("[pi-goals] Goal instructions");
 	display.prompt(content);
 	expect(pi.sendMessage).toHaveBeenCalledExactlyOnceWith({ customType: "pi-goals-prompt", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 	const prompt = { role: "custom", customType: "pi-goals-prompt", content, display: true };
@@ -35,24 +39,27 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	const expanded = render(entry, { expanded: true }, theme);
 	expect(expanded.render(80)).toEqual(new Markdown(content, 0, 0, getMarkdownTheme()).render(80));
 
-	const review = "[pi-goals]\n## Worker revision reviews\n\n- revision run-1: output ready (reportId worker:run-1)";
+	const review = "[pi-goals]\n## Selected worker-stop reviews\n\n- event run-1: output ready (eventId worker:run-1)";
 	display.mirror(review);
 	const reviewCollapsed = render({ type: "custom", customType: "pi-goals-notice", data: { content: review } }, { expanded: false }, theme);
-	expect(reviewCollapsed.render(80).join("\n")).toContain("Worker revisions · review requested");
+	expect(reviewCollapsed.render(80).join("\n")).toContain("Selected worker-stop reviews");
 
 	const status = "[pi-goals: worker status]\n## Worker status: waiting\n\nPueue 1552 is running.";
 	display.mirror(status);
 	const statusCollapsed = render({ type: "custom", customType: "pi-goals-notice", data: { content: status } }, { expanded: false }, theme);
 	expect(statusCollapsed.render(80).join("\n")).toContain("Worker status");
 
-	const deliveredReview = "## Worker review: changes_requested\n\nCorrect output.txt.";
+	const deliveredReview = "## Worker stop review: changes_requested\n\nCorrect output.txt.";
 	display.hide(deliveredReview);
 	expect(transform(deliveredReview, { messageType: "user" })).toBe("");
 	display.restore({ sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext, ["pi-goals-report-review"]);
 	expect(transform(content, { messageType: "user" })).toBe(content);
+	expect(transform(rolePrompt, { messageType: "user" })).toBe(rolePrompt);
 	const reviewEntry = { type: "custom", customType: "pi-goals-report-review", data: { content: deliveredReview } };
-	display.restore({ sessionManager: { getBranch: () => [entry, reviewEntry] } } as unknown as ExtensionContext, ["pi-goals-report-review"]);
+	const compactEntry = { type: "custom", customType: "pi-goals-compact-prompt", data: { content: rolePrompt } };
+	display.restore({ sessionManager: { getBranch: () => [entry, reviewEntry, compactEntry] } } as unknown as ExtensionContext, ["pi-goals-report-review"]);
 	expect(transform(content, { messageType: "user" })).toBe("");
 	expect(transform(deliveredReview, { messageType: "user" })).toBe("");
+	expect(transform(rolePrompt, { messageType: "user" })).toBe("[pi-goals] Goal instructions");
 	expect(entry.data.content).toBe(content);
 });

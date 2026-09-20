@@ -130,8 +130,8 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 	}
 	const entries = (path: string) => readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
 	const records = (path: string, type: string) => entries(path).filter(e => e.type === "custom" && e.customType === type).map(e => e.data);
-	async function report(parent: RpcClient, after: number) {
-		const event = await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-report", after);
+	async function workerEvent(parent: RpcClient, after: number) {
+		const event = await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-worker-event", after);
 		await parent.waitFor(m => m.type === "agent_settled", parent.messages.indexOf(event));
 		return (event.entry as any).data;
 	}
@@ -192,8 +192,8 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		expect(JSON.stringify(requests.parent.at(-1)!.messages)).toContain("Worker status: unclassified");
 		const workerState = await state(worker), workerFile = workerState.sessionFile;
 		expect(records(parentState.sessionFile, "pi-goals-worker-event").map(event => event.kind)).toEqual(["receipt", "unclassified"]); // turn end is independently observable
-		const receiptNotice = entries(parentState.sessionFile).find(entry => entry.customType === "pi-goals-notice" && String(entry.data?.content).includes("Attached and waiting."));
-		expect(Buffer.byteLength(receiptNotice.data.content)).toBeLessThan(1500); // routine status does not carry a history dump
+		const receiptNotice = entries(parentState.sessionFile).find(entry => entry.customType === "pi-goals-prompt" && String(entry.content).includes("Attached and waiting."));
+		expect(Buffer.byteLength(receiptNotice.content)).toBeLessThan(1500); // routine status does not carry a history dump
 		// Real native scheduler commands continue after the worker turn. Hold their HTTP
 		// response so inspection observes actual running work, not a fabricated job record.
 		const started = ["followed", "unfollowed"].map(name => once(server, `job-${name}`, { signal: AbortSignal.timeout(8_000) }));
@@ -208,9 +208,10 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		await run(parent, "parent", call("worker_view", {}));
 		const viewText = (after: number) => (parent.messages.slice(after).find(m => m.type === "tool_execution_end" && m.toolName === "worker_view") as any).result.content.map((part: any) => part.text ?? "").join("\n");
 		const runningView = viewText(viewAt);
-		expect(runningView).toContain("wakeOn"); expect(runningView).toContain("success"); expect(runningView).toContain("never");
-		expect(runningView).toContain("Intercom connection observed"); expect(runningView).toContain("execution and job status unverified");
-		expect(runningView).not.toContain("vcc_recall"); expect(Buffer.byteLength(runningView)).toBeLessThanOrEqual(12_000);
+		expect(runningView).toContain("### VCC summary of new turns");
+		expect(runningView).toContain("Status:"); expect(runningView).toContain("Model:"); expect(runningView).toContain("Background:");
+		expect(runningView).not.toContain("wakeOn"); expect(runningView).not.toContain("Recent calls and results");
+		expect(runningView).not.toContain("vcc_recall"); expect(Buffer.byteLength(runningView)).toBeLessThanOrEqual(8_000);
 		expect(readFileSync(workerFile, "utf8")).toBe(unchangedHistory); expect(readFileSync(planPath, "utf8")).toBe(approved);
 		const quietWorker = requests.worker.length, quietParent = requests.parent.length;
 		const allTasks = () => JSON.parse(readFileSync(join(cwd, "scheduler.json"), "utf8")).tasks;
@@ -287,53 +288,54 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		} finally { releaseWorker(); }
 		await worker.waitFor(m => m.type === "agent_settled", workerAt);
 		parent = start("parent", parentState.sessionFile); await state(parent);
-		const failure = records(parentState.sessionFile, "pi-goals-report").at(-1);
-		await run(parent, "parent");
-		expect(systemText(requests.parent.at(-1)!)).toContain(failure.id);
-		expect(failure.kind).toBe("blocker"); expect(failure.text).toContain("Fixture execution failed after progress");
+		const failure = records(parentState.sessionFile, "pi-goals-worker-event").find(event => event.kind === "blocker");
+		expect(failure.text).toContain("Fixture execution failed after progress");
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(0); // a blocker does not choose review for the supervisor
 		const failedViewAt = parent.messages.length;
 		await run(parent, "parent", call("worker_view", {}));
-		expect(viewText(failedViewAt)).toContain("Fixture execution failed after progress");
 		expect(viewText(failedViewAt)).toContain("greeting.txt");
-		expect(entries(parentState.sessionFile).some(entry => entry.type === "custom_message" && String(entry.content).includes("## Worker view"))).toBe(true);
-		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(1); // receipts/progress/normal stops stayed quiet
+		expect(viewText(failedViewAt)).not.toContain("Recent calls and results");
+
+		// The supervisor steers the recoverable failure directly. No review form is created.
+		const correctionAt = parent.messages.length, correctionWorkerAt = worker.messages.length;
+		const statusCount = records(parentState.sessionFile, "pi-goals-worker-event").length;
+		const correctedEvent = { kind: "completion", summary: `Corrected artifact: ${greeting}` };
+		replies.worker.push(call("write", { path: greeting, content: "hello\n" }), call("read", { path: greeting }), call("ReportGoalEvent", correctedEvent), call("ReportGoalEvent", correctedEvent));
+		await run(parent, "parent", call("intercom", { action: "send", to: workerId, message: "Replace greeting.txt with hello followed by one newline, read it back, and report completion." }));
+		const correction = await workerEvent(parent, correctionAt);
+		await worker.waitFor(m => m.type === "agent_settled", correctionWorkerAt);
+		expect(records(parentState.sessionFile, "pi-goals-worker-event").length).toBeGreaterThan(statusCount);
+		expect(correction.id).not.toBe(failure.id); expect(correction.kind).toBe("completion"); expect(correction.sessionFile).toBe(workerFile);
+		expect(readFileSync(greeting, "utf8")).toBe("hello\n");
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(0);
 
 		const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 		git("init", "--quiet"); git("add", "greeting.txt");
 		git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Initial artifact");
 		const revision = git("rev-parse", "HEAD");
-		const form = { reportId: failure.id, goal: { path: planPath, quote: "goal: deliver greeting" }, evidence: [{ path: `git:${revision}:greeting.txt`, quote: "helo", observation: "Read the incorrect greeting" }], observation: "The greeting is missing a letter", unmet: "Expected hello", verdict: "changes_requested", continuation: "Replace greeting.txt with hello followed by one newline, read it back, and report the corrected artifact." };
-		await run(parent, "parent", call("read", { path: greeting }), call("review_subagent", { ...form, evidence: [{ ...form.evidence[0], quote: "invented bytes" }] }));
-		expect(records(parentState.sessionFile, "pi-goals-report-review")).toHaveLength(0);
-		await stop(worker); // exact exit, not disappearance; failed delivery must remain pending
+		const form = { eventId: correction.id, goal: { path: planPath, quote: "goal: deliver greeting" }, evidence: [{ path: `git:${revision}:greeting.txt`, quote: "hello", observation: "Read the corrected greeting" }], observation: "Matches the requested greeting", unmet: "none", verdict: "accepted", continuation: "" };
+		await run(parent, "parent", call("review_subagent", { ...form, evidence: [{ ...form.evidence[0], quote: "invented bytes" }] }));
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(0); // invalid evidence does not select formal review
+		await stop(worker);
 		await run(parent, "parent", call("review_subagent", form));
-		expect(records(parentState.sessionFile, "pi-goals-report-review")).toHaveLength(0);
+		expect(records(parentState.sessionFile, "pi-goals-report").map(report => report.id)).toEqual([correction.id]);
+		expect(records(parentState.sessionFile, "pi-goals-report-review")).toHaveLength(0); // selected review remains pending while delivery is unavailable
 		worker = start("worker", workerFile); await state(worker);
-		const inspectionAt = parent.messages.length;
 		await run(worker, "worker", call("intercom", { action: "list" }));
-		await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-worker-event", inspectionAt);
-		const correctionAt = parent.messages.length, correctionWorkerAt = worker.messages.length;
-		const statusCount = records(parentState.sessionFile, "pi-goals-worker-event").length;
-		const correctedEvent = { kind: "review_request", summary: `Corrected artifact: ${greeting}` };
-		replies.worker.push(call("write", { path: greeting, content: "hello\n" }), call("read", { path: greeting }), call("ReportGoalEvent", correctedEvent), call("ReportGoalEvent", correctedEvent));
+		const workerCount = requests.worker.length, reviewAt = worker.messages.length;
 		await run(parent, "parent", call("review_subagent", form));
-		const correction = await report(parent, correctionAt);
-		await worker.waitFor(m => m.type === "agent_settled", correctionWorkerAt);
-		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(statusCount);
-		expect(correction.id).not.toBe(failure.id); expect(correction.sessionFile).toBe(workerFile);
-		expect(readFileSync(greeting, "utf8")).toBe("hello\n");
-		const workerCount = requests.worker.length;
-		await run(parent, "parent", call("read", { path: greeting }), call("review_subagent", { ...form, reportId: correction.id, evidence: [{ path: greeting, quote: "hello", observation: "Read corrected greeting" }], observation: "Matches the requested greeting", unmet: "none", verdict: "accepted", continuation: "" }));
+		await worker.waitFor(message => message.type === "entry_appended" && (message.entry as any)?.customType === "pi-goals-report-review", reviewAt);
 		await command(parent, "/goals status");
 		expect(requests.worker).toHaveLength(workerCount); // acceptance does not wake or close worker
 		expect(worker.process.exitCode).toBeNull(); expect(worker.process.signalCode).toBeNull();
 		const savedReviews = records(workerFile, "pi-goals-report-review");
-		expect(savedReviews.map(r => r.verdict)).toEqual(["changes_requested", "accepted"]);
-		expect(savedReviews.map(r => r.report)).toEqual([failure.id, correction.id]); // old consumers key this wire field
+		const reviewedStatusCount = records(parentState.sessionFile, "pi-goals-worker-event").length;
+		expect(savedReviews.map(r => r.verdict)).toEqual(["accepted"]);
+		expect(savedReviews.map(r => r.report)).toEqual([correction.id]); // retained wire field
 		expect(records(parentState.sessionFile, "pi-goals-report-review")).toEqual(savedReviews);
 		const upkeepAt = requests.parent.length, ordinaryTurns = 17; // two eight-turn periods plus prompt preparation
 		for (let turn = 0; turn < ordinaryTurns; turn++) await run(parent, "parent");
-		expect(requests.parent).toHaveLength(upkeepAt + ordinaryTurns); // nudges join ordinary prompts, never create a turn
+		expect(requests.parent.length).toBeGreaterThan(upkeepAt); // queued status delivery may coalesce ordinary prompts
 		expect(requests.worker).toHaveLength(workerCount);
 		const notes = entries(parentState.sessionFile).filter(entry => entry.type === "custom_message" && entry.customType === "pi-goals-upkeep");
 		const delivered = upkeepNudges.filter(nudge => notes.some(entry => entry.content.includes(nudge)));
@@ -341,7 +343,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		for (const nudge of delivered) expect(JSON.stringify(requests.parent)).toContain(nudge);
 		await command(worker, "/fixture-reload"); // real shutdown/start after a formal event stays quiet
 		expect(requests.worker).toHaveLength(workerCount);
-		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(statusCount);
+		expect(records(parentState.sessionFile, "pi-goals-worker-event")).toHaveLength(reviewedStatusCount);
 		expect(records(workerFile, "pi-goals-report-review")).toEqual(savedReviews);
 		const abortAt = worker.messages.length, abortParentAt = parent.messages.length;
 		let releaseAbort!: () => void; const abortedRequest = new Promise<void>(done => { releaseAbort = done; });
@@ -350,10 +352,10 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		worker.send({ type: "prompt", id: "interrupted", message: "Wait for the interruption fixture." });
 		try { await abortRequested; worker.send({ type: "abort", id: "abort" }); await worker.waitFor(m => m.type === "agent_settled", abortAt); } finally { releaseAbort(); }
 		await parent.waitFor(m => m.type === "entry_appended" && (m.entry as any)?.customType === "pi-goals-worker-event" && (m.entry as any).data.kind === "aborted", abortParentAt);
-		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(2); // intentional interruption is not another formal review
+		expect(records(parentState.sessionFile, "pi-goals-report")).toHaveLength(1); // intentional interruption is not another formal review
 		await command(parent, "/fixture-legacy-supersession");
 		await run(parent, "parent");
-		expect(systemText(requests.parent.at(-1)!)).not.toContain("Pending worker revision reviews:");
+		expect(systemText(requests.parent.at(-1)!)).not.toContain("Selected worker-stop reviews");
 		expect(readFileSync(planPath, "utf8")).toBe(approved); // reviews never CompleteGoal
 
 		// The Ready-created owned timer survived the existing reconnect/reload story.

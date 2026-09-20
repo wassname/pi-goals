@@ -52,22 +52,21 @@ import {
 	upkeep,
 	workerAssignment,
 	workerAttachment,
-	workerReview,
 	workerStatus,
 	workerViewDescription,
-	workerViewPresence,
 	workerViewText,
 	workerViewUnavailable,
 } from "./prompts.js";
-import { buildWorkerView, viewClip } from "./worker-view.js";
+import { buildWorkerView, descendantProcesses, viewClip } from "./worker-view.js";
 
 const STATE = "pi-goals-main-supervisor-v1";
 const WORKER = "goals-worker";
 const REPORT = "pi-goals-report", REVIEW = "pi-goals-report-review", REVIEW_DRAFT = "pi-goals-review-draft", REVIEW_REMINDER = "pi-goals-review-reminder";
 const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop", WORKER_EVENT = "pi-goals-worker-event", WORKER_RELEASE = "pi-goals-worker-release";
 type GoalEventKind = "review_request" | "decision" | "blocker" | "completion" | "progress" | "running" | "waiting" | "receipt" | "no_change" | "aborted" | "unclassified";
-const REVIEWABLE_EVENTS = new Set<GoalEventKind>(["review_request", "blocker", "completion"]);
-const ATTENTION_EVENTS = new Set<GoalEventKind>(["decision", "aborted", "unclassified"]);
+// Formal review is the supervisor's choice only for a potential stop; steering and in-flight plan edits need no form. — wassname
+const POTENTIAL_STOP_EVENTS = new Set<GoalEventKind>(["review_request", "blocker", "completion", "aborted", "unclassified"]);
+const ATTENTION_EVENTS = new Set<GoalEventKind>([...POTENTIAL_STOP_EVENTS, "decision"]);
 interface WorkerStop { type: "stopped"; entryId: string; to: string; requestId: string; plan: string; text: string; identity: Peer; kind?: GoalEventKind; }
 interface Report { id: string; plan: string; session: string; sessionFile: string; requestId: string; task?: string; text: string; kind: GoalEventKind; supersedes?: string; }
 type WorkerEvent = Report;
@@ -82,13 +81,14 @@ interface Peer {
 interface State {
 	mode: Mode;
 	plan?: string;
-	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; requestId?: string; parentId?: string; task?: string; identity?: Peer };
+	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; requestId?: string; parentId?: string; task?: string; identity?: Peer; disconnectRevision?: number };
 	parent?: { intercomId: string; requestId: string };
 	workerStopped?: boolean;
 	pausedFrom?: "solo" | "supervising";
 	finalReview?: { planDigest: string };
 	child?: boolean;
 	pausedCheckIns?: Record<string, string>;
+	workerView?: { sessionFile: string; boundary: string; through: string; turns: number; progressKey: string; stale: number };
 }
 interface CheckInTask { id: string; name?: string; action?: string; type?: string; scope?: string; sessionFile?: string; prompt?: string; disabledAt?: string; }
 const SCHEDULER_SOURCE = fileURLToPath(import.meta.resolve("@jl1990/pi-scheduler/extensions/scheduler/index.ts"));
@@ -327,13 +327,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (triggerTurn) {
 			const prompt = `[pi-goals]\n${content}`;
 			if (prepareRole || preparedRole !== roleKey()) {
-				notices.mirror(prompt);
+				notices.compact(prompt);
 				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 			} else notices.prompt(prompt);
-		} else {
-			if (collapse) notices.mirror(content);
-			pi.sendMessage({ customType: "pi-goals-supervision", content, display: !collapse }, { deliverAs: "nextTurn" });
-		}
+		} else if (collapse) notices.passive(content);
+		else pi.sendMessage({ customType: "pi-goals-supervision", content, display: true }, { deliverAs: "nextTurn" });
 	}
 	async function confirmOwnership(ctx: ExtensionContext, target: string, text: string): Promise<boolean> {
 		if (target !== state.plan || state.mode === "chat") { ctx.ui.notify(nativeMessages.externalOwnershipUnknown(target, state.worker), "warning"); return false; }
@@ -389,29 +387,23 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	const reportLabel = (report: Report) => {
 		const revision = report.id.split(":").at(-1)!.slice(0, 8);
 		const plainTask = report.task?.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`~<>]/g, "").trim().replace(/\s+/g, " ").slice(0, 100);
-		return `revision ${revision}${plainTask ? ` — ${plainTask}` : ""} (reportId ${report.id})`;
+		return `event ${revision}${plainTask ? ` — ${plainTask}` : ""} (eventId ${report.id})`;
 	};
-	function savedWorkerView(ctx: ExtensionContext, source: { runtimeId?: string; sessionFile?: string; task?: string }, presence?: string) {
+	function savedWorkerView(ctx: ExtensionContext, source: { runtimeId?: string; sessionFile?: string; task?: string }, runtime: Parameters<typeof buildWorkerView>[3] = {}, diagnostic = false) {
 		if (!source.sessionFile) return workerViewUnavailable(workerViewText.noHistory);
 		try {
 			const history = source.runtimeId === ctx.sessionManager.getSessionId() ? ctx.sessionManager : savedSession(source.sessionFile);
 			if (source.runtimeId && history.getSessionId() !== source.runtimeId) return workerViewUnavailable(workerViewText.identityMismatch);
-			return buildWorkerView(history.getBranch(), source.sessionFile, source.task ?? "", presence);
+			const view = buildWorkerView(history.getBranch(), source.sessionFile, source.task ?? "", runtime, state.workerView, diagnostic);
+			state.workerView = view.cursor; save();
+			return view.text;
 		} catch (error) { return workerViewUnavailable(viewClip(String(error), 300)); }
 	}
-	function recordReport(ctx: ExtensionContext, report: Report, wake = true) {
-		if (records<Report>(ctx, REPORT).some(saved => saved.id === report.id)) return;
-		pi.appendEntry(REPORT, report);
-		send(workerReview(report.plan, report.session, `${report.id}\n${report.text}\n\n${savedWorkerView(ctx, { ...report, runtimeId: state.worker?.identity?.sessionId })}`), false, true);
-		if (wake) remindReports(ctx);
-	}
 	function recordWorkerEvent(ctx: ExtensionContext, event: WorkerEvent, wake = true) {
-		if (REVIEWABLE_EVENTS.has(event.kind)) { recordReport(ctx, event, wake); return; }
 		if (records<Report>(ctx, REPORT).some(saved => saved.id === event.id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === event.id)) return;
 		pi.appendEntry(WORKER_EVENT, event);
-		const context = ["waiting", "aborted", "unclassified"].includes(event.kind) ? `${event.text}\n\n${savedWorkerView(ctx, { ...event, runtimeId: state.worker?.identity?.sessionId })}` : event.text;
 		const needsDirectAttention = ATTENTION_EVENTS.has(event.kind) && wake;
-		send(workerStatus(event.plan, event.session, event.id, event.kind, context), needsDirectAttention, true);
+		send(workerStatus(event.plan, event.session, event.id, event.kind, event.text), needsDirectAttention, true);
 	}
 	function remindReports(ctx: ExtensionContext) {
 		if (state.child || state.mode !== "supervising") return;
@@ -428,7 +420,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (expanded) return new Markdown(review.content, 0, 0, getMarkdownTheme());
 		const revision = reviewedReportId(review)?.split(":").at(-1)?.slice(0, 8) ?? "unknown";
 		return {
-			render: (width) => [truncateToWidth(theme.fg("muted", `[pi-goals] Worker review: ${review.verdict} · revision ${revision} · ${keyHint("app.tools.expand", "expand")}`), width)],
+			render: (width) => [truncateToWidth(theme.fg("muted", `[pi-goals] Worker stop review: ${review.verdict} · event ${revision} · ${keyHint("app.tools.expand", "expand")}`), width)],
 			invalidate() {},
 		};
 	});
@@ -439,17 +431,23 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			onReady: value => { channel = value; },
 			onEvent: event => {
 				if (event.type === "session_left" && event.sessionId === state.worker?.intercomId && state.plan) {
-					let entryId = "disconnected", text = nativeMessages.disconnected, kind: GoalEventKind = "unclassified";
+					const worker = state.worker;
+					worker.disconnectRevision = (worker.disconnectRevision ?? 0) + 1; save();
+					const episode = `disconnect-${worker.disconnectRevision}`;
+					let entryId = episode, text = nativeMessages.disconnected, kind: GoalEventKind = "unclassified";
 					try {
-						const branch = savedSession(state.worker.sessionFile!).getBranch();
+						const branch = savedSession(worker.sessionFile!).getBranch();
 						const run = branch.filter(entry => entry.type === "custom" && entry.customType === RUN).at(-1);
 						const stop = branch.filter(entry => entry.type === "custom" && entry.customType === STOP).at(-1);
 						const stopped = stop?.type === "custom" ? stop.data as WorkerStop : undefined;
-						if (run && (!stopped || stopped.entryId !== run.id && !stopped.entryId.startsWith(`${run.id}:`))) { entryId = `${run.id}:disconnected`; kind = "blocker"; }
+						if (run && (!stopped || stopped.entryId !== run.id && !stopped.entryId.startsWith(`${run.id}:`))) { entryId = `${run.id}:${episode}`; kind = "blocker"; }
 						else if (stopped) { entryId = stopped.entryId; text = stopped.text; kind = stopped.kind ?? "unclassified"; }
-						else entryId = branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id || entryId;
+						else {
+							const assistant = branch.filter(entry => entry.type === "message" && entry.message.role === "assistant").at(-1)?.id;
+							if (assistant) entryId = `${assistant}:${episode}`;
+						}
 					} catch { /* Unknown history remains visible without inventing completion or review debt. */ }
-					recordWorkerEvent(ctx, { id: `${event.sessionId}:${entryId}`, plan: state.plan, session: event.sessionId, sessionFile: state.worker.sessionFile || "", requestId: state.worker.requestId!, task: state.worker.task, text, kind });
+					recordWorkerEvent(ctx, { id: `${event.sessionId}:${entryId}`, plan: state.plan, session: event.sessionId, sessionFile: worker.sessionFile || "", requestId: worker.requestId!, task: worker.task, text, kind });
 				}
 				if (event.type !== "message" || !event.payload || typeof event.payload !== "object") return;
 				const data = event.payload as { type?: string; to?: string; requestId?: string; plan?: string; sessionFile?: string; text?: string; identity?: Peer; entryId?: string; kind?: GoalEventKind; review?: ReportReview };
@@ -466,7 +464,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (!prior) {
 						pi.appendEntry(REVIEW, review);
 						if (review.verdict === "changes_requested") {
-							notices.hide(review.content);
+							notices.compact(review.content);
 							pi.sendUserMessage(review.content, { deliverAs: "followUp" });
 						}
 					}
@@ -501,7 +499,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				}
 				if (data.type === "stopped" && event.fromSessionId === worker.intercomId && typeof data.entryId === "string" && data.entryId && typeof data.text === "string") {
 					const id = `${event.fromSessionId}:${data.entryId}`;
-					if (records<Report>(ctx, REPORT).some(report => report.id === id) || !REVIEWABLE_EVENTS.has(data.kind ?? "unclassified") && records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === id)) return;
+					if (records<Report>(ctx, REPORT).some(report => report.id === id) || records<WorkerEvent>(ctx, WORKER_EVENT).some(saved => saved.id === id)) return;
 					if (data.identity) { worker.identity = data.identity; worker.sessionFile = data.identity.sessionFile; save(); }
 					const report: Report = { id, plan: state.plan, session: event.fromSessionId, sessionFile: worker.sessionFile!, requestId: data.requestId, task: worker.task, text: data.text, kind: data.kind ?? "unclassified" };
 					recordWorkerEvent(ctx, report);
@@ -537,7 +535,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			const ended = records<WorkerStop>(liveContext, STOP).filter(inRun).at(-1);
 			if (ended) return ended;
 		}
-		const type = automatic || REVIEWABLE_EVENTS.has(kind) ? STOP : WORKER_EVENT;
+		const type = automatic || POTENTIAL_STOP_EVENTS.has(kind) ? STOP : WORKER_EVENT;
 		const entryId = `${runId}:${digest(`${state.parent.requestId}:${state.plan}:${kind}:${text}`)}`;
 		let stopped = records<WorkerStop>(liveContext, type).find(saved => saved.entryId === entryId);
 		if (!stopped) {
@@ -730,7 +728,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						`Plan: ${state.plan ?? "none"}`,
 						`Preferred worker model (plan, not configuration): ${notedPlanValue("preferred worker model") ?? "inherit"}`,
 						`Last observed worker model: ${state.worker?.identity?.model ?? "unconfirmed"}; verify current choice before claiming configuration.`,
-						`Pending worker revision reviews: ${pendingReports(ctx).map(reportLabel).join("; ") || "none"}`,
+						`Selected worker-stop reviews pending delivery: ${pendingReports(ctx).map(reportLabel).join("; ") || "none"}`,
 						`Latest worker status event: ${records<WorkerEvent>(ctx, WORKER_EVENT).at(-1)?.kind ?? "none"}`,
 						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
 						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.identity?.paneId || state.worker?.paneId || "unconfirmed"}`,
@@ -839,22 +837,30 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.registerTool({
 		name: "worker_view", label: "Worker view", description: workerViewDescription,
-		parameters: Type.Object({}),
+		parameters: Type.Object({ detail: Type.Optional(Type.String({ enum: ["summary", "diagnostic"] })) }),
 		renderResult(output, { expanded }) {
 			const body = output.content.filter(part => part.type === "text").map(part => part.text).join("\n");
 			return new Markdown(expanded ? body : `${body.split("\n").slice(0, 5).join("\n")}\n${keyHint("app.tools.expand", workerViewText.expand)}`, 0, 0, getMarkdownTheme());
 		},
-		async execute(_id, _params, _signal, _update, ctx) {
+		async execute(_id, params, _signal, _update, ctx) {
 			const worker = state.worker, intercomId = worker?.intercomId, stamp = generation;
 			const source = state.child ? { runtimeId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile() }
 				: { runtimeId: worker?.identity?.sessionId, sessionFile: worker?.sessionFile, task: worker?.task };
-			let presence: string | undefined;
-			if (!state.child && worker?.intercomId && channel?.snapshot().connected && channel.snapshot().supported) {
-				const peers = await channel.listSessions().catch(() => undefined);
-				if (peers?.some(peer => peer.id === intercomId)) presence = workerViewPresence(new Date().toISOString());
+			const peers = channel?.snapshot().connected && channel.snapshot().supported ? await channel.listSessions().catch(() => undefined) : undefined;
+			const peer = state.child ? peers?.find(peer => peer.pid === process.pid) : peers?.find(peer => peer.id === intercomId);
+			const runtime: Parameters<typeof buildWorkerView>[3] = {
+				connected: peers ? Boolean(peer) : undefined,
+				status: peer?.status,
+				model: peer?.model,
+				contextPct: peer?.contextPct,
+				pid: peer?.pid,
+			};
+			if (peer?.pid) {
+				try { runtime.processes = descendantProcesses(peer.pid); }
+				catch (error) { runtime.processError = viewClip(String(error), 160); }
 			}
 			if (stamp !== generation || worker !== state.worker || intercomId !== state.worker?.intercomId || (!state.child && source.sessionFile !== state.worker?.sessionFile)) return result(messages.cancelled);
-			return result(savedWorkerView(ctx, source, presence));
+			return result(savedWorkerView(ctx, source, runtime, params.detail === "diagnostic"));
 		},
 	});
 	pi.registerTool({
@@ -941,22 +947,24 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (!params.summary.trim()) throw new Error("Supply the canonical event summary and exact artifact paths when applicable.");
 			const stopped = reportStop(params.summary.trim(), kind);
 			if (!stopped) throw new Error("No active worker run is available for this event.");
-			return result(REVIEWABLE_EVENTS.has(kind) ? "Recorded one canonical event for parent review." : "Recorded one visible status event without formal review.");
+			return result(POTENTIAL_STOP_EVENTS.has(kind) ? "Recorded one visible stop request for supervisor judgment; no formal review was created." : "Recorded one visible status event without formal review.");
 		},
 	});
 	const sourceQuote = Type.Object({ path: Type.String({ minLength: 1 }), entryId: Type.Optional(Type.String()), quote: Type.String({ minLength: 1 }) });
 	pi.registerTool({
-		name: "review_subagent", label: "Review worker report", description: reportReviewDescription,
+		name: "review_subagent", label: "Review potential worker stop", description: reportReviewDescription,
 		parameters: Type.Object({
-			reportId: Type.String({ minLength: 1 }), goal: sourceQuote,
+			eventId: Type.String({ minLength: 1 }), goal: sourceQuote,
 			evidence: Type.Array(Type.Object({ path: Type.String({ minLength: 1 }), entryId: Type.Optional(Type.String()), quote: Type.Optional(Type.String()), observation: Type.String({ minLength: 1 }) }), { minItems: 1 }),
 			observation: Type.String({ minLength: 1 }), unmet: Type.String({ minLength: 1 }),
 			verdict: Type.String({ enum: ["accepted", "changes_requested", "blocked"] }), continuation: Type.Optional(Type.String()),
 		}),
 		async execute(_id, params, signal, _update, ctx) {
-			if (state.child || state.mode !== "supervising") throw new Error("Only the active parent supervisor can review worker reports.");
-			const report = records<Report>(ctx, REPORT).find(report => report.id === params.reportId);
-			if (!report) throw new Error("Unknown owned report ID; use the reportId shown in /goals status.");
+			if (state.child || state.mode !== "supervising") throw new Error("Only the active parent supervisor can review a potential worker stop.");
+			const selected = records<Report>(ctx, REPORT).find(report => report.id === params.eventId);
+			const event = records<WorkerEvent>(ctx, WORKER_EVENT).find(event => event.id === params.eventId && POTENTIAL_STOP_EVENTS.has(event.kind));
+			const report = selected ?? event;
+			if (!report) throw new Error("Unknown owned potential-stop event ID; use the exact Event shown in the worker status.");
 			if (!["accepted", "changes_requested", "blocked"].includes(params.verdict) || !params.goal.quote.trim() || !params.observation.trim() || !params.unmet.trim() || params.verdict === "changes_requested" && !params.continuation?.trim()) throw new Error("Supply the verdict, inspection, unmet requirements (or none), and a concrete continuation for changes_requested.");
 			const sources = [params.goal, ...params.evidence].map(source => {
 				const gitEvidence = /^git:([0-9a-f]{7,64}):(.+)$/i.exec(source.path);
@@ -984,8 +992,9 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			});
 			const content = reportReviewContent(report.id, report.sessionFile, sources, params.observation, params.unmet, params.verdict, params.continuation || "");
 			const review: ReportReview = { id: digest(content), reportId: report.id, report: report.id, verdict: params.verdict, content, continuation: params.continuation || "" };
-			if (records<ReportReview>(ctx, REVIEW).some(saved => reviewedReportId(saved) === report.id)) return result("This worker revision already has a delivered review; a later stop report is a new revision.");
-			if (!channel?.snapshot().connected || !channel.snapshot().supported || signal?.aborted) throw new Error("Review delivery unavailable; report remains pending.");
+			if (records<ReportReview>(ctx, REVIEW).some(saved => reviewedReportId(saved) === report.id)) return result("This worker stop already has a delivered review; a later stop is a new event.");
+			if (!selected) pi.appendEntry(REPORT, report);
+			if (!channel?.snapshot().connected || !channel.snapshot().supported || signal?.aborted) throw new Error("Review delivery unavailable; the selected stop remains pending.");
 			const payload = { type: "review", to: report.session, sessionFile: report.sessionFile, requestId: report.requestId, plan: report.plan, review };
 			if (Buffer.byteLength(JSON.stringify(payload)) > 16000) throw new Error("Review exceeds Intercom's 16 KiB limit; shorten the quotes and retain source references.");
 			if (!records<ReportReview>(ctx, REVIEW_DRAFT).some(saved => saved.id === review.id)) pi.appendEntry(REVIEW_DRAFT, review);

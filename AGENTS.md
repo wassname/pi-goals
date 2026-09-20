@@ -22,6 +22,7 @@ The supervisor should:
 - Let the human see and intervene in both worker and supervisor as native Pi panels in Herdr. We keep workers open so the human can check their outputs and final review, usually in the final or penultimate message.
 
 - Keep supervisor inspection tools. It inspects actual results, delegates implementation and must not weaken the user's goal to accept worker output.
+- Keep `worker_view` as compact VCC Markdown: summarize current process/subagent presence, do not dump transcripts, raw JSON or repeated compaction, and request detail only when needed. — wassname (Pi wording/spelling edits)
 - Put all model-facing prompts in `src/prompts.ts`, in conversation order. Preserve the user's verbatim requirements.
 - `/goals` opens actions. New plan starts a discussion without an objective form. Unknown commands never start planning. A changed settled draft opens the approval dialogue; unchanged discussion does not repeatedly reopen it.
 - Keep goal titles/status in widgets; omit subtask text. Tasks and evidence remain in the plan.

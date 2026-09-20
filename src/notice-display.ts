@@ -4,20 +4,28 @@ import { Markdown, truncateToWidth } from "@earendil-works/pi-tui";
 
 const NOTICE = "pi-goals-notice";
 const PROMPT = "pi-goals-prompt";
+const COMPACT = "pi-goals-compact-prompt";
+
+function noticeLabel(content: string) {
+	return content.includes("\nPlan changed") ? "Plan changed · review requested"
+		: content.includes("## Selected worker-stop reviews") ? "Selected worker-stop reviews"
+		: content.includes("## Worker stop review:") ? "Worker stop review"
+		: content.includes("## Worker status:") ? "Worker status"
+		: "Goal instructions";
+}
 
 export function noticeDisplay(pi: ExtensionAPI) {
 	const mirrored = new Set<string>();
-	pi.registerMarkdownTransformer((markdown, context) =>
-		context.messageType === "user" && mirrored.has(markdown) ? "" : markdown);
+	const compacted = new Set<string>();
+	pi.registerMarkdownTransformer((markdown, context) => {
+		if (context.messageType !== "user") return markdown;
+		if (compacted.has(markdown)) return `[pi-goals] ${noticeLabel(markdown)}`;
+		return mirrored.has(markdown) ? "" : markdown;
+	});
 	const render = (content: string, expanded: boolean, theme: { fg(color: string, text: string): string }) => {
-		const label = content.includes("\nPlan changed") ? "Plan changed · review requested"
-			: content.includes("## Worker revision reviews") ? "Worker revisions · review requested"
-			: content.includes("## Worker revision report") ? "Worker revision report"
-			: content.includes("## Worker status:") ? "Worker status"
-			: "Goal instructions";
 		if (expanded) return new Markdown(content, 0, 0, getMarkdownTheme());
 		return {
-			render: (width: number) => [truncateToWidth(theme.fg("muted", `[pi-goals] ${label} · ${keyHint("app.tools.expand", "expand")}`), width)],
+			render: (width: number) => [truncateToWidth(theme.fg("muted", `[pi-goals] ${noticeLabel(content)} · ${keyHint("app.tools.expand", "expand")}`), width)],
 			invalidate() {},
 		};
 	};
@@ -27,6 +35,9 @@ export function noticeDisplay(pi: ExtensionAPI) {
 		prompt(content: string) {
 			pi.sendMessage({ customType: PROMPT, content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 		},
+		passive(content: string) {
+			pi.sendMessage({ customType: PROMPT, content, display: true }, { deliverAs: "nextTurn" });
+		},
 		hide(content: string) {
 			mirrored.add(content);
 		},
@@ -34,12 +45,22 @@ export function noticeDisplay(pi: ExtensionAPI) {
 			mirrored.add(content);
 			pi.appendEntry(NOTICE, { content });
 		},
+		compact(content: string) {
+			compacted.add(content);
+			pi.appendEntry(COMPACT, { content });
+		},
 		restore(ctx: ExtensionContext, hiddenTypes: string[] = []) {
 			mirrored.clear();
+			compacted.clear();
 			for (const entry of ctx.sessionManager.getBranch()) {
-				if (entry.type !== "custom" || entry.customType !== NOTICE && !hiddenTypes.includes(entry.customType)) continue;
+				if (entry.type !== "custom") continue;
+				const compact = entry.customType === COMPACT;
+				const mirroredType = entry.customType === NOTICE || hiddenTypes.includes(entry.customType);
+				if (!compact && !mirroredType) continue;
 				const content = (entry.data as { content?: unknown }).content;
-				if (typeof content === "string") mirrored.add(content);
+				if (typeof content !== "string") continue;
+				if (compact) compacted.add(content);
+				else mirrored.add(content);
 			}
 		},
 	};

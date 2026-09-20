@@ -90,54 +90,61 @@ it("puts exploration, protected decisions and grilling before the plan draft", (
 	expect(planDrafting).toContain("publication approval or editorial voice");
 });
 
-it("reserves formal reviews for approvals, completion and genuine blockers", () => {
-	expect(reportGoalEventDescription).toContain("review_request, blocker and completion create a formal parent review obligation");
-	expect(reportGoalEventDescription).toContain("decision requests prompt supervisor attention and direct steering without review paperwork");
+it("leaves stop events informal until the supervisor chooses full review", () => {
+	expect(reportGoalEventDescription).toContain("never create formal review by themselves");
+	expect(reportGoalEventDescription).toContain("only the supervisor can choose full review");
 	const role = supervisor("worker", "/tmp/plan.md", "parent");
 	expect(role).toContain("Goal, Changed, Judgment, Next, Need from you");
 	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
 	expect(role).toContain("Humour is a reflective meta-learning mechanism");
 	expect(role).toContain("The human can inspect, talk to and change /model in the worker pane directly");
 	expect(role).toContain("pi-goals owns attachment/report correlation, not generic writer concurrency");
-	expect(role).not.toContain("human confirmation");
-	expect(role).not.toContain("replaceStopped");
+	expect(role).toContain("Only your third choice creates review paperwork");
 	expect(role).toContain("Never wait on an inferred or nonexistent pane");
-	expect(goalCheckInWake).toContain("reserve formal review for completion, bounded artifact approval or a genuine accepted blocker");
+	expect(goalCheckInWake).toContain("Use formal review only when you choose to allow it to stop");
 });
 
-it("reads bounded worker history without changing it, and expands native Markdown", async () => {
+it("shows incremental VCC Markdown without raw tool results or compaction dumps", async () => {
 	initTheme("dark");
 	const f = fixture(true), history = f.ctx.sessionManager.getBranch(), timestamp = new Date().toISOString();
 	const entry = (id: string, message: object) => ({ type: "message", id, timestamp, parentId: null, message });
 	history.push(entry("kept", { role: "user", content: "Retained heading requirement" }),
-		{ type: "compaction", id: "checkpoint", timestamp, firstKeptEntryId: "kept", summary: "Earlier output was completed." },
+		{ type: "compaction", id: "checkpoint", timestamp, firstKeptEntryId: "kept", summary: "COMPACTION_DUMP_MUST_STAY_HIDDEN" },
 		entry("failed-call", { role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE_REASONING_SENTINEL" }, { type: "toolCall", id: "read-1", name: "read", arguments: { path: "missing.txt" } }] }),
-		entry("failed-result", { role: "toolResult", toolCallId: "read-1", toolName: "read", isError: true, content: [{ type: "text", text: "Permission denied" }] }),
+		entry("failed-result", { role: "toolResult", toolCallId: "read-1", toolName: "read", isError: true, content: [{ type: "text", text: `Permission denied while reading missing.txt. ${"x".repeat(500)} RESULT_TAIL_MUST_STAY_HIDDEN` }] }),
 		entry("pending-call", { role: "assistant", content: [{ type: "toolCall", id: "job-1", name: "process", arguments: { action: "start", command: "long job", notify: { onSuccess: "turn" }, nested: Array(20).fill({ payload: "x".repeat(100_000) }) } }] }));
-	const before = JSON.stringify(history), published = f.channel.publish.mock.calls.length;
+	const published = f.channel.publish.mock.calls.length;
 	const tool = f.tools.get("worker_view"), output = await tool.execute("view", {}, undefined, undefined, f.ctx), text = output.content[0].text;
-	expect(Buffer.byteLength(text)).toBeLessThanOrEqual(12_000);
-	for (const value of ["Permission denied", "onSuccess", "No saved result", "Retained heading requirement", "Earlier output was completed"]) expect(text).toContain(value);
-	expect(text).not.toContain("PRIVATE_REASONING_SENTINEL"); expect(text).not.toContain("vcc_recall");
-	expect(JSON.stringify(history)).toBe(before); expect(f.channel.publish).toHaveBeenCalledTimes(published);
+	expect(Buffer.byteLength(text)).toBeLessThanOrEqual(8_000);
+	expect(text).toContain("### VCC summary of new turns");
+	expect(text).toContain("* read \"missing.txt\"");
+	expect(text).toContain("unanswered tool calls: process");
+	expect(text).toContain("read failed: Permission denied while reading missing.txt");
+	for (const hidden of ["RESULT_TAIL_MUST_STAY_HIDDEN", "COMPACTION_DUMP_MUST_STAY_HIDDEN", "PRIVATE_REASONING_SENTINEL", "onSuccess", "Recent calls and results", "vcc_recall"]) expect(text).not.toContain(hidden);
+	expect(f.channel.publish).toHaveBeenCalledTimes(published);
 	for (const width of [40, 80]) {
 		const collapsed = tool.renderResult(output, { expanded: false }).render(width), expanded = tool.renderResult(output, { expanded: true }).render(width);
 		expect(expanded.length).toBeGreaterThan(collapsed.length);
-		expect(collapsed.join("\n")).not.toContain("Permission denied"); expect(expanded.join("\n")).toContain("Permission denied");
 		for (const line of expanded) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	}
-	// Older verbosity must not hide the newest failure or leave half a fenced block.
-	for (let i = 0; i < 6; i++) history.push(
-		entry(`verbose-call-${i}`, { role: "assistant", content: [{ type: "toolCall", id: `verbose-${i}`, name: "bash", arguments: { command: `diagnostic-${i}`, a: "a".repeat(200), b: "b".repeat(200), c: "c".repeat(200) } }] }),
-		entry(`verbose-result-${i}`, { role: "toolResult", toolCallId: `verbose-${i}`, toolName: "bash", isError: i === 5, content: [{ type: "text", text: i === 5 ? "NEWEST_FAILURE: diagnostic failed" : "Older diagnostic output" }], details: { a: "a".repeat(200), b: "b".repeat(200), c: "c".repeat(200) } }));
-	const fullBefore = JSON.stringify(history), bounded = (await tool.execute("view-again", {}, undefined, undefined, f.ctx)).content[0].text;
-	expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(12_000);
-	expect(bounded).toContain("NEWEST_FAILURE: diagnostic failed"); expect(bounded).toContain("Some history omitted");
-	const retained = [...bounded.matchAll(/call entry verbose-call-(\d)/g)].map(match => Number(match[1]));
-	expect(retained.at(-1)).toBe(5); expect(retained).toEqual([...retained].sort()); expect(retained.length).toBeLessThan(6);
-	let open: string | undefined;
-	for (const fence of bounded.match(/^`{3,}$/gm) ?? []) { if (open) { expect(fence).toBe(open); open = undefined; } else open = fence; }
-	expect(open).toBeUndefined(); expect(JSON.stringify(history)).toBe(fullBefore);
+	history.push(
+		entry("late-result", { role: "toolResult", toolCallId: "job-1", toolName: "process", isError: false, content: [{ type: "text", text: "Process 1820 exited successfully with saved output." }] }),
+		entry("new-work", { role: "assistant", content: [{ type: "text", text: "Implemented the correction." }, { type: "toolCall", id: "edit-1", name: "edit", arguments: { path: "src/a.ts" } }] }));
+	const next = (await tool.execute("view-again", {}, undefined, undefined, f.ctx)).content[0].text;
+	expect(next).toContain("Implemented the correction");
+	expect(next).toContain("src/a.ts");
+	expect(next).toContain("process returned: Process 1820 exited successfully");
+	expect(next).not.toContain("missing.txt");
+	history.push({ type: "compaction", id: "later-checkpoint", timestamp, summary: "SECOND_COMPACTION_DUMP_MUST_STAY_HIDDEN" });
+	for (let i = 0; i < 12; i++) history.push(entry(`post-compaction-${i}`, { role: "assistant", content: [{ type: "text", text: `POST_COMPACTION_TURN_${i}` }] }));
+	const afterCompaction = (await tool.execute("after-compaction", {}, undefined, undefined, f.ctx)).content[0].text;
+	expect(afterCompaction).toContain("POST_COMPACTION_TURN_0");
+	expect(afterCompaction).toContain("POST_COMPACTION_TURN_11");
+	expect(afterCompaction).not.toContain("SECOND_COMPACTION_DUMP_MUST_STAY_HIDDEN");
+	const diagnostic = (await tool.execute("diagnostic", { detail: "diagnostic" }, undefined, undefined, f.ctx)).content[0].text;
+	expect(diagnostic).toContain("### Diagnostics");
+	expect(diagnostic).toContain("Saved session:");
+	expect(diagnostic).not.toContain("RESULT_TAIL_MUST_STAY_HIDDEN");
 });
 
 it.each([
@@ -1164,7 +1171,7 @@ it("passive pause is visible immediately while its model notice waits safely for
 });
 
 // The native surface has one project binding; these replace old launch-schema/helper tests.
-it("opens no-focus, records explicit attachment only, and wakes review only for the exact worker", async () => {
+it("opens no-focus, records exact-worker stop events without automatic review debt", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	for (const event of [
 		{ toolName: "intercom", input: { action: "send", cwd: "/tmp/other", openProjectPaneIfMissing: true } },
@@ -1193,12 +1200,11 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: undefined } });
 	expect(f.messages).toHaveLength(count);
 	f.event({ type: "message", fromSessionId: "worker-id", payload: notice });
-	expect(f.messages.at(-2)).toMatchObject({ message: { customType: "pi-goals-supervision", display: false, content: expect.stringContaining("## Worker revision report") } });
-	expect(f.messages.at(-2)?.message.content).toContain("Blocked: input missing");
-	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-notice" && entry.data.content.includes("## Worker revision report"))).toBe(true);
-	expect(f.messages.at(-1)?.message.content).toContain("## Formal worker revision reviews");
-	expect(f.messages.at(-1)?.message.content).toContain("cached interruption audit");
-	expect(f.messages.at(-1)?.message.content).not.toContain("](");
+	expect(f.messages.at(-1)?.message.content).toContain("## Worker status: blocker");
+	expect(f.messages.at(-1)?.message.content).toContain("Blocked: input missing");
+	expect(f.messages.at(-1)?.message.content).toContain("No formal review was created");
+	expect(f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-report")).toHaveLength(0);
+	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-event" && entry.data.id.endsWith(":revision-1"))).toBe(true);
 	const afterFirstRevision = f.messages.length;
 	for (const text of ["Done: output.txt", "Error: execution failed"]) f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, text } });
 	expect(f.messages).toHaveLength(afterFirstRevision);
@@ -1220,11 +1226,20 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("automatic-stop");
 	expect(readFileSync(f.path, "utf8")).not.toContain("[✓]");
 	await f.command("stop");
-	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New report during pause" } });
-	expect(f.messages.at(-1).options).toEqual({ deliverAs: "nextTurn" });
+	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New stop request during pause" } });
+	expect(f.messages.at(-1)?.message.content).toContain("New stop request during pause");
 	await f.command("clear");
 	const cleared = f.messages.length; f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-3" } });
 	expect(f.messages).toHaveLength(cleared);
+});
+
+it("records separate disconnect episodes when saved worker history is unavailable", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	await f.launch({ id: "worker-id", sessionFile: "/tmp/missing-worker-history.jsonl" });
+	f.event({ type: "session_left", sessionId: "worker-id" });
+	f.event({ type: "session_left", sessionId: "worker-id" });
+	const disconnects = f.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === "pi-goals-worker-event" && entry.data.id.includes("disconnect-"));
+	expect(disconnects.map((entry: any) => entry.data.id)).toEqual(["worker-id:disconnect-1", "worker-id:disconnect-2"]);
 });
 
 it("supersedes an inherited worker binding when the supervisor opens a replacement", async () => {
@@ -1374,12 +1389,13 @@ it.each(["inherit", "plan", "explicit"])("hands off %s model policy without clai
 	const view = await f.tools.get("worker_view").execute("view", {}, undefined, undefined, f.ctx);
 	expect(view.content[0].text).toContain("Distinct runtime and Intercom identity evidence");
 	f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "view-inspection", kind: "unclassified", text: "Inspection ended." } });
-	expect(f.messages.at(-1)?.message.content).toContain("Distinct runtime and Intercom identity evidence");
+	expect(f.messages.at(-1)?.message.content).toContain("Inspection ended.");
+	expect(f.messages.at(-1)?.message.content).not.toContain("Distinct runtime and Intercom identity evidence");
 	if (model) {
 		f.event({ type: "message", fromSessionId: "worker", payload: { type: "stopped", to: worker.parentId, requestId: worker.requestId, plan: f.path, entryId: "model-unavailable", kind: "progress", text: "Requested missing/unavailable is unavailable; unrelated work can continue." } });
 		expect(f.messages.at(-1)?.message.content).toContain("## Worker status: progress");
 		await f.command("status");
-		expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Pending worker revision reviews: none");
+		expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Selected worker-stop reviews pending delivery: none");
 	}
 
 });
