@@ -32,6 +32,7 @@ import {
 	pausedRole,
 	pauseExitNotice,
 	pendingReportReviews,
+	planActivityRecorded,
 	planChangedReview,
 	planContext,
 	planDocument,
@@ -125,6 +126,12 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	let planWatcher: FSWatcher | undefined;
 	let planEditTimer: ReturnType<typeof setTimeout> | undefined;
 	let planHash = "";
+	let planActivityHash = "";
+	const syncPlanHashes = (text: string) => {
+		const views = planViews(text);
+		planHash = digest(views.notify);
+		planActivityHash = digest(views.activity);
+	};
 	const save = () => pi.appendEntry(STATE, structuredClone(state));
 	// Missing, empty and failed reads are unavailable snapshots, never an empty authoritative plan.
 	const readPlan = () => {
@@ -269,13 +276,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		clearTimeout(planEditTimer);
 		planEditTimer = undefined;
 		const snapshot = readPlan();
-		if (snapshot.text !== undefined) planHash = digest(planViews(snapshot.text).notify);
+		if (snapshot.text !== undefined) syncPlanHashes(snapshot.text);
 		if (state.child || state.mode !== "supervising" || !state.plan) return;
 		const stamp = generation;
-		// Watch the directory so atomic plan replacement remains observable. This is an event hook:
-		// plan-change reviews, not another scheduled loop (the hourly job is pi-scheduler's). A
-		// short debounce coalesces bursts. The notification view excludes Log and worker identity;
-		// requirement changes additionally request active-plan context.
+		// Atomic replacements are observable; task/evidence bookkeeping is recorded passively. — Pi/OpenAI
+		// Goal status or requirement changes wake the supervisor and request current plan context.
 		try {
 			planWatcher = watch(dirname(state.plan), { persistent: false }, () => {
 			if (stamp !== generation) return;
@@ -287,8 +292,15 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				if (snapshot.text === undefined) { ctx.ui.notify(snapshot.error!, "warning"); return; }
 				clearChangedFinalReview(snapshot.text);
 				refresh(ctx);
-				const hash = digest(planViews(snapshot.text).notify);
-				if (hash === planHash) return;
+				const views = planViews(snapshot.text);
+				const activityHash = digest(views.activity);
+				if (activityHash === planActivityHash) return;
+				planActivityHash = activityHash;
+				const hash = digest(views.notify);
+				if (hash === planHash) {
+					send(planActivityRecorded(state.plan!), false, true);
+					return;
+				}
 				planHash = hash;
 				notice = true;
 				fullPlanContextDue ||= requirements(snapshot.text) !== requirements(lastWorkingSet);
@@ -765,7 +777,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (found >= 0) lines[found] = pref;
 					else { const title = lines.findIndex((line) => /^#\s/.test(line)); lines.splice(title >= 0 ? title + 1 : 0, 0, pref); }
 					writeFileSync(state.plan, lines.join("\n"));
-					planHash = digest(planViews(planText()).notify);
+					syncPlanHashes(planText());
 					refresh(ctx);
 					notice = true; fullPlanContextDue = true;
 					ctx.ui.notify(`Preferred worker model recorded as ${ref}; not yet configured. Pass it to the agent in its assignment or live steering for configuration through supported controls, then verify its actual model.`, "info");
@@ -1054,7 +1066,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				writeFileSync(path, `${lines.join("\n").trimEnd()}\n`);
 				state.finalReview = undefined;
 				finalReviewTurnDigest = undefined;
-				planHash = digest(planViews(planText()).notify);
+				syncPlanHashes(planText());
 				save(); refresh(ctx);
 				const remaining = Boolean(unfinishedGoals(planText()));
 				if (!remaining) requestCheckInRemoval(ctx);

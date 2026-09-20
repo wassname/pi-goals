@@ -68,13 +68,23 @@ Current supervisor instructions say:
 
 Only the third choice creates formal review state. The scheduled default and worker-event text repeat this rule. The manifold review churn is evidence about an older loaded prompt or model noncompliance, not the current intended flow.
 
-### 5. Plan edits still create avoidable supervisor turns
+### 5. Task and evidence edits no longer create supervisor turns
 
-`watchPlan` hashes `planViews(plan).notify`. `planViews` removes Log and worker-identity lines, but retains task and evidence edits above Log. Any such edit triggers a plan-change turn even when `planRequirements` says requirements did not change. The injected prompt says evidence-only edits do not revoke approval, but the model still has to process and answer the wake.
+Production observation before this change:
 
-This can explain the observed sequence “plan changed” → “checkbox update applied” → “No change.” It remains a likely source of recap noise. A later change should retain wakes for goal status and requirement changes while ignoring evidence-only and subtask-only edits. That change needs a focused test because goal checkbox updates must remain observable.
+> “plan changed” → “checkbox update applied” → “No change.”
 
-### 6. Check-in behavior is mixed but often follows intent
+`planViews` now separates the full pre-Log activity view from the material notification view. Task checkboxes and evidence paths change the activity hash and create one collapsed passive record for the next ordinary turn; they do not wake the model. Goal checkbox status, requirements, discriminators, scope and preferred worker model still change the notification hash and wake the supervisor. Tests distinguish evidence/subtask edits from goal-status and requirement changes.
+
+### 6. Credential display restrictions were mistaken for execution restrictions
+
+Production observation, manifold-steer:
+
+> “Blocked before queue submission: harness denies `--env-file .env`.”
+
+The supervisor then asked the human to run an otherwise authorized judge command, even though the project could load the credential without displaying it. The user clarified that `python-dotenv` or shell-sourcing `.env` exists for this purpose. Shared worker/supervisor guidance now distinguishes displaying secret bytes from running an authorized credential-backed command. It requires the existing project loader, forbids reading, printing or sending secret values, and asks the human only when authorization, the credential or execution permission is actually absent.
+
+### 7. Check-in behavior is mixed but often follows intent
 
 Observed good behavior:
 

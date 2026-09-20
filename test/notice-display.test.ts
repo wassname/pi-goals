@@ -27,6 +27,10 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	const prompt = { role: "custom", customType: "pi-goals-prompt", content, display: true };
 	expect(renderPrompt(prompt, { expanded: false }, theme).render(80).join("\n")).toContain("Plan changed · review requested");
 	expect(renderPrompt(prompt, { expanded: true }, theme).render(80)).toEqual(new Markdown(content, 0, 0, getMarkdownTheme()).render(80));
+	const activity = "[pi-goals: plan activity]\nTask or evidence bookkeeping changed.";
+	display.passive(activity);
+	expect(pi.sendMessage).toHaveBeenLastCalledWith({ customType: "pi-goals-prompt", content: activity, display: true }, { deliverAs: "nextTurn" });
+	expect(renderPrompt({ role: "custom", customType: "pi-goals-prompt", content: activity }, { expanded: false }, theme).render(80).join("\n")).toContain("Plan activity recorded");
 
 	const entry = { type: "custom", customType: "pi-goals-notice", data: { content } };
 	const collapsed = render(entry, { expanded: false }, theme);

@@ -105,6 +105,9 @@ it("leaves stop events informal until the supervisor chooses full review", () =>
 	expect(role).toContain("pi-goals owns attachment/report correlation, not generic writer concurrency");
 	expect(role).toContain("Only your third choice creates review paperwork");
 	expect(role).toContain("Never wait on an inferred or nonexistent pane");
+	expect(role).toContain("unable to display a secret file does not make an already authorized credential-backed command impossible");
+	expect(role).toContain("python-dotenv or a shell-sourced .env");
+	expect(role).toContain("without reading, printing or sending secret values");
 	expect(goalCheckInWake).toContain("Use formal review only when you choose to allow it to stop");
 });
 
@@ -495,6 +498,33 @@ old progress`;
 	f.shutdown();
 });
 
+it("records task and evidence bookkeeping without waking, but wakes for goal status", async () => {
+	const f = fixture(); await f.draft();
+	const plan = `# Plan
+## Goals
+- [ ] goal: first output
+  - discriminator: output exists
+  - tasks:
+    - [ ] run it
+  - evidence:
+    - old.log
+- [ ] goal: second output
+
+## Log
+`;
+	writeFileSync(f.path, plan); await f.command("ready");
+	await f.atomicWrite(plan.replace("- [ ] run it", "- [x] run it").replace("old.log", "new.log"));
+	await waitFor(() => f.messages.some(m => m.message?.content?.includes("[pi-goals: plan activity]")));
+	const activity = f.messages.find(m => m.message?.content?.includes("[pi-goals: plan activity]"));
+	expect(activity.options).toEqual({ deliverAs: "nextTurn" });
+	expect(activity.message.content).toContain("Recorded without waking the supervisor");
+	expect(f.changed()).toBe(0);
+	await f.atomicWrite(readFileSync(f.path, "utf8").replace("[ ] goal: first", "[/] goal: first"));
+	await waitFor(() => f.changed() === 1);
+	expect(f.messages.find(m => m.message?.content?.includes("Plan changed: requirements or goal status changed"))?.options).toMatchObject({ deliverAs: "followUp" });
+	f.shutdown();
+});
+
 it("delivers changed plans while coalescing only its own pending notice", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	f.ctx.hasPendingMessages.mockReturnValue(true); // An unrelated queued prompt must not suppress the notice.
@@ -817,25 +847,23 @@ it.each(["missing", "empty", "directory"])("%s plan snapshots remain unavailable
 	expect(f.changed()).toBe(0);
 });
 
-it("ignores post-completion maintenance but reviews evidence, requirement or manual reopening changes", async () => {
+it("ignores post-completion history, records evidence, and reviews requirement or reopening changes", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	writeFileSync(join(f.ctx.cwd, "proof.log"), "PASS\n");
 	for (const goal of ["first output", "second output"]) await f.tools.get("CompleteGoal").execute("c", { goal, evidence: ["proof.log"], observation: "PASS" }, undefined, undefined, f.ctx);
 	const signed = readFileSync(f.path, "utf8");
 	await f.atomicWrite(signed.replace("## Log", "## Log\n- recap: finished"));
 	await delay(250);
-	expect(f.changed()).toBe(0); // Log-only edits are history, not requirements
-	// Worker-authored evidence above the Log must surface: a supervisor caught a worker's
-	// contradictory evidence block through exactly this event (LUCID3, 2026-09-10).
+	expect(f.changed()).toBe(0); // Log-only edits are history, not requirements.
 	await f.atomicWrite(signed.replace("## Log", "  - evidence: proof.log\n## Log\n- recap: finished"));
-	await waitFor(() => f.changed() === 1);
-	f.hooks.get("message_end")({ message: { role: "user", content: f.messages.at(-1).message.content } });
+	await waitFor(() => f.messages.some(m => m.message?.content?.includes("[pi-goals: plan activity]")));
+	expect(f.changed()).toBe(0);
 	await f.atomicWrite(signed.replace("## Log", "- discriminator: exact bytes and trailing newline\n## Log"));
-	await waitFor(() => f.changed() === 2);
+	await waitFor(() => f.changed() === 1);
 	expect(readFileSync(f.path, "utf8")).toContain("[✓] goal: first output"); // Supervisor decides whether changed requirements require reopening.
 	f.hooks.get("message_end")({ message: { role: "user", content: f.messages.at(-1).message.content } });
 	await f.atomicWrite(signed.replace("[✓] goal: first", "[ ] goal: first"));
-	await waitFor(() => f.changed() === 3);
+	await waitFor(() => f.changed() === 2);
 	expect(readFileSync(f.path, "utf8")).toContain("[ ] goal: first output");
 });
 

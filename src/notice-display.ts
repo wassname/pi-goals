@@ -7,7 +7,9 @@ const PROMPT = "pi-goals-prompt";
 const COMPACT = "pi-goals-compact-prompt";
 
 function noticeLabel(content: string) {
-	return content.includes("\nPlan changed") ? "Plan changed · review requested"
+	return content.includes("[pi-goals: plan activity]") ? "Plan activity recorded"
+		: content.includes("\nPlan requirements or goal status changed") ? "Plan changed · review requested"
+		: content.includes("\nPlan changed") ? "Plan changed · review requested"
 		: content.includes("## Selected worker-stop reviews") ? "Selected worker-stop reviews"
 		: content.includes("## Worker stop review:") ? "Worker stop review"
 		: content.includes("## Worker status:") ? "Worker status"

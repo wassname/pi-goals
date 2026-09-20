@@ -27,7 +27,8 @@ The supervisor should:
 - Put all model-facing prompts in `src/prompts.ts`, in conversation order. Preserve the user's verbatim requirements.
 - `/goals` opens actions. New plan starts a discussion without an objective form. Unknown commands never start planning. A changed settled draft opens the approval dialogue; unchanged discussion does not repeatedly reopen it.
 - Keep goal titles/status in widgets; omit subtask text. Tasks and evidence remain in the plan.
-- Keep startup/compaction plan context, short upkeep reminders and visible check-ins. Avoid unchanged-plan repetition and identity-only review turns.
+- Keep startup/compaction plan context, short upkeep reminders and visible check-ins. Record task/evidence bookkeeping passively; wake the supervisor only for changed requirements or goal status. — wassname (Pi wording)
+- A secret-display restriction does not block an authorized credential-backed command: use the project's existing loader without exposing values, and ask the human only when authorization, the credential or execution permission is absent. — wassname (Pi wording)
 - Keep recoverable solo mode: confirm other writers stopped before taking over. Solo completion is self-verification.
 - Record distinct runtime ID, Intercom ID and saved-session path with provenance. A handle or delivery receipt is not proof of liveness or action. User model changes are authorized; do not silently restore an old preference.
 
