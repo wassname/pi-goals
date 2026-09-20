@@ -98,6 +98,9 @@ it("reserves formal reviews for approvals, completion and genuine blockers", () 
 	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
 	expect(role).toContain("Humour is a reflective meta-learning mechanism");
 	expect(role).toContain("The human can inspect, talk to and change /model in the worker pane directly");
+	expect(role).toContain("replaceStopped.observation");
+	expect(role).toContain("Absence alone is weak evidence, not a reason to stop");
+	expect(role).not.toContain("human confirmation");
 	expect(role).toContain("Never wait on an inferred or nonexistent pane");
 	expect(goalCheckInWake).toContain("reserve formal review for completion, bounded artifact approval or a genuine accepted blocker");
 });
@@ -1224,17 +1227,25 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages).toHaveLength(cleared);
 });
 
-it("releases a confirmed-stopped inherited binding through OpenGoalWorker", async () => {
+it("records supervisor judgment before replacing an inherited worker binding", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.launch({ id: "old-worker", sessionFile: "/tmp/old-worker.jsonl", task: "Old task" });
 	const oldRequest = f.entries.at(-1).data.worker.requestId;
-	f.ctx.ui.select.mockResolvedValueOnce("Worker confirmed stopped");
-	const opened = await f.tools.get("OpenGoalWorker").execute("replacement", { task: "Continue the approved plan" }, undefined, undefined, f.ctx);
+	const selects = f.ctx.ui.select.mock.calls.length;
+	const inspect = await f.tools.get("OpenGoalWorker").execute("inspect", { task: "Continue the approved plan" }, undefined, undefined, f.ctx);
+	expect(inspect.content[0].text).toContain("Intercom old-worker (not in the current roster)");
+	expect(inspect.content[0].text).toContain("replaceStopped");
+	expect(openProjectPane).toHaveBeenCalledTimes(1);
+	const observation = "User said the prior worker is gone; worker_view ends five days ago and exact Intercom ID is absent.";
+	const opened = await f.tools.get("OpenGoalWorker").execute("replacement", { task: "Continue the approved plan", replaceStopped: { observation } }, undefined, undefined, f.ctx);
 	expect(opened.content[0].text).toContain('"disposition":"opened"');
 	const replacement = f.entries.at(-1).data.worker;
 	expect(replacement).toMatchObject({ paneId: "native-pane", parentId: "parent-intercom", task: "Continue the approved plan" });
 	expect(replacement.requestId).not.toBe(oldRequest);
-	expect(f.entries.some(entry => entry.data.worker?.intercomId === "old-worker")).toBe(true); // saved history is retained
+	const release = f.ctx.sessionManager.getBranch().find((entry: any) => entry.customType === "pi-goals-worker-release");
+	expect(release?.data).toMatchObject({ plan: f.path, worker: { intercomId: "old-worker", requestId: oldRequest }, observation });
+	expect(f.entries.some(entry => entry.data.worker?.intercomId === "old-worker")).toBe(true); // saved state history is retained
+	expect(f.ctx.ui.select).toHaveBeenCalledTimes(selects);
 	expect(openProjectPane).toHaveBeenCalledTimes(2);
 });
 

@@ -64,7 +64,7 @@ import { buildWorkerView, viewClip } from "./worker-view.js";
 const STATE = "pi-goals-main-supervisor-v1";
 const WORKER = "goals-worker";
 const REPORT = "pi-goals-report", REVIEW = "pi-goals-report-review", REVIEW_DRAFT = "pi-goals-review-draft", REVIEW_REMINDER = "pi-goals-review-reminder";
-const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop", WORKER_EVENT = "pi-goals-worker-event";
+const RUN = "pi-goals-worker-run", STOP = "pi-goals-worker-stop", WORKER_EVENT = "pi-goals-worker-event", WORKER_RELEASE = "pi-goals-worker-release";
 type GoalEventKind = "review_request" | "decision" | "blocker" | "completion" | "progress" | "running" | "waiting" | "receipt" | "no_change" | "aborted" | "unclassified";
 const REVIEWABLE_EVENTS = new Set<GoalEventKind>(["review_request", "blocker", "completion"]);
 const ATTENTION_EVENTS = new Set<GoalEventKind>(["decision", "aborted", "unclassified"]);
@@ -341,7 +341,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const stamp = generation;
 		const revision = workerRevision;
 		const confirmation = "Worker confirmed stopped";
-		const choice = await ctx.ui.select("Confirm no other supervisor is active and all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?", [confirmation, "Cancel"]);
+		const choice = await ctx.ui.select("Confirm all other writers for the current and target plans are stopped (inspect Intercom and their native panes). A missing handle is not proof. Take over in this session?", [confirmation, "Cancel"]);
 		if (stamp !== generation || revision !== workerRevision) return false;
 		if (choice !== confirmation) return false;
 		if (readFileSync(target, "utf8") !== text) { ctx.ui.notify("Plan changed during takeover; confirm again.", "warning"); return false; }
@@ -859,7 +859,11 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.registerTool({
 		name: "OpenGoalWorker", label: "Open native goal worker", description: nativeMessages.openDescription,
-		parameters: Type.Object({ task: Type.String({ minLength: 1 }), model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })) }),
+		parameters: Type.Object({
+			task: Type.String({ minLength: 1 }),
+			model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })),
+			replaceStopped: Type.Optional(Type.Object({ observation: Type.String({ minLength: 1, description: nativeMessages.replacementObservationDescription }) })),
+		}),
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
 			// TODO(2026-11+, Pi): Recheck pi-subagents/project-panes v1's one-pane-per-cwd limit before adding multiple visible workers.
@@ -873,8 +877,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (self.length !== 1) return result(nativeMessages.noIdentity);
 			if (preflight !== generation || opening || signal?.aborted) return result(messages.cancelled);
 			if (state.worker) {
-				const recorded = JSON.stringify(state.worker);
-				if (!(await confirmOwnership(ctx, state.plan, planText())) || JSON.stringify(state.worker) !== recorded) return result(nativeMessages.alreadyRecorded);
+				if (!params.replaceStopped?.observation.trim()) return result(nativeMessages.replacementNeedsInspection(state.worker, state.worker.intercomId ? peers.some(peer => peer.id === state.worker?.intercomId) : undefined));
+				pi.appendEntry(WORKER_RELEASE, { plan: state.plan, worker: structuredClone(state.worker), observation: params.replaceStopped.observation.trim(), releasedBy: identity(ctx), at: new Date().toISOString() });
 				state.worker = undefined; state.workerStopped = true; workerRevision++; generation++; save(); refresh(ctx);
 			}
 			const preference = params.model?.trim() || notedPlanValue("preferred worker model");
