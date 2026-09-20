@@ -98,9 +98,9 @@ it("reserves formal reviews for approvals, completion and genuine blockers", () 
 	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
 	expect(role).toContain("Humour is a reflective meta-learning mechanism");
 	expect(role).toContain("The human can inspect, talk to and change /model in the worker pane directly");
-	expect(role).toContain("replaceStopped.observation");
-	expect(role).toContain("Absence alone is weak evidence, not a reason to stop");
+	expect(role).toContain("pi-goals owns attachment/report correlation, not generic writer concurrency");
 	expect(role).not.toContain("human confirmation");
+	expect(role).not.toContain("replaceStopped");
 	expect(role).toContain("Never wait on an inferred or nonexistent pane");
 	expect(goalCheckInWake).toContain("reserve formal review for completion, bounded artifact approval or a genuine accepted blocker");
 });
@@ -1227,26 +1227,32 @@ it("opens no-focus, records explicit attachment only, and wakes review only for 
 	expect(f.messages).toHaveLength(cleared);
 });
 
-it("records supervisor judgment before replacing an inherited worker binding", async () => {
+it("supersedes an inherited worker binding when the supervisor opens a replacement", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.launch({ id: "old-worker", sessionFile: "/tmp/old-worker.jsonl", task: "Old task" });
 	const oldRequest = f.entries.at(-1).data.worker.requestId;
 	const selects = f.ctx.ui.select.mock.calls.length;
-	const inspect = await f.tools.get("OpenGoalWorker").execute("inspect", { task: "Continue the approved plan" }, undefined, undefined, f.ctx);
-	expect(inspect.content[0].text).toContain("Intercom old-worker (not in the current roster)");
-	expect(inspect.content[0].text).toContain("replaceStopped");
-	expect(openProjectPane).toHaveBeenCalledTimes(1);
-	const observation = "User said the prior worker is gone; worker_view ends five days ago and exact Intercom ID is absent.";
-	const opened = await f.tools.get("OpenGoalWorker").execute("replacement", { task: "Continue the approved plan", replaceStopped: { observation } }, undefined, undefined, f.ctx);
+	const opened = await f.tools.get("OpenGoalWorker").execute("replacement", { task: "Continue the approved plan" }, undefined, undefined, f.ctx);
 	expect(opened.content[0].text).toContain('"disposition":"opened"');
 	const replacement = f.entries.at(-1).data.worker;
 	expect(replacement).toMatchObject({ paneId: "native-pane", parentId: "parent-intercom", task: "Continue the approved plan" });
 	expect(replacement.requestId).not.toBe(oldRequest);
 	const release = f.ctx.sessionManager.getBranch().find((entry: any) => entry.customType === "pi-goals-worker-release");
-	expect(release?.data).toMatchObject({ plan: f.path, worker: { intercomId: "old-worker", requestId: oldRequest }, observation });
+	expect(release?.data).toMatchObject({ plan: f.path, worker: { intercomId: "old-worker", requestId: oldRequest }, task: "Continue the approved plan" });
 	expect(f.entries.some(entry => entry.data.worker?.intercomId === "old-worker")).toBe(true); // saved state history is retained
 	expect(f.ctx.ui.select).toHaveBeenCalledTimes(selects);
 	expect(openProjectPane).toHaveBeenCalledTimes(2);
+});
+
+it("preserves the current worker binding when stock reports an existing pane", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	await f.launch({ id: "old-worker", sessionFile: "/tmp/old-worker.jsonl", task: "Old task" });
+	const previous = structuredClone(f.entries.at(-1).data.worker);
+	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: true, data: { bindingPath: "/existing/binding.json", disposition: "already-open", binding: { paneId: "existing-pane", projectRoot: f.ctx.cwd, command: "pi" } } });
+	const opened = await f.tools.get("OpenGoalWorker").execute("existing", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
+	expect(opened.content[0].text).toContain('"disposition":"already-open"');
+	expect(f.entries.at(-1).data.worker).toEqual(previous);
+	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-release")).toBe(false);
 });
 
 it("automatically reports worker turn end and pauses a rejected attachment", async () => {
@@ -1311,7 +1317,7 @@ it("ordinary project peer explicitly attaches as worker, never gaining approval 
 	expect(f.channel.publish).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stopped", text: "Result at output.txt" }), { audience: "capable" });
 });
 
-it("pending or failed native opening never permits an unconfirmed second writer", async () => {
+it("blocks concurrent opening and lets stock pane ownership resolve a retry", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	const tool = f.tools.get("OpenGoalWorker");
 	expect(tool.parameters.properties.task.minLength).toBe(1);
@@ -1320,12 +1326,15 @@ it("pending or failed native opening never permits an unconfirmed second writer"
 	vi.mocked(openProjectPane).mockImplementationOnce(() => new Promise((_resolve, reject) => { release = () => reject(new Error("connection lost after open")); }));
 	const opening = f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
 	await waitFor(() => Boolean(release));
+	const concurrent = await f.tools.get("OpenGoalWorker").execute("concurrent", { task: "second" }, undefined, undefined, f.ctx);
+	expect(concurrent.content[0].text).toContain("already opening");
+	expect(openProjectPane).toHaveBeenCalledTimes(1);
 	await f.command("solo");
 	expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("still pending"), "warning");
 	release(); expect((await opening).content[0].text).toContain("possible live writer");
 	const again = await f.tools.get("OpenGoalWorker").execute("open", { task: "again" }, undefined, undefined, f.ctx);
-	expect(again.content[0].text).toContain("already recorded");
-	expect(openProjectPane).toHaveBeenCalledTimes(1);
+	expect(again.content[0].text).toContain('"disposition":"opened"');
+	expect(openProjectPane).toHaveBeenCalledTimes(2);
 });
 
 it("leaves an existing stock pane unbound instead of replacing or retasking it", async () => {

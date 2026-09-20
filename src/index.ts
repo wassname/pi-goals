@@ -859,11 +859,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.registerTool({
 		name: "OpenGoalWorker", label: "Open native goal worker", description: nativeMessages.openDescription,
-		parameters: Type.Object({
-			task: Type.String({ minLength: 1 }),
-			model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })),
-			replaceStopped: Type.Optional(Type.Object({ observation: Type.String({ minLength: 1, description: nativeMessages.replacementObservationDescription }) })),
-		}),
+		parameters: Type.Object({ task: Type.String({ minLength: 1 }), model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })) }),
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
 			// TODO(2026-11+, Pi): Recheck pi-subagents/project-panes v1's one-pane-per-cwd limit before adding multiple visible workers.
@@ -876,21 +872,24 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			const self = peers.filter(peer => peer.pid === process.pid);
 			if (self.length !== 1) return result(nativeMessages.noIdentity);
 			if (preflight !== generation || opening || signal?.aborted) return result(messages.cancelled);
-			if (state.worker) {
-				if (!params.replaceStopped?.observation.trim()) return result(nativeMessages.replacementNeedsInspection(state.worker, state.worker.intercomId ? peers.some(peer => peer.id === state.worker?.intercomId) : undefined));
-				pi.appendEntry(WORKER_RELEASE, { plan: state.plan, worker: structuredClone(state.worker), observation: params.replaceStopped.observation.trim(), releasedBy: identity(ctx), at: new Date().toISOString() });
-				state.worker = undefined; state.workerStopped = true; workerRevision++; generation++; save(); refresh(ctx);
-			}
+			const superseded = state.worker ? structuredClone(state.worker) : undefined;
 			const preference = params.model?.trim() || notedPlanValue("preferred worker model");
 			const model = preference && (preference.includes("/") || !/^(?:none|\(none|default|inherit|not stated)\b/i.test(preference)) ? preference : undefined;
 			const plan = state.plan;
-			if (opening || state.worker || signal?.aborted) return result(messages.cancelled);
+			if (opening || signal?.aborted) return result(messages.cancelled);
 			const requestId = randomUUID();
 			state.worker = { requestId, parentId: self[0].id, task: params.task }; state.workerStopped = false; workerRevision++; opening = true; save();
 			try {
 				// Stock open sends startup only to a newly created context; existing panes receive nothing.
 				const pane = await openProjectPane({ cwd: ctx.cwd, message: workerAssignment(plan, self[0].id, requestId, params.task, model), focus: false, signal });
-				if (pane.ok && state.plan === plan && state.worker?.requestId === requestId) { state.worker.paneId = pane.data.binding.paneId; save(); }
+				if (pane.ok && state.plan === plan && state.worker?.requestId === requestId) {
+					if (pane.data.disposition === "already-open" && superseded) state.worker = superseded;
+					else {
+						if (superseded) pi.appendEntry(WORKER_RELEASE, { plan, worker: superseded, supersededBy: identity(ctx), task: params.task, at: new Date().toISOString() });
+						state.worker.paneId = pane.data.binding.paneId;
+					}
+					save(); refresh(ctx);
+				}
 				return result(pane.ok ? JSON.stringify({ disposition: pane.data.disposition, paneId: pane.data.binding.paneId, projectRoot: pane.data.binding.projectRoot, bindingPath: pane.data.bindingPath }) + nativeMessages.openReceipt : JSON.stringify(pane));
 			} catch (error) { return result(nativeMessages.openFailed + String(error)); }
 			finally { opening = false; }
