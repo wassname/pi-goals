@@ -366,6 +366,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	}
 	const help = "/goals new [initial idea] | edit | discuss | review | ready | status | stop | resume | solo | attach <plan.md> [solo] | model <model> | quit (exit/clear)\nOpenGoalWorker opens a native project pane; use Intercom to steer the verified worker session. Stop pauses work. Quit/exit/clear preserves the plan and clears goal state without a model call; worker processes are unchanged. No forced compaction or model switch; the worker pane's own model is chosen with /model in that pane. Hourly check-ins are one session-bound schedule_task check-in; plan-change reviews are the plan-watcher event hook.";
 	async function ready(ctx: ExtensionContext, menu: boolean, edit = false) {
+		requestedPlanReview = undefined;
 		if (state.mode !== "planning") { ctx.ui.notify("Ready applies to a draft; use status or resume.", "warning"); return; }
 		const text = planText();
 		const items = goals(text);
@@ -610,6 +611,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", (event, ctx) => {
 		const last = event.messages.filter(message => message.role === "assistant").at(-1);
+		if (last?.role === "assistant" && (last.errorMessage || ["error", "aborted"].includes(last.stopReason))) requestedPlanReview = undefined;
 		const text = last?.role === "assistant" ? last.errorMessage || last.content.filter(part => part.type === "text").map(part => part.text).join("\n") || last.stopReason : nativeMessages.noAssistant;
 		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : last?.role === "assistant" && (last.stopReason === "error" || last.errorMessage) ? "blocker" : "unclassified", true, true);
 		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
@@ -705,8 +707,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "RequestPlanReview", label: "Present settled goal plan", description: requestPlanReviewDescription,
 		parameters: Type.Object({}),
-		async execute(_id, _params, _signal, _update, ctx) {
-			if (state.child || state.mode !== "planning" || !ctx.hasUI) return result(planReviewResult.unavailable);
+		async execute(_id, _params, signal, _update, ctx) {
+			if (signal?.aborted || state.child || state.mode !== "planning" || !ctx.hasUI) return result(planReviewResult.unavailable);
 			requestedPlanReview = { generation, digest: digest(planText()) };
 			return result(planReviewResult.queued);
 		},
@@ -744,7 +746,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						command += ` ${value.trim()}`;
 					}
 					if (["attach", "model"].includes(command)) {
-						const value = await ctx.ui.editor(command === "attach" ? "Plan path (optional: solo)" : "Worker model (provider/model)", "");
+						const value = await ctx.ui.editor(command === "attach" ? "Plan path (optional: solo)" : "Worker model guidance (e.g. same model, low)", "");
 						if (!value?.trim() || before !== generation) return;
 						command += ` ${value.trim()}`;
 					}
@@ -769,6 +771,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					return;
 				}
 				if (command === "discuss") {
+					requestedPlanReview = undefined;
 					if (state.mode !== "planning") { ctx.ui.notify("Discuss applies to a draft.", "warning"); return; }
 					ctx.ui.notify(discuss, "info"); return;
 				}
@@ -787,7 +790,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					syncPlanHashes(planText());
 					refresh(ctx);
 					notice = true; fullPlanContextDue = true;
-					ctx.ui.notify(`Preferred worker model recorded as ${ref}; not yet configured. Pass it to the agent in its assignment or live steering for configuration through supported controls, then verify its actual model.`, "info");
+					ctx.ui.notify(nativeMessages.modelRecorded(ref), "info");
 					return;
 				}
 				if (command === "attach" || command.startsWith("attach ")) {

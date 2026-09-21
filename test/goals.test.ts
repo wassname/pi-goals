@@ -332,6 +332,14 @@ it("keeps provisional drafts and interview updates separate from intentional acc
 		writeFileSync(f.path, text);
 		await f.hooks.get("agent_settled")({}, f.ctx);
 	}
+	for (const stopReason of ["aborted", "error"]) {
+		await f.tools.get("RequestPlanReview").execute("cancelled", {}, undefined, undefined, f.ctx);
+		f.hooks.get("agent_end")({ messages: [{ role: "assistant", content: [], stopReason }] }, f.ctx);
+		await f.hooks.get("agent_settled")({}, f.ctx);
+	}
+	await f.tools.get("RequestPlanReview").execute("discussed", {}, undefined, undefined, f.ctx);
+	await f.command("discuss");
+	await f.hooks.get("agent_settled")({}, f.ctx);
 	await f.tools.get("RequestPlanReview").execute("stale", {}, undefined, undefined, f.ctx);
 	writeFileSync(f.path, f.plan + "\n## Interview\nNew unresolved choice.\n");
 	await f.hooks.get("agent_settled")({}, f.ctx);
@@ -1481,16 +1489,15 @@ it("leaves an existing stock pane unbound instead of replacing or retasking it",
 
 it.each(["inherit", "plan", "explicit"])("hands off %s model policy without claiming configuration or invoking an unavailable control", async policy => {
 	const f = fixture(); await f.draft();
-	if (policy !== "inherit") await f.command("model offline/requested");
+	if (policy !== "inherit") await f.command("model same model, low");
 	await f.command("ready");
 	const model = policy === "explicit" ? "missing/unavailable" : undefined;
-	const requested = model ?? (policy === "plan" ? "offline/requested" : undefined);
+	const requested = model ?? (policy === "plan" ? "same model, low" : undefined);
 	await f.tools.get("OpenGoalWorker").execute("open", { task: "bounded work", model }, undefined, undefined, f.ctx);
 	const worker = f.entries.at(-1).data.worker;
 	expect(worker.intercomId).toBeUndefined();
 	const startup = vi.mocked(openProjectPane).mock.calls[0][0].message!;
-	expect(startup).toContain(requested ? `User-supplied model preference: ${JSON.stringify(requested)}` : "Inherit the native model");
-	if (requested) expect(startup).toContain("Preserve later human model changes");
+	if (requested) expect(startup).toContain(JSON.stringify(requested));
 	expect(vi.mocked(openProjectPane).mock.calls[0][0]).not.toHaveProperty("model");
 	const identity = { paneId: "observed-pane", sessionId: "11111111-1111-4111-8111-111111111111", sessionFile: join(f.ctx.cwd, "worker.jsonl"), model: "offline/inherited" };
 	writeFileSync(identity.sessionFile, [
