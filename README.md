@@ -18,6 +18,16 @@ Since it's two+ herdr panes, the user can review both, intervene in both and hav
 
 -- wassname (spelling and punctuation corrected by Pi/OpenAI)
 
+## Requested check-ins and user updates
+
+Give occasional, unprompted, plain-English updates to the user at existing check-ins and meaningful milestones. Reconnect current work to the user’s goal, distinguish verified results from worker claims, and state what remains and what happens next. Use this pause to reconsider the approach and correct drift. Keep unchanged waits short. Keep machine-readable payloads in tool output or linked evidence, rather than the user-facing update.
+
+After human Ready, the supervisor should establish and verify one scheduled check-in, and be reminded if it has no working reminder. It decides the cadence according to the supervision required, editing the existing task rather than adding timers. Reliably followed long work can need fewer checks; drift or stalled work can need more. Check-ins are also a good time to update the user.
+
+A short Markdown checklist and an occasional joke, kaomoji or cowsay are welcome: they are funny and easy to spot when scrolling. Automatic updates should include a random row from `fortune.txt`.
+
+<!-- First paragraph approved and amended by wassname, 2026-09-21. Following paragraphs record wassname's requested behavior in Pi wording; they are not a claim that every part is implemented. Original User ask above is unchanged. -->
+
 ## Screenshot
 
 Mock up:
