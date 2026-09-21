@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -106,7 +106,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 	function start(role: "parent" | "worker", sessionFile?: string) {
 		const child = spawn(resolve("node_modules/.bin/pi"), ["--mode", "rpc", "--no-extensions", "--model", "offline/test",
 			"-e", resolve("test/fixtures/offline-model.ts"), "-e", resolve("src/index.ts"),
-			"-e", resolve("node_modules/pi-intercom/index.ts"), "-e", resolve("node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"),
+			"-e", resolve("node_modules/pi-intercom/index.ts"), "-e", realpathSync(resolve("node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts")),
 			...(role === "worker" ? ["-e", resolve("node_modules/pi-subagents/index.ts")] : []),
 			...(sessionFile ? ["--session", sessionFile] : [])], { cwd, env: {
 			...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PI_SUBAGENT_") && !name.startsWith("PI_GOALS_") && !name.startsWith("HERDR_"))),
@@ -139,6 +139,13 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 	let parent = start("parent"), worker: RpcClient | undefined;
 	try {
 		parent.send({ type: "prompt", id: "new", message: "/goals new deliver the greeting" });
+		await parent.waitFor(m => m.type === "agent_settled");
+		expect(parent.messages.some(isSelect)).toBe(false);
+		const interviewed = plan + "\n## Interview\nProvisional: output format depends on the user's answer.\n";
+		await run(parent, "parent", call("write", { path: planPath, content: interviewed }), { content: "Provisional draft saved. Which greeting format do you want?" });
+		expect(parent.messages.some(isSelect)).toBe(false);
+		expect(records((await state(parent)).sessionFile, "pi-goals-main-supervisor-v1").at(-1).mode).toBe("planning");
+		parent.send({ type: "prompt", id: "review-edit", message: "/goals review" });
 		const proposal = await parent.waitFor(isSelect);
 		parent.send({ type: "extension_ui_response", id: proposal.id, value: "Edit" });
 		const editor = await parent.waitFor(isEditor);
@@ -146,14 +153,15 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const editAt = parent.messages.length;
 		parent.send({ type: "extension_ui_response", id: editor.id, value: approved });
 		await parent.waitFor(m => m.type === "extension_ui_request" && m.method === "setWidget", editAt);
-		expect(readFileSync(planPath, "utf8")).toBe(approved); expect(requests.parent).toHaveLength(2);
+		expect(readFileSync(planPath, "utf8")).toBe(approved);
 		const discussion = parent.messages.length;
 		parent.send({ type: "prompt", id: "discuss", message: "/goals review" });
 		const discuss = await parent.waitFor(isSelect, discussion);
 		parent.send({ type: "extension_ui_response", id: discuss.id, value: "Discuss" });
 		await parent.waitFor(m => m.type === "response" && m.command === "prompt", discussion);
 		const discussionAt = parent.messages.length;
-		parent.send({ type: "prompt", id: "discussion", message: "Keep the edited requirement." });
+		replies.parent.push(call("RequestPlanReview", {}), { content: "Human decision recorded." });
+		parent.send({ type: "prompt", id: "discussion", message: "Keep the edited requirement. Present the settled draft for acceptance." });
 		const ready = await parent.waitFor(isSelect, discussionAt);
 		expect(systemText(requests.parent.at(-1)!)).toContain("Plan only in");
 		const startupState = await state(parent), checkInName = `goals-${startupState.sessionId}`;

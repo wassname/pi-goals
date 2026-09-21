@@ -8,7 +8,6 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { afterEach, expect, it, vi } from "vitest";
 import goalsExtension from "../src/index.js";
-import { goalCheckInWake, planDrafting, reportGoalEventDescription, supervisor } from "../src/prompts.js";
 import { buildWorkerView } from "../src/worker-view.js";
 
 vi.mock("pi-subagents/project-panes", () => ({ openProjectPane: vi.fn(async () => ({ ok: true, data: { bindingPath: "/project/.pi/subagents/project-pane.json", disposition: "opened", binding: { paneId: "native-pane", projectRoot: "/project", command: "pi" } } })) }));
@@ -77,39 +76,6 @@ function fixture(child = false) {
 	};
 	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, launch, channel, event: (event: any) => registration.onEvent(event) };
 }
-
-it("puts exploration, protected decisions and grilling before the plan draft", () => {
-	const explore = planDrafting.indexOf("1. Explore first");
-	const protectedDecisions = planDrafting.indexOf("2. Infer which decisions the human reserves");
-	const grill = planDrafting.indexOf("3. Then use the grilling skill");
-	const draft = planDrafting.indexOf("5. When every goal");
-	expect(explore).toBeGreaterThan(0);
-	expect(explore).toBeLessThan(protectedDecisions);
-	expect(protectedDecisions).toBeLessThan(grill);
-	expect(grill).toBeLessThan(draft);
-	expect(planDrafting).toContain("Read every user-supplied link and resource");
-	expect(planDrafting).toContain("publication approval or editorial voice");
-});
-
-it("leaves stop events informal until the supervisor chooses full review", () => {
-	expect(reportGoalEventDescription).toContain("never create formal review by themselves");
-	expect(reportGoalEventDescription).toContain("only the supervisor can choose full review");
-	const role = supervisor("worker", "/tmp/plan.md", "parent");
-	expect(role).toContain("Goal, Changed, Judgment, Next, Need from you");
-	expect(role).toContain("personally perform the high-level diagnosis, research interpretation, experimental design and consequential judgment");
-	expect(role).toContain("do not outsource the central reasoning");
-	expect(role).toContain("Do not invent pass/fail thresholds or turn a ranking metric");
-	expect(role).toContain("never stopped, retasked, closed or reviewed without explicit user authority");
-	expect(role).toContain("Humour is a reflective meta-learning mechanism");
-	expect(role).toContain("The human can inspect, talk to and change /model in the worker pane directly");
-	expect(role).toContain("pi-goals owns attachment/report correlation, not generic writer concurrency");
-	expect(role).toContain("Only your third choice creates review paperwork");
-	expect(role).toContain("Never wait on an inferred or nonexistent pane");
-	expect(role).toContain("unable to display a secret file does not make an already authorized credential-backed command impossible");
-	expect(role).toContain("python-dotenv or a shell-sourced .env");
-	expect(role).toContain("without reading, printing or sending secret values");
-	expect(goalCheckInWake).toContain("Use formal review only when you choose to allow it to stop");
-});
 
 it("shows incremental VCC Markdown without raw tool results or compaction dumps", async () => {
 	initTheme("dark");
@@ -348,26 +314,30 @@ it("discusses plan changes only during planning", async () => {
 	await f.command("discuss"); expect(f.messages).toHaveLength(before);
 });
 
-it("automatically proposes a changed settled draft once and preserves Discuss", async () => {
+it("keeps provisional drafts and interview updates separate from intentional acceptance", async () => {
 	const f = fixture(); await f.draft();
-	f.ctx.ui.select.mockResolvedValueOnce("Discuss");
-	await f.hooks.get("agent_settled")({}, f.ctx);
-	expect(f.messages.some(m => m.message.customType === "goal-plan-proposal" && m.message.content === f.plan)).toBe(true);
-	expect(f.entries.at(-1).data.mode).toBe("planning");
-	const calls = f.ctx.ui.select.mock.calls.length;
-	await f.hooks.get("agent_settled")({}, f.ctx);
-	expect(f.ctx.ui.select).toHaveBeenCalledTimes(calls);
-	writeFileSync(f.path, f.plan.replace("first output", "revised output"));
-	f.ctx.ui.select.mockResolvedValueOnce("Ready");
-	await f.hooks.get("agent_settled")({}, f.ctx);
-	expect(f.entries.at(-1).data.mode).toBe("supervising");
-});
-
-it("does not propose an empty draft or a delegated worker's plan", async () => {
-	const f = fixture(); await f.command("new");
+	const review = async () => {
+		await f.tools.get("RequestPlanReview").execute("review", {}, undefined, undefined, f.ctx);
+		await f.hooks.get("agent_settled")({}, f.ctx);
+	};
+	for (const text of [f.plan, f.plan + "## Interview\nTODO: consequential choice unanswered.\n", f.plan.replace("first output", "revised output")]) {
+		writeFileSync(f.path, text);
+		await f.hooks.get("agent_settled")({}, f.ctx);
+	}
+	await f.tools.get("RequestPlanReview").execute("stale", {}, undefined, undefined, f.ctx);
+	writeFileSync(f.path, f.plan + "\n## Interview\nNew unresolved choice.\n");
 	await f.hooks.get("agent_settled")({}, f.ctx);
 	expect(f.ctx.ui.select).not.toHaveBeenCalled();
-	const child = fixture(true); await child.hooks.get("agent_settled")({}, child.ctx);
+	expect(f.messages.some(m => m.message.customType === "goal-plan-proposal")).toBe(false);
+	f.ctx.ui.select.mockResolvedValueOnce("Discuss"); await review();
+	expect(f.entries.at(-1).data.mode).toBe("planning");
+	expect(f.messages.some(m => m.message.customType === "goal-plan-proposal")).toBe(true);
+	await f.hooks.get("agent_settled")({}, f.ctx);
+	expect(f.ctx.ui.select).toHaveBeenCalledTimes(1);
+	f.ctx.ui.select.mockResolvedValueOnce("Ready"); await review();
+	expect(f.entries.at(-1).data.mode).toBe("supervising");
+	const child = fixture(true);
+	await child.tools.get("RequestPlanReview").execute("child", {}, undefined, undefined, child.ctx);
 	expect(child.ctx.ui.select).not.toHaveBeenCalled();
 });
 

@@ -38,12 +38,14 @@ import {
 	planDocument,
 	planning,
 	planningSeed,
+	planReviewResult,
 	planUnavailable,
 	readyApproved,
 	removeGoalSchedule,
 	reportGoalEventDescription,
 	reportReviewContent,
 	reportReviewDescription,
+	requestPlanReviewDescription,
 	resumeNotice,
 	scheduleCheckIn,
 	schedulerMessages,
@@ -372,6 +374,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		}
 		const stamp = generation;
 		if (menu || edit) {
+			if (menu) pi.sendMessage({ customType: "goal-plan-proposal", content: text, display: true }, { triggerTurn: false });
 			const choice = edit ? "Edit" : await ctx.ui.select(`Review ${state.plan}`, ["Ready", "Discuss", "Edit", "Cancel"]);
 			if (stamp !== generation || digest(planText()) !== digest(text)) { ctx.ui.notify("Plan changed during review. Review it again.", "warning"); return; }
 			if (choice === "Discuss") { ctx.ui.notify(discuss, "info"); return; }
@@ -610,28 +613,22 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const text = last?.role === "assistant" ? last.errorMessage || last.content.filter(part => part.type === "text").map(part => part.text).join("\n") || last.stopReason : nativeMessages.noAssistant;
 		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : last?.role === "assistant" && (last.stopReason === "error" || last.errorMessage) ? "blocker" : "unclassified", true, true);
 		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
-	let proposedDraft = "";
-	let proposing = false;
 	pi.on("agent_start", (_event, ctx) => {
 		agentRunActive = true;
 		if (state.child && state.parent) pi.appendEntry(RUN, { plan: state.plan, parent: state.parent, session: identity(ctx) });
 		if (clearCheckIn) { clearTimeout(clearCheckIn.deadline); clearCheckIn.deadline = undefined; }
 	});
+	let requestedPlanReview: { generation: number; digest: string } | undefined;
 	pi.on("agent_settled", async (_e, ctx) => {
 		agentRunActive = false;
 		clearCheckIn?.startDeadline?.();
 		reconcileReports(ctx);
 		remindReports(ctx);
-		if (state.child || state.mode !== "planning" || !ctx.hasUI || proposing) return;
-		const text = planText();
-		const version = `${state.plan}:${digest(text)}`;
-		if (!goals(text).length || version === proposedDraft) return;
-		proposedDraft = version;
-		proposing = true;
-		try {
-			pi.sendMessage({ customType: "goal-plan-proposal", content: text, display: true }, { triggerTurn: false });
-			await ready(ctx, true);
-		} finally { proposing = false; }
+		const requested = requestedPlanReview; requestedPlanReview = undefined;
+		if (!requested || requested.generation !== generation || state.child || state.mode !== "planning" || !ctx.hasUI) return;
+		const snapshot = readPlan();
+		if (snapshot.text === undefined || digest(snapshot.text) !== requested.digest) return;
+		await ready(ctx, true);
 	});
 	// No context hook. Historical message arrays, native checkpoints and model selection are untouched.
 	pi.on("before_agent_start", (event, ctx) => {
@@ -703,6 +700,16 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const nativeWorkerControl = event.toolName === "OpenGoalWorker" || typeof action === "string" && action.startsWith("project.");
 		if (["planning", "paused"].includes(state.mode)) return { block: true, reason: goalToolBlocked(state.mode) };
 		if (nativeWorkerControl && (state.child || state.mode === "solo")) return { block: true, reason: goalToolBlocked(state.child ? "worker" : state.mode) };
+	});
+
+	pi.registerTool({
+		name: "RequestPlanReview", label: "Present settled goal plan", description: requestPlanReviewDescription,
+		parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _update, ctx) {
+			if (state.child || state.mode !== "planning" || !ctx.hasUI) return result(planReviewResult.unavailable);
+			requestedPlanReview = { generation, digest: digest(planText()) };
+			return result(planReviewResult.queued);
+		},
 	});
 
 	pi.registerCommand("goals", {
