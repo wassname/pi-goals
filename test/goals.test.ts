@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
@@ -69,8 +69,8 @@ function fixture(child = false) {
 		await delay(25);
 	};
 	const start = (_id: string) => hooks.get("tool_call")({ toolName: "OpenGoalWorker" }, ctx);
-	const launch = async (details: { id: string; sessionFile: string; task?: string }) => {
-		await tools.get("OpenGoalWorker").execute("open", { task: details.task ?? "Implement first output" }, undefined, undefined, ctx);
+	const launch = async (details: { id: string; sessionFile: string; task?: string; cwd?: string }) => {
+		await tools.get("OpenGoalWorker").execute("open", { task: details.task ?? "Implement first output", cwd: details.cwd }, undefined, undefined, ctx);
 		const state = entries.at(-1).data;
 		registration.onEvent({ type: "message", fromSessionId: details.id, payload: { type: "attached", to: state.worker.parentId, requestId: state.worker.requestId, plan: state.plan, sessionFile: details.sessionFile } });
 	};
@@ -1213,8 +1213,13 @@ it("passive pause is visible immediately while its model notice waits safely for
 });
 
 // The native surface has one project binding; these replace old launch-schema/helper tests.
-it("opens no-focus, records exact-worker stop events without automatic review debt", async () => {
+it.each(["default", "absolute", "relative"])("opens no-focus with %s cwd and keeps exact-worker stop correlation", async (mode) => {
 	const f = fixture(); await f.draft(); await f.command("ready");
+	const supervisorCwd = f.ctx.cwd;
+	const workerCwd = mode === "default" ? supervisorCwd : mkdtempSync(join(tmpdir(), "goals-worker-project-"));
+	if (mode !== "default") roots.push(workerCwd);
+	const cwd = mode === "default" ? undefined : mode === "relative" ? relative(supervisorCwd, workerCwd) : workerCwd;
+	const projectRoot = realpathSync(workerCwd);
 	for (const event of [
 		{ toolName: "intercom", input: { action: "send", cwd: "/tmp/other", openProjectPaneIfMissing: true } },
 		{ toolName: "subagent", input: { action: "project.open", cwd: "/tmp/other" } },
@@ -1223,11 +1228,16 @@ it("opens no-focus, records exact-worker stop events without automatic review de
 	f.channel.listSessions.mockRejectedValueOnce(new Error("Intercom is not connected"));
 	const waiting = await f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
 	expect(waiting.content[0].text).toContain("still connecting"); expect(openProjectPane).not.toHaveBeenCalled();
-	await f.launch({ id: "worker-id", sessionFile: "/tmp/native-worker.jsonl", task: "Inspect [cached interruption audit](slop/audits/20260916_job1551_a2_cached_interruption_audit.md) before rerun" });
-	expect(openProjectPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: f.ctx.cwd, focus: false }));
-	expect(vi.mocked(openProjectPane).mock.calls[0][0].message).toContain("WAIT for an explicit assignment");
+	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: true, data: { bindingPath: join(projectRoot, ".pi/subagents/project-panes/herdr.json"), disposition: "opened", binding: { paneId: "native-pane", projectRoot, command: "pi" } } });
+	await f.launch({ id: "worker-id", sessionFile: "/tmp/native-worker.jsonl", cwd, task: "Inspect [cached interruption audit](slop/audits/20260916_job1551_a2_cached_interruption_audit.md) before rerun" });
+	expect(openProjectPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: workerCwd, focus: false }));
+	const startup = vi.mocked(openProjectPane).mock.calls[0][0].message!;
 	const worker = f.entries.at(-1).data.worker;
-	expect(worker).toMatchObject({ paneId: "native-pane", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
+	expect(worker).toMatchObject({ paneId: "native-pane", projectRoot, parentId: "parent-intercom", intercomId: "worker-id", sessionFile: "/tmp/native-worker.jsonl" });
+	for (const reference of [f.path, worker.parentId, worker.requestId, workerCwd]) expect(startup).toContain(JSON.stringify(reference));
+	expect(f.entries.at(-1).data.plan).toBe(f.path);
+	expect(f.ctx.cwd).toBe(supervisorCwd);
+	expect(f.channel.publish).not.toHaveBeenCalled(); // attachment alone sends no assignment
 	expect(f.messages.at(-1)).toMatchObject({ message: { customType: "pi-goals-supervision", display: true, content: expect.stringContaining("Metadata only; no acknowledgement or review turn requested") }, options: { triggerTurn: false } });
 	expect(f.messages.at(-1).savedPrompt).toBeUndefined();
 	f.event({ type: "message", fromSessionId: "orphan-worker", payload: { type: "attached", to: worker.parentId, requestId: "invented-request", plan: f.path, sessionFile: "/tmp/orphan.jsonl" } });
@@ -1266,6 +1276,11 @@ it("opens no-focus, records exact-worker stop events without automatic review de
 	await f.command("status");
 	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain("Latest worker status event: unclassified");
 	expect(f.ctx.ui.notify.mock.lastCall?.[0]).not.toContain("automatic-stop");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain(projectRoot);
+	f.hooks.get("session_start")({}, f.ctx);
+	await f.command("status");
+	expect(f.ctx.ui.notify.mock.lastCall?.[0]).toContain(projectRoot);
+	expect(f.entries.at(-1).data.worker).toMatchObject({ projectRoot, requestId: worker.requestId, intercomId: "worker-id" });
 	expect(readFileSync(f.path, "utf8")).not.toContain("[✓]");
 	await f.command("stop");
 	f.event({ type: "message", fromSessionId: "worker-id", payload: { ...notice, entryId: "revision-2", text: "New stop request during pause" } });
@@ -1329,7 +1344,7 @@ it("supersedes an inherited worker binding when the supervisor opens a replaceme
 	const opened = await f.tools.get("OpenGoalWorker").execute("replacement", { task: "Continue the approved plan" }, undefined, undefined, f.ctx);
 	expect(opened.content[0].text).toContain('"disposition":"opened"');
 	const replacement = f.entries.at(-1).data.worker;
-	expect(replacement).toMatchObject({ paneId: "native-pane", parentId: "parent-intercom", task: "Continue the approved plan" });
+	expect(replacement).toMatchObject({ paneId: "native-pane", projectRoot: "/project", parentId: "parent-intercom", task: "Continue the approved plan" }); // retain stock's root, not the supervisor cwd
 	expect(replacement.requestId).not.toBe(oldRequest);
 	const release = f.ctx.sessionManager.getBranch().find((entry: any) => entry.customType === "pi-goals-worker-release");
 	expect(release?.data).toMatchObject({ plan: f.path, worker: { intercomId: "old-worker", requestId: oldRequest }, task: "Continue the approved plan" });
@@ -1338,15 +1353,23 @@ it("supersedes an inherited worker binding when the supervisor opens a replaceme
 	expect(openProjectPane).toHaveBeenCalledTimes(2);
 });
 
-it("preserves the current worker binding when stock reports an existing pane", async () => {
+it.each(["default", "alternate"])("preserves the current worker binding when stock reports an existing %s pane", async (mode) => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.launch({ id: "old-worker", sessionFile: "/tmp/old-worker.jsonl", task: "Old task" });
 	const previous = structuredClone(f.entries.at(-1).data.worker);
-	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: true, data: { bindingPath: "/existing/binding.json", disposition: "already-open", binding: { paneId: "existing-pane", projectRoot: f.ctx.cwd, command: "pi" } } });
-	const opened = await f.tools.get("OpenGoalWorker").execute("existing", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
+	const cwd = mode === "default" ? undefined : mkdtempSync(join(tmpdir(), "goals-foreign-project-"));
+	if (cwd) roots.push(cwd);
+	const projectRoot = realpathSync(cwd ?? f.ctx.cwd);
+	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: true, data: { bindingPath: "/existing/binding.json", disposition: "already-open", binding: { paneId: "existing-pane", projectRoot, command: "pi" } } });
+	const opened = await f.tools.get("OpenGoalWorker").execute("existing", { task: "Proposed replacement", cwd }, undefined, undefined, f.ctx);
+	expect(openProjectPane).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: cwd ?? f.ctx.cwd, focus: false }));
 	expect(opened.content[0].text).toContain('"disposition":"already-open"');
+	expect(opened.content[0].text).toContain(JSON.stringify(projectRoot));
 	expect(f.entries.at(-1).data.worker).toEqual(previous);
+	expect(f.channel.publish).not.toHaveBeenCalled();
 	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-release")).toBe(false);
+	f.event({ type: "message", fromSessionId: "old-worker", payload: { type: "stopped", to: previous.parentId, requestId: previous.requestId, plan: f.path, entryId: "after-foreign-open", kind: "blocker", text: "Original worker still reports" } });
+	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-event" && entry.data.id === "old-worker:after-foreign-open")).toBe(true);
 });
 
 it("retains worker history and report routing after definite pre-open failure, not ambiguous partial open", async () => {
@@ -1358,8 +1381,10 @@ it("retains worker history and report routing after definite pre-open failure, n
 	const tool = f.tools.get("OpenGoalWorker");
 	// Exercise the actual stock preflight, which returns before calling Herdr for this missing cwd.
 	const stock = await vi.importActual<typeof import("pi-subagents/project-panes")>("pi-subagents/project-panes");
-	vi.mocked(openProjectPane).mockImplementationOnce(options => stock.openProjectPane({ ...options, cwd: join(f.ctx.cwd, "missing-directory") }));
-	const reply = await tool.execute("failed", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
+	vi.mocked(openProjectPane).mockImplementationOnce(stock.openProjectPane);
+	const reply = await tool.execute("failed", { task: "Proposed replacement", cwd: "missing-directory" }, undefined, undefined, f.ctx);
+	expect(openProjectPane).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: join(f.ctx.cwd, "missing-directory") }));
+	expect(existsSync(join(f.ctx.cwd, "missing-directory"))).toBe(false);
 	expect(reply.content[0].text).toContain("INVALID_PROJECT_ROOT");
 	expect(f.entries.at(-1).data.worker).toEqual(previous);
 	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: false, error: { code: "HERDR_UNSUPPORTED_VERSION", message: "Stock version preflight rejected" } });
@@ -1470,6 +1495,10 @@ it("blocks concurrent opening and lets stock pane ownership resolve a retry", as
 	const tool = f.tools.get("OpenGoalWorker");
 	expect(tool.parameters.properties.task.minLength).toBe(1);
 	expect((await tool.execute("empty", { task: "" }, undefined, undefined, f.ctx)).content[0].text).toContain("task");
+	const before = structuredClone(f.entries.at(-1).data);
+	for (const cwd of ["", "   "]) await tool.execute("empty-cwd", { task: "first", cwd }, undefined, undefined, f.ctx);
+	expect(openProjectPane).not.toHaveBeenCalled();
+	expect(f.entries.at(-1).data).toEqual(before);
 	let release!: () => void;
 	vi.mocked(openProjectPane).mockImplementationOnce(() => new Promise((_resolve, reject) => { release = () => reject(new Error("connection lost after open")); }));
 	const opening = f.tools.get("OpenGoalWorker").execute("open", { task: "first" }, undefined, undefined, f.ctx);
@@ -1491,7 +1520,7 @@ it("leaves an existing stock pane unbound instead of replacing or retasking it",
 	const before = f.messages.length;
 	const reply = await f.tools.get("OpenGoalWorker").execute("open", { task: "proposed work" }, undefined, undefined, f.ctx);
 	expect(reply.content[0].text).toContain("no startup was sent");
-	expect(f.entries.at(-1).data.worker).toMatchObject({ paneId: "existing-pane" });
+	expect(f.entries.at(-1).data.worker).toMatchObject({ paneId: "existing-pane", projectRoot: f.ctx.cwd });
 	expect(f.entries.at(-1).data.worker.intercomId).toBeUndefined();
 	expect(f.messages).toHaveLength(before);
 	expect(f.channel.publish).not.toHaveBeenCalled();

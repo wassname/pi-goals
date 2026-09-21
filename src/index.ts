@@ -84,7 +84,7 @@ interface Peer {
 interface State {
 	mode: Mode;
 	plan?: string;
-	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; requestId?: string; parentId?: string; task?: string; identity?: Peer; disconnectRevision?: number };
+	worker?: { sessionFile?: string; intercomId?: string; paneId?: string; projectRoot?: string; requestId?: string; parentId?: string; task?: string; identity?: Peer; disconnectRevision?: number };
 	parent?: { intercomId: string; requestId: string };
 	workerStopped?: boolean;
 	pausedFrom?: "solo" | "supervising";
@@ -763,6 +763,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 						`Selected worker-stop reviews pending delivery: ${pendingReports(ctx).map(reportLabel).join("; ") || "none"}`,
 						`Latest worker status event: ${records<WorkerEvent>(ctx, WORKER_EVENT).at(-1)?.kind ?? "none"}`,
 						`Recorded worker session: ${state.worker?.sessionFile ?? "not recorded"}`,
+						nativeMessages.workerProjectRoot(state.worker?.projectRoot),
 						`Worker Intercom: ${state.worker?.intercomId ?? "unconfirmed"}; native pane: ${state.worker?.identity?.paneId || state.worker?.paneId || "unconfirmed"}`,
 						notedPlanValue("worker session") ? `Worker session noted in plan: ${notedPlanValue("worker session")}` : "",
 						`Check-in: session-scoped pi-scheduler task ${JSON.stringify(`goals-${ctx.sessionManager.getSessionId()}`)} (default 1h; /schedules all shows current recurrence; manage_scheduled_task updates it)`,
@@ -898,12 +899,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.registerTool({
 		name: "OpenGoalWorker", label: "Open native goal worker", description: nativeMessages.openDescription,
-		parameters: Type.Object({ task: Type.String({ minLength: 1 }), model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })) }),
+		parameters: Type.Object({ task: Type.String({ minLength: 1 }), cwd: Type.Optional(Type.String({ minLength: 1, description: nativeMessages.cwdDescription })), model: Type.Optional(Type.String({ description: nativeMessages.modelDescription })) }),
 		async execute(_id, params, signal, _update, ctx) {
 			if (state.child || state.mode !== "supervising" || !state.plan) return result(goalToolBlocked(state.mode));
-			// TODO(2026-11+, Pi): Recheck pi-subagents/project-panes v1's one-pane-per-cwd limit before adding multiple visible workers.
+			// Stock owns one binding per canonical cwd, including explicitly selected worktrees.
 			if (opening) return result(nativeMessages.alreadyRecorded);
 			if (!params.task.trim()) return result(nativeMessages.taskRequired);
+			if (params.cwd !== undefined && !params.cwd.trim()) return result(nativeMessages.cwdRequired);
+			const cwd = params.cwd === undefined ? ctx.cwd : resolve(ctx.cwd, params.cwd);
 			if (!channel?.snapshot().connected || !channel.snapshot().supported) return result(nativeMessages.intercomNotReady);
 			const preflight = generation;
 			const peers = await channel.listSessions().catch(() => undefined);
@@ -921,7 +924,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			state.worker = { requestId, parentId: self[0].id, task: params.task }; state.workerStopped = false; workerRevision++; opening = true; save();
 			try {
 				// Stock open sends startup only to a newly created context; existing panes receive nothing.
-				const pane = await openProjectPane({ cwd: ctx.cwd, message: workerAssignment(plan, self[0].id, requestId, params.task, model), focus: false, signal });
+				const pane = await openProjectPane({ cwd, message: workerAssignment(plan, self[0].id, requestId, params.task, cwd, model), focus: false, signal });
 				// Stock v1 emits these codes only before pane split/run. Other errors may follow a partial open.
 				const unopened = !pane.ok && ["INVALID_PROJECT_ROOT", "HERDR_UNSUPPORTED_VERSION", "INVALID_BINDING", "BINDING_READ_FAILED", "PANE_OWNERSHIP_UNVERIFIED"].includes(pane.error.code);
 				if ((pane.ok || unopened) && state.plan === plan && state.worker?.requestId === requestId) {
@@ -930,6 +933,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					} else if (pane.ok) {
 						if (superseded) pi.appendEntry(WORKER_RELEASE, { plan, worker: superseded, supersededBy: identity(ctx), task: params.task, at: new Date().toISOString() });
 						state.worker!.paneId = pane.data.binding.paneId;
+						state.worker!.projectRoot = pane.data.binding.projectRoot;
 					}
 					save(); refresh(ctx);
 				}
