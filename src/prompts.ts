@@ -141,7 +141,7 @@ export const planDocument = (objective: string) => `# ${objective.split("\n")[0]
 export const requestPlanReviewDescription = "Intentionally present the settled goal draft for human acceptance through the existing Ready/Discuss/Edit/Cancel menu. Planning parent only. Not for provisional drafts, redrafting, interview or Log updates; resolve consequential open questions first unless the user explicitly requests a shortcut. Only human Ready authorizes execution.";
 export const planReviewResult = {
 	unavailable: "Plan review requires a planning parent and an interactive UI. No execution authorized.",
-	queued: "Intentional review queued for the end of this turn. Finish without repeating the full plan; the interface will present it. No execution authorized before human Ready. Further edits, a failed/aborted turn, Discuss/Edit/Cancel or a mode change cancel this request; request again only when settled.",
+	queued: "Intentional review queued for the end of this turn. Finish without repeating the full plan; the interface will present it. No execution authorized before human Ready. Further edits, new user input, a failed/aborted turn, Discuss/Edit/Cancel or a mode change cancel this request; request again only when settled.",
 };
 export const discuss = "Type your changes in chat; the draft stays open.";
 

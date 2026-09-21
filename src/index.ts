@@ -620,14 +620,14 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (state.child && state.parent) pi.appendEntry(RUN, { plan: state.plan, parent: state.parent, session: identity(ctx) });
 		if (clearCheckIn) { clearTimeout(clearCheckIn.deadline); clearCheckIn.deadline = undefined; }
 	});
-	let requestedPlanReview: { generation: number; digest: string } | undefined;
+	let requestedPlanReview: { generation: number; digest: string; signal?: AbortSignal } | undefined;
 	pi.on("agent_settled", async (_e, ctx) => {
 		agentRunActive = false;
 		clearCheckIn?.startDeadline?.();
 		reconcileReports(ctx);
 		remindReports(ctx);
 		const requested = requestedPlanReview; requestedPlanReview = undefined;
-		if (!requested || requested.generation !== generation || state.child || state.mode !== "planning" || !ctx.hasUI) return;
+		if (!requested || requested.signal?.aborted || requested.generation !== generation || state.child || state.mode !== "planning" || !ctx.hasUI) return;
 		const snapshot = readPlan();
 		if (snapshot.text === undefined || digest(snapshot.text) !== requested.digest) return;
 		await ready(ctx, true);
@@ -667,7 +667,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		return { systemPrompt: `${event.systemPrompt}\n\n${role}${pending.length ? `\n${pendingReportReviews(pending.map(reportLabel))}` : ""}`, ...(message ? { message } : {}) };
 	});
 	pi.on("input", (event, ctx) => {
-		if (event.source !== "extension") { pauseCheckIn = false; return; }
+		if (event.source !== "extension") { requestedPlanReview = undefined; pauseCheckIn = false; return; }
 		const wake = /^\[Scheduled task ([a-zA-Z0-9_-]+) fired\]\nName: ([^\n]+)\nAction: prompt\n/.exec(event.text);
 		if (!wake || wake[2] !== `goals-${ctx.sessionManager.getSessionId()}` || !ownedCheckInIds(ctx).has(wake[1])) return;
 		const snapshot = readPlan();
@@ -709,7 +709,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		parameters: Type.Object({}),
 		async execute(_id, _params, signal, _update, ctx) {
 			if (signal?.aborted || state.child || state.mode !== "planning" || !ctx.hasUI) return result(planReviewResult.unavailable);
-			requestedPlanReview = { generation, digest: digest(planText()) };
+			requestedPlanReview = { generation, digest: digest(planText()), signal };
 			return result(planReviewResult.queued);
 		},
 	});

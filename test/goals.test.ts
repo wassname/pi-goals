@@ -337,6 +337,13 @@ it("keeps provisional drafts and interview updates separate from intentional acc
 		f.hooks.get("agent_end")({ messages: [{ role: "assistant", content: [], stopReason }] }, f.ctx);
 		await f.hooks.get("agent_settled")({}, f.ctx);
 	}
+	const interrupted = new AbortController();
+	await f.tools.get("RequestPlanReview").execute("interrupted", {}, interrupted.signal, undefined, f.ctx);
+	interrupted.abort(); // can arrive after the tool returned, without a new assistant error
+	await f.hooks.get("agent_settled")({}, f.ctx);
+	await f.tools.get("RequestPlanReview").execute("superseded", {}, undefined, undefined, f.ctx);
+	f.hooks.get("input")({ source: "interactive", text: "Wait, another question" }, f.ctx);
+	await f.hooks.get("agent_settled")({}, f.ctx);
 	await f.tools.get("RequestPlanReview").execute("discussed", {}, undefined, undefined, f.ctx);
 	await f.command("discuss");
 	await f.hooks.get("agent_settled")({}, f.ctx);
