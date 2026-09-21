@@ -909,6 +909,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			if (self.length !== 1) return result(nativeMessages.noIdentity);
 			if (preflight !== generation || opening || signal?.aborted) return result(messages.cancelled);
 			const superseded = state.worker ? structuredClone(state.worker) : undefined;
+			const previouslyStopped = state.workerStopped;
 			const preference = params.model?.trim() || notedPlanValue("preferred worker model");
 			const model = preference && (preference.includes("/") || !/^(?:none|\(none|default|inherit|not stated)\b/i.test(preference)) ? preference : undefined;
 			const plan = state.plan;
@@ -918,15 +919,18 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			try {
 				// Stock open sends startup only to a newly created context; existing panes receive nothing.
 				const pane = await openProjectPane({ cwd: ctx.cwd, message: workerAssignment(plan, self[0].id, requestId, params.task, model), focus: false, signal });
-				if (pane.ok && state.plan === plan && state.worker?.requestId === requestId) {
-					if (pane.data.disposition === "already-open" && superseded) state.worker = superseded;
-					else {
+				// Stock v1 emits these codes only before pane split/run. Other errors may follow a partial open.
+				const unopened = !pane.ok && ["INVALID_PROJECT_ROOT", "INVALID_BINDING", "BINDING_READ_FAILED", "PANE_OWNERSHIP_UNVERIFIED"].includes(pane.error.code);
+				if ((pane.ok || unopened) && state.plan === plan && state.worker?.requestId === requestId) {
+					if (unopened || pane.ok && pane.data.disposition === "already-open" && superseded) {
+						state.worker = superseded; state.workerStopped = previouslyStopped;
+					} else if (pane.ok) {
 						if (superseded) pi.appendEntry(WORKER_RELEASE, { plan, worker: superseded, supersededBy: identity(ctx), task: params.task, at: new Date().toISOString() });
-						state.worker.paneId = pane.data.binding.paneId;
+						state.worker!.paneId = pane.data.binding.paneId;
 					}
 					save(); refresh(ctx);
 				}
-				return result(pane.ok ? JSON.stringify({ disposition: pane.data.disposition, paneId: pane.data.binding.paneId, projectRoot: pane.data.binding.projectRoot, bindingPath: pane.data.bindingPath }) + nativeMessages.openReceipt : JSON.stringify(pane));
+				return result(pane.ok ? JSON.stringify({ disposition: pane.data.disposition, paneId: pane.data.binding.paneId, projectRoot: pane.data.binding.projectRoot, bindingPath: pane.data.bindingPath }) + nativeMessages.openReceipt : (unopened ? nativeMessages.unopened : nativeMessages.openUncertain) + JSON.stringify(pane));
 			} catch (error) { return result(nativeMessages.openFailed + String(error)); }
 			finally { opening = false; }
 		},

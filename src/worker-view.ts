@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { compile } from "@sting8k/pi-vcc/src/core/summarize.js";
+import { workerViewText } from "./prompts.js";
 
 export const MAX_WORKER_VIEW_BYTES = 8_000;
 const RECALL = /\n*-*\n*Use `vcc_recall`[\s\S]*$/;
@@ -42,7 +43,9 @@ export function viewClip(text: string, bytes: number): string {
 function messageRows(entries: SessionEntry[]) {
 	const boundary = entries.map(entry => entry.type).lastIndexOf("compaction");
 	const boundaryId = boundary < 0 ? "root" : entries[boundary].id;
-	const rows = entries.slice(boundary + 1).flatMap(entry => {
+	const checkpoint = entries[boundary];
+	const kept = checkpoint?.type === "compaction" ? entries.findIndex(entry => entry.id === checkpoint.firstKeptEntryId) : -1;
+	const rows = entries.slice(kept >= 0 && kept < boundary ? kept : boundary + 1).flatMap(entry => {
 		if (entry.type === "message") return [{ id: entry.id, timestamp: entry.timestamp, message: entry.message }];
 		if (entry.type === "custom_message" && !entry.customType.startsWith("pi-goals-")) {
 			return [{ id: entry.id, timestamp: entry.timestamp, message: { role: "user" as const, content: entry.content, timestamp: Date.parse(entry.timestamp) } }];
@@ -50,6 +53,34 @@ function messageRows(entries: SessionEntry[]) {
 		return [];
 	});
 	return { boundary: boundaryId ?? `compaction-${boundary}`, rows };
+}
+
+// Read the latest outcomes from the whole saved branch, independently of VCC paging/compaction.
+function latestOutcomes(entries: SessionEntry[]): string[] {
+	let latest = "", failure = "";
+	const compact = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 500);
+	for (const entry of entries) {
+		let outcome = "", failed = false;
+		if (entry.type === "message") {
+			const message = entry.message;
+			if (message.role === "assistant" && (message.errorMessage || ["stop", "error", "aborted"].includes(message.stopReason))) {
+				failed = Boolean(message.errorMessage) || message.stopReason === "error";
+				outcome = `assistant ${message.stopReason}: ${compact(message.errorMessage || message.content.filter(block => block.type === "text").map(block => block.text).join(" "))}`;
+			} else if (message.role === "toolResult" && message.isError) {
+				failed = true;
+				outcome = `${message.toolName} failed: ${compact(message.content.filter(block => block.type === "text").map(block => block.text).join(" "))}`;
+			}
+		} else if (entry.type === "custom" && entry.customType === "pi-goals-worker-stop") {
+			const stop = entry.data as { kind?: string; text?: string };
+			failed = stop.kind === "blocker";
+			outcome = `${stop.kind || "unclassified"}: ${compact(stop.text || "")}`;
+		}
+		if (outcome) {
+			latest = `${entry.timestamp}: ${outcome}`;
+			if (failed) failure = latest;
+		}
+	}
+	return [failure && failure !== latest ? `Last failure — ${failure}` : "", latest && `Last outcome — ${latest}`].filter(Boolean);
 }
 
 function cleanCompile(messages: unknown[]): string {
@@ -142,6 +173,7 @@ export function buildWorkerView(
 	diagnostic = false,
 ): { text: string; cursor: WorkerViewCursor } {
 	const current = messageRows(entries), rows = current.rows;
+	const outcomes = latestOutcomes(entries);
 	const sameHistory = previous?.sessionFile === sessionFile && previous.boundary === current.boundary;
 	const anchor = sameHistory && previous.through ? rows.findIndex(row => row.id === previous.through) : -1;
 	const since = anchor >= 0 ? anchor + 1 : 0;
@@ -173,10 +205,12 @@ export function buildWorkerView(
 		const remaining = fresh.length - consumed.length;
 		const lines = [
 			"## Worker view",
-			`Task: ${task.replace(/\s+/g, " ").trim().slice(0, 400) || "unknown"}`,
+			`Launch task: ${task.replace(/\s+/g, " ").trim().slice(0, 400) || "unknown"}`,
 			`Status: ${status}; last saved activity ${age(lastTimestamp)} ago`,
 			`Model: ${model}`,
 			`Background: ${background}; unanswered tool calls: ${pendingNames}`,
+			...(current.boundary !== "root" ? [workerViewText.compactedActivity] : []),
+			...(outcomes.length ? ["", `### ${workerViewText.historicalOutcomes}`, ...outcomes.map(outcome => `- ${outcome}`)] : []),
 			...(stale ? [`Progress: no new file or commit for ${stale} view${stale === 1 ? "" : "s"} with new turns`] : []),
 			"",
 			"### VCC summary of new turns",

@@ -107,10 +107,12 @@ it("shows incremental VCC Markdown without raw tool results or compaction dumps"
 	expect(next).toContain("Implemented the correction");
 	expect(next).toContain("src/a.ts");
 	expect(next).toContain("process returned: Process 1820 exited successfully");
-	expect(next).not.toContain("missing.txt");
-	history.push({ type: "compaction", id: "later-checkpoint", timestamp, summary: "SECOND_COMPACTION_DUMP_MUST_STAY_HIDDEN" });
+	expect(next.split("### VCC summary of new turns")[1]).not.toContain("missing.txt");
+	history.push({ type: "compaction", id: "later-checkpoint", firstKeptEntryId: "pending-call", timestamp, summary: "SECOND_COMPACTION_DUMP_MUST_STAY_HIDDEN" });
 	for (let i = 0; i < 12; i++) history.push(entry(`post-compaction-${i}`, { role: "assistant", content: [{ type: "text", text: `POST_COMPACTION_TURN_${i}` }] }));
 	const afterCompaction = (await tool.execute("after-compaction", {}, undefined, undefined, f.ctx)).content[0].text;
+	expect(afterCompaction).toContain("unanswered tool calls: edit"); // retained process call has its result; retained edit is still unanswered
+	expect(afterCompaction).toContain("earlier unanswered calls are unknown");
 	expect(afterCompaction).toContain("POST_COMPACTION_TURN_0");
 	expect(afterCompaction).toContain("POST_COMPACTION_TURN_11");
 	expect(afterCompaction).not.toContain("SECOND_COMPACTION_DUMP_MUST_STAY_HIDDEN");
@@ -126,14 +128,20 @@ it("paginates oversized worker history without advancing past omitted turns", ()
 		type: "message" as const, id: `large-${index}`, parentId: index ? `large-${index - 1}` : null, timestamp,
 		message: { role: "assistant" as const, content: [{ type: "text" as const, text: `TURN_${index} ${String(index).repeat(900)}` }], stopReason: "stop" as const, timestamp: Date.now() },
 	}));
-	const runtime = { connected: true, processes: [{ pid: 7, ppid: 1, command: "node", args: "node /opt/pi-coding-agent/dist/cli.js" }] };
+	entries.push({ type: "message", id: "provider-failure", parentId: "large-47", timestamp, message: { role: "assistant", content: [], stopReason: "error", errorMessage: "429: provider quota exhausted", timestamp: Date.now() } } as any);
+	const runtime = { connected: false, processes: [{ pid: 7, ppid: 1, command: "node", args: "node /opt/pi-coding-agent/dist/cli.js" }] };
 	let view = buildWorkerView(entries as any, "/tmp/worker.jsonl", "large history", runtime);
 	expect(view.text).toContain("newer saved turns remain");
+	expect(view.text).toContain("429: provider quota exhausted");
+	expect(view.text).toContain("Status: disconnected");
 	expect(view.text).toContain("1 probable child Pi process");
 	expect(view.cursor.through).not.toBe("large-47");
 	const first = view.cursor.through;
-	for (let page = 0; page < 64 && view.cursor.through !== "large-47"; page++) view = buildWorkerView(entries as any, "/tmp/worker.jsonl", "large history", runtime, view.cursor);
-	expect(view.cursor.through).toBe("large-47");
+	for (let page = 0; page < 64 && view.cursor.through !== "provider-failure"; page++) view = buildWorkerView(entries as any, "/tmp/worker.jsonl", "large history", runtime, view.cursor);
+	expect(view.cursor.through).toBe("provider-failure");
+	view = buildWorkerView(entries as any, "/tmp/worker.jsonl", "large history", runtime, view.cursor);
+	expect(view.text).toContain("429: provider quota exhausted");
+	expect(Buffer.byteLength(view.text)).toBeLessThanOrEqual(8_000);
 	expect(view.cursor.through).not.toBe(first);
 });
 
@@ -1323,6 +1331,31 @@ it("preserves the current worker binding when stock reports an existing pane", a
 	const opened = await f.tools.get("OpenGoalWorker").execute("existing", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
 	expect(opened.content[0].text).toContain('"disposition":"already-open"');
 	expect(f.entries.at(-1).data.worker).toEqual(previous);
+	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-release")).toBe(false);
+});
+
+it("retains worker history and report routing after definite pre-open failure, not ambiguous partial open", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	const session = SessionManager.create(f.ctx.cwd, join(f.ctx.cwd, "sessions"));
+	session.appendMessage({ role: "assistant", content: [{ type: "text", text: "Existing approved work" }], stopReason: "stop", timestamp: Date.now() } as any);
+	await f.launch({ id: "old-worker", sessionFile: session.getSessionFile()! });
+	const previous = structuredClone(f.entries.at(-1).data.worker);
+	const tool = f.tools.get("OpenGoalWorker");
+	// Exercise the actual stock preflight, which returns before calling Herdr for this missing cwd.
+	const stock = await vi.importActual<typeof import("pi-subagents/project-panes")>("pi-subagents/project-panes");
+	vi.mocked(openProjectPane).mockImplementationOnce(options => stock.openProjectPane({ ...options, cwd: join(f.ctx.cwd, "missing-directory") }));
+	const reply = await tool.execute("failed", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
+	expect(reply.content[0].text).toContain("INVALID_PROJECT_ROOT");
+	expect(f.entries.at(-1).data.worker).toEqual(previous);
+	const view = await f.tools.get("worker_view").execute("view", {}, undefined, undefined, f.ctx);
+	expect(view.content[0].text).toContain("Existing approved work");
+	f.event({ type: "message", fromSessionId: "old-worker", payload: { type: "stopped", to: previous.parentId, requestId: previous.requestId, plan: f.path, entryId: "still-routed", kind: "blocker", text: "Original worker reports a failure" } });
+	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-event" && entry.data.id === "old-worker:still-routed")).toBe(true);
+	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: false, error: { code: "BINDING_WRITE_FAILED", message: "Pane started; cleanup uncertain" } });
+	const uncertain = await tool.execute("partial", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
+	expect(uncertain.content[0].text).toContain("uncertain");
+	expect(f.entries.at(-1).data.worker.requestId).not.toBe(previous.requestId);
+	expect(f.entries.some(entry => entry.data.worker?.requestId === previous.requestId)).toBe(true);
 	expect(f.ctx.sessionManager.getBranch().some((entry: any) => entry.customType === "pi-goals-worker-release")).toBe(false);
 });
 

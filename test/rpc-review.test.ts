@@ -302,6 +302,7 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const failedViewAt = parent.messages.length;
 		await run(parent, "parent", call("worker_view", {}));
 		expect(viewText(failedViewAt)).toContain("greeting.txt");
+	expect(viewText(failedViewAt)).toContain("Fixture execution failed after progress");
 		expect(viewText(failedViewAt)).not.toContain("Recent calls and results");
 
 		// The supervisor steers the recoverable failure directly. No review form is created.

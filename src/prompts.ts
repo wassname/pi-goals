@@ -15,6 +15,8 @@ export const workerViewText = {
 	noHistory: "no attached saved session",
 	identityMismatch: "saved-session identity mismatch",
 	expand: "expand worker view",
+	historicalOutcomes: "Latest saved outcomes (not current liveness)",
+	compactedActivity: "Compaction limits retained activity; earlier unanswered calls are unknown, not proof of no work.",
 };
 export const workerViewUnavailable = (reason: string) => `Worker view unavailable: ${reason}. Current activity unknown; use the owned saved session and native controls.`;
 
@@ -291,7 +293,9 @@ export const nativeMessages = {
 	alreadyRecorded: "A worker launch is already opening. Inspect its result before another launch.",
 	noIdentity: "Intercom identity unavailable; no worker opened.",
 	openReceipt: "\nIf opened, await AttachGoalPlan and a correlated Intercom report, then send an explicitly authorized assignment to that exact session. If already-open, no startup was sent: inspect the existing conversation and ownership, do not retask or close it blindly. Any model preference awaits agent configuration/verification. Never infer attachment or implementation from this receipt.",
-	openFailed: "Native open failed; inspect the binding and possible live writer, fix or record the specific infrastructure defect, then retry or continue through an authorized bounded helper: ",
+	unopened: "Stock failed before opening; prior worker reference retained. No replacement or writer exit inferred. ",
+	openUncertain: "Native open outcome uncertain; reservation retained, prior reference remains in saved state history. Inspect the binding and possible live writer before retrying; no rollback, successful replacement or writer exit is established. ",
+	openFailed: "Native open threw; outcome uncertain. Inspect the binding and possible live writer before retrying; no rollback, successful replacement or writer exit is established. Prior reference remains in saved state history. ",
 	parentUnavailable: "Parent Intercom identity is not live; no worker attachment changed.",
 	reattachAuthorization: "Changing an attached plan/request requires explicit authorization from the recorded parent: supply that same parent Intercom UUID and its new requestId. Different-parent takeover or missing fields is refused; no attachment changed.",
 	intercomNotReady: "Intercom is still connecting. Call intercom status/list, verify the live parent identity, then retry this operation in the same session. No attachment or launch changed.",
