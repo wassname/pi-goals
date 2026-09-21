@@ -923,7 +923,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 				// Stock open sends startup only to a newly created context; existing panes receive nothing.
 				const pane = await openProjectPane({ cwd: ctx.cwd, message: workerAssignment(plan, self[0].id, requestId, params.task, model), focus: false, signal });
 				// Stock v1 emits these codes only before pane split/run. Other errors may follow a partial open.
-				const unopened = !pane.ok && ["INVALID_PROJECT_ROOT", "INVALID_BINDING", "BINDING_READ_FAILED", "PANE_OWNERSHIP_UNVERIFIED"].includes(pane.error.code);
+				const unopened = !pane.ok && ["INVALID_PROJECT_ROOT", "HERDR_UNSUPPORTED_VERSION", "INVALID_BINDING", "BINDING_READ_FAILED", "PANE_OWNERSHIP_UNVERIFIED"].includes(pane.error.code);
 				if ((pane.ok || unopened) && state.plan === plan && state.worker?.requestId === requestId) {
 					if (unopened || pane.ok && pane.data.disposition === "already-open" && superseded) {
 						state.worker = superseded; state.workerStopped = previouslyStopped;

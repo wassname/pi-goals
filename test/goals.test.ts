@@ -1355,6 +1355,9 @@ it("retains worker history and report routing after definite pre-open failure, n
 	const reply = await tool.execute("failed", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
 	expect(reply.content[0].text).toContain("INVALID_PROJECT_ROOT");
 	expect(f.entries.at(-1).data.worker).toEqual(previous);
+	vi.mocked(openProjectPane).mockResolvedValueOnce({ ok: false, error: { code: "HERDR_UNSUPPORTED_VERSION", message: "Stock version preflight rejected" } });
+	await tool.execute("preflight", { task: "Proposed replacement" }, undefined, undefined, f.ctx);
+	expect(f.entries.at(-1).data.worker).toEqual(previous);
 	const view = await f.tools.get("worker_view").execute("view", {}, undefined, undefined, f.ctx);
 	expect(view.content[0].text).toContain("Existing approved work");
 	f.event({ type: "message", fromSessionId: "old-worker", payload: { type: "stopped", to: previous.parentId, requestId: previous.requestId, plan: f.path, entryId: "still-routed", kind: "blocker", text: "Original worker reports a failure" } });
