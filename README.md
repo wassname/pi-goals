@@ -24,7 +24,7 @@ Give occasional, unprompted, plain-English updates to the user at existing check
 
 After human Ready, the supervisor should establish and verify one scheduled check-in, and be reminded if it has no working reminder. It decides the cadence according to the supervision required, editing the existing task rather than adding timers. Reliably followed long work can need fewer checks; drift or stalled work can need more. Check-ins are also a good time to update the user.
 
-A short Markdown checklist and an occasional joke, kaomoji or cowsay are welcome: they are funny and easy to spot when scrolling. Automatic updates should include a random row from `fortune.txt`.
+A short Markdown checklist and an occasional joke or cowsay are welcome. For substantial supervisor/solo final updates, pi-goals displays a random line from `~/.pi/agent/skills/ml-debug/fortune.txt` (when that file exists) with a kaomoji as a separate, saved UI entry after the response. It is not sent to the model or added to formal evidence. Short unchanged waits do not get one. <!-- Pi/OpenAI -->
 
 <!-- First paragraph approved and amended by wassname, 2026-09-21. Following paragraphs record wassname's requested behavior in Pi wording; they are not a claim that every part is implemented. Original User ask above is unchanged. -->
 

@@ -9,7 +9,7 @@ import { Markdown, truncateToWidth } from "@earendil-works/pi-tui";
 import { INTERCOM_EXTENSION_REGISTER_EVENT, type IntercomExtensionChannel, type IntercomExtensionRegistration } from "pi-intercom/extension-api.js";
 import { openProjectPane } from "pi-subagents/project-panes";
 import { Type } from "typebox";
-import { noticeDisplay } from "./notice-display.js";
+import { noticeDisplay, substantiveUpdate } from "./notice-display.js";
 import { FOLD_LINE, foldPlan, GOAL_LINE, planRequirements as requirements } from "./plan.js";
 import { planViews } from "./plan-view.js";
 import {
@@ -614,6 +614,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (last?.role === "assistant" && (last.errorMessage || ["error", "aborted"].includes(last.stopReason))) requestedPlanReview = undefined;
 		const text = last?.role === "assistant" ? last.errorMessage || last.content.filter(part => part.type === "text").map(part => part.text).join("\n") || last.stopReason : nativeMessages.noAssistant;
 		reportStop(text, last?.role === "assistant" && last.stopReason === "aborted" ? "aborted" : last?.role === "assistant" && (last.stopReason === "error" || last.errorMessage) ? "blocker" : "unclassified", true, true);
+		if (!state.child && ["supervising", "solo"].includes(state.mode) && last?.role === "assistant" && last.stopReason === "stop" && substantiveUpdate(text)) notices.fortune();
 		finalReviewTurnDigest = undefined; refresh(ctx); if (!planWatcher && state.mode === "supervising") watchPlan(ctx); });
 	pi.on("agent_start", (_event, ctx) => {
 		agentRunActive = true;

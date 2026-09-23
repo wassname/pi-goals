@@ -77,6 +77,19 @@ function fixture(child = false) {
 	return { ctx, pi, hooks, tools, commands, messages, command, get path() { return path; }, plan, draft, shutdown, changed, atomicWrite, get entries() { return entries.filter(entry => entry.customType === "pi-goals-main-supervisor-v1"); }, start, launch, channel, event: (event: any) => registration.onEvent(event) };
 }
 
+it("saves an automatic non-context fortune after a substantive supervisor update, not an unchanged wait", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	const entries = f.ctx.sessionManager.getBranch();
+	const complete = (text: string) => f.hooks.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] }, f.ctx);
+	complete("The held-out prediction beat the matched shuffled control on the same examples; next I will inspect error cases.");
+	const fortune = entries.filter(entry => entry.customType === "pi-goals-fortune");
+	expect(fortune).toHaveLength(1);
+	expect(fortune[0].type).toBe("custom");
+	expect(fortune[0].data.content).toMatch(/ -- /);
+	complete("No change: waiting on the followed job.");
+	expect(entries.filter(entry => entry.customType === "pi-goals-fortune")).toHaveLength(1);
+});
+
 it("shows incremental VCC Markdown without raw tool results or compaction dumps", async () => {
 	initTheme("dark");
 	const f = fixture(true), history = f.ctx.sessionManager.getBranch(), timestamp = new Date().toISOString();

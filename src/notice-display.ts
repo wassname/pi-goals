@@ -1,10 +1,22 @@
 // Pi/OpenAI: Pi converts routine custom notices to the same user-role model input; legacy mirrored prompts remain exact.
+import { randomInt } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { Markdown, truncateToWidth } from "@earendil-works/pi-tui";
 
 const NOTICE = "pi-goals-notice";
 const PROMPT = "pi-goals-prompt";
 const COMPACT = "pi-goals-compact-prompt";
+const FORTUNE = "pi-goals-fortune";
+const kaomoji = ["(˶ᵔ ᵕ ᵔ˶)", "( •̀ᴗ•́ )و", "(￣▽￣)", "(｡•̀ᴗ-)✧"];
+const fortunePath = join(homedir(), ".pi/agent/skills/ml-debug/fortune.txt");
+
+export function substantiveUpdate(text: string): boolean {
+	const update = text.trim();
+	return update.length > 30 && !/^(?:no (?:material )?change|still waiting|waiting for|nothing (?:new|changed))\b/i.test(update);
+}
 
 function noticeLabel(content: string) {
 	return content.includes("[pi-goals: plan activity]") ? "Plan activity recorded"
@@ -32,8 +44,15 @@ export function noticeDisplay(pi: ExtensionAPI) {
 		};
 	};
 	pi.registerEntryRenderer(NOTICE, (entry, { expanded }, theme) => render((entry.data as { content: string }).content, expanded, theme));
+	pi.registerEntryRenderer(FORTUNE, (entry) => new Markdown((entry.data as { content: string }).content, 0, 0, getMarkdownTheme()));
 	pi.registerMessageRenderer(PROMPT, (message, { expanded }, theme) => render(typeof message.content === "string" ? message.content : message.content.filter(part => part.type === "text").map(part => part.text).join("\n"), expanded, theme));
 	return {
+		fortune() {
+			if (!existsSync(fortunePath)) return;
+			const lines = readFileSync(fortunePath, "utf8").split(/\r?\n/).filter(Boolean);
+			if (!lines.length) throw new Error(`Empty fortune file: ${fortunePath}`);
+			pi.appendEntry(FORTUNE, { content: `${kaomoji[randomInt(kaomoji.length)]} ${lines[randomInt(lines.length)]}` });
+		},
 		prompt(content: string) {
 			pi.sendMessage({ customType: PROMPT, content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 		},

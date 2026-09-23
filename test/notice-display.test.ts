@@ -67,3 +67,16 @@ it("collapses mirrored prompts only in the UI, expands the exact text, and resto
 	expect(transform(rolePrompt, { messageType: "user" })).toBe("[pi-goals] Goal instructions");
 	expect(entry.data.content).toBe(content);
 });
+
+it("renders a saved sampled fortune without sending it to the model", () => {
+	initTheme("dark");
+	const pi = { registerMarkdownTransformer: vi.fn(), registerEntryRenderer: vi.fn(), registerMessageRenderer: vi.fn(), appendEntry: vi.fn(), sendMessage: vi.fn() };
+	const display = noticeDisplay(pi as unknown as ExtensionAPI);
+	display.fortune();
+	const [type, data] = pi.appendEntry.mock.calls[0];
+	expect(type).toBe("pi-goals-fortune");
+	expect(data.content).toMatch(/ -- /);
+	const renderer = pi.registerEntryRenderer.mock.calls.find(([name]) => name === type)?.[1];
+	expect(renderer({ data }, { expanded: false }, {})).toBeInstanceOf(Markdown);
+	expect(pi.sendMessage).not.toHaveBeenCalled();
+});
