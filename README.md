@@ -144,14 +144,16 @@ Start a fresh Pi session. No worker agent file is needed: `OpenGoalWorker` uses 
 
 The scheduler stores tasks under `~/.pi/agent/state/scheduler/tasks.json`, or `PI_SCHEDULER_STATE_FILE` when set. A separate Pi profile alone does not isolate this store. Goal check-ins use session scope; shared cwd/global tasks are not owned by pi-goals. Existing legacy check-ins need explicit ownership and prompt-byte review before migration; custom multiline prompts are not silently flattened.
 
-For development, register the checkout so workers also discover its extensions:
+For development, use a local-path install outside `~/.pi/agent/git/`. Git package updates can reset that managed copy to upstream and delete untracked files, including unfinished work. A local-path package loads the checkout in place instead. <!-- Pi/OpenAI -->
 
 ```bash
-git clone https://github.com/wassname/pi-goals
-cd pi-goals && npm install
+git clone https://github.com/wassname/pi-goals ~/dev/pi-goals
+cd ~/dev/pi-goals && npm ci --ignore-scripts --include=dev
 pi install .
 pi
 ```
+
+If already installed from Git or npm, replace that package entry in `~/.pi/agent/settings.json` with the development checkout's absolute path; do not keep both. Existing sessions retain their loaded code until restarted or reloaded. <!-- Pi/OpenAI -->
 
 ## Use
 
@@ -179,7 +181,7 @@ Supervisors and workers can use ordinary stock async helpers, with one writer pe
 
 Routine injected `[pi-goals]` prompts are one compact custom message; `Ctrl+O` expands the exact text. Role-changing transitions remain normal user prompts so the new role applies before the turn, but render as one nonempty compact line. — Pi/OpenAI
 
-Startup, attachment/resume, session restore, successful compaction and changed requirements restore the active plan above Log at the next ordinary prompt. This includes current preferences and User voice, but leaves historical Log on disk. Routine context and requested reviews quote unfinished or unreviewed goal lines. After eight unchanged turns, the next ordinary prompt carries an upkeep reminder with its reason, those goal lines and the plan path. It omits preferences and role prose; occasional rotating perspective quotations accompany supervision upkeep. Reviewed, cancelled and paused work receives no periodic upkeep; manual ticks remain unreviewed. A fresh plan refresh replaces pending upkeep; edits, pause, exit and session navigation invalidate obsolete reminders. Failed or cancelled compaction does not schedule a refresh. Missing plans are retried. Compaction still uses Pi's configured threshold.
+Startup, attachment/resume, session restore, successful compaction and changed requirements restore the active plan above Log at the next ordinary prompt. This includes current preferences and User voice, but leaves historical Log on disk. Routine context and requested reviews quote the user-visible result beside unfinished or unreviewed goal lines. After eight unchanged turns, the next ordinary prompt asks whether results demonstrate that outcome and what useful action follows, with those goal lines and the plan path. It omits detailed preferences, task/evidence lists and historical Log; occasional rotating perspective quotations accompany supervision upkeep. Reviewed, cancelled and paused work receives no periodic upkeep; manual ticks remain unreviewed. A fresh plan refresh replaces pending upkeep; edits, pause, exit and session navigation invalidate obsolete reminders. Failed or cancelled compaction does not schedule a refresh. Missing plans are retried. Compaction still uses Pi's configured threshold.
 
 Plan-change notices direct the agent to read the current file, including changed constraints or a final cancellation. Only our own pending notice is coalesced; unrelated queued input does not suppress it. The editable hourly `schedule_task` check-in remains separate. Ready and explicit resume ask the supervisor to list jobs first and create the session-owned reminder only when missing; ordinary reloads and wakes do not create it. It uses an explicit prompt action, session scope and a short one-line wake that reads the current attached plan. Inspect recurrence with `/schedules all`; change the interval through `manage_scheduled_task` without resending the prompt. Pause disables the owned check-in and retains its prompt/interval; resume may enable only the unchanged job recorded by that pause. Disabled jobs survive reload.
 

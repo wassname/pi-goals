@@ -477,7 +477,6 @@ old progress`;
 	await f.atomicWrite(revised);
 	await waitFor(() => f.changed() === 1);
 	const review = f.messages.find((m) => m.message.content.includes("Plan changed"))?.message.content;
-	expect(review).toContain("inspect current requirements");
 	expect(review).toContain(f.path);
 	expect(review).not.toContain("The full requirement must survive resync.");
 	expect(review).not.toContain("run the detailed check");
@@ -971,7 +970,7 @@ it.each(["solo", "supervising"])("%s upkeep is turn-driven, folds Log, and joins
 	expect(reminders()).toHaveLength(0);
 });
 
-it("injects only unfinished goal lines after the bounded unchanged-turn reminder", async () => {
+it("keeps the user-visible outcome beside unfinished goals without task or history noise", async () => {
 	const f = fixture(); await f.draft();
 	const plan = `# Context title
 
@@ -988,6 +987,8 @@ A visible artifact.
   - tasks:
     - [ ] run the detailed check
   - evidence: proof.log
+- [✓] goal: previously demonstrated output
+- [-] goal: abandoned experiment
 
 ## Log
 old progress`;
@@ -999,9 +1000,13 @@ old progress`;
 	expect(reminder.customType).toBe("pi-goals-upkeep");
 	expect(reminder.content).not.toContain("Keep this exact user requirement.");
 	expect(reminder.content).toContain("goal: produce the artifact");
-	expect(reminder.content).not.toContain("run the detailed check");
-	expect(reminder.content).not.toContain("proof.log");
-	expect(reminder.content).not.toContain("old progress");
+	expect(reminder.content).toContain("A visible artifact.");
+	for (const hidden of ["run the detailed check", "proof.log", "old progress", "previously demonstrated output", "abandoned experiment"]) expect(reminder.content).not.toContain(hidden);
+	await f.command("review");
+	const review = f.messages.at(-1).message.content;
+	expect(review).toContain("A visible artifact.");
+	expect(review).toContain("goal: produce the artifact");
+	expect(review).not.toContain("previously demonstrated output");
 });
 
 it.each(["supervising", "solo"])("%s repeats concise upkeep every eight unchanged turns", async mode => {

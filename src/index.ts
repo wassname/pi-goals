@@ -653,10 +653,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		const message = pendingFinalReview
 			? { customType: "pi-goals-final-review", content: finalReview(state.plan!, snapshot.text), display: false }
 			: notice || fullPlanContextDue
-				? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, fullPlanContextDue ? snapshot.text : unfinishedGoals(snapshot.text), fullPlanContextDue ? "full" : "short"), display: false }
+				? { customType: "pi-goals-plan", content: planContext(state.child ? "worker" : state.mode, state.plan, snapshot.text, fullPlanContextDue ? "full" : "short"), display: false }
 				: pendingUpkeep?.generation === generation && pendingUpkeep.workingSet === foldPlan(snapshot.text)
 				&& ["supervising", "solo"].includes(state.mode) && unfinishedGoals(snapshot.text)
-				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, unfinishedGoals(snapshot.text), state.mode === "supervising" ? ctx.sessionManager.getBranch().filter(entry => entry.type === "custom_message" && entry.customType === "pi-goals-upkeep").length : undefined), display: false } : undefined;
+				? { customType: "pi-goals-upkeep", content: upkeep(state.plan!, snapshot.text, state.mode === "supervising" ? ctx.sessionManager.getBranch().filter(entry => entry.type === "custom_message" && entry.customType === "pi-goals-upkeep").length : undefined), display: false } : undefined;
 		if (message) turnsStale = 0;
 		notice = false;
 		fullPlanContextDue = false;
@@ -776,7 +776,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 					if (state.mode !== "planning") { ctx.ui.notify("Discuss applies to a draft.", "warning"); return; }
 					ctx.ui.notify(discuss, "info"); return;
 				}
-				if (command === "review" && state.mode === "supervising") { send(manualReview(state.plan ?? "", unfinishedGoals(planText()))); return; }
+				if (command === "review" && state.mode === "supervising") { send(manualReview(state.plan ?? "", planText())); return; }
 				if (command === "edit" || command === "review" || command === "ready") { await ready(ctx, command === "review", command === "edit"); return; }
 				if (command === "model" || command.startsWith("model ")) {
 					if (!state.plan || !goals(planText()).length) { ctx.ui.notify("Register a goal plan first.", "warning"); return; }

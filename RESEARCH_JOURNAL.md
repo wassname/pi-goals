@@ -107,3 +107,46 @@ the launch-pending counter shipped earlier today (cd98fa1).
 
 Next: send follow-up questions to the three reporters; triage the four pi-goals
 changes above against the pinned edxeth launch-result format.
+
+## 2026-09-23 -- Outcome substitution, avoidable stops and stale supervision views
+
+The user reported that overnight supervision was producing reports instead of understanding failures and advancing the requested outcome.
+
+Evidence from this conversation and the eight replies to nine connected peers:
+
+- User: "and really it should be outcomes you can show the user that distinguish the users outcome from subtle and common failures" and "it shoudl act autonomously, taking responsibiltiy to understanding and advancing the user's goal & pref, keeping perspective and view of the users goal". They reported repeated avoidable access blockers: credentials absent from the process environment but available through `.env`/python-dotenv, and AWS access instructions available in the justfile. These incidents were not independently replayed here.
+- BS-bench supervisor: "activity goals ('Run the real numbered BS-bench v2 comparison...') let me CompleteGoal on execution despite weak scientific results." It attributes this primarily to its own judgment; the harness checked source quotes, not whether the evidence established the desired outcome. Source: Intercom message `3793e635-13ac-4048-a047-a334856370e5`, session `01a0bbd4-7122-72f8-9388-1e2967a565e7`, plan `.pi/plan/a565e7-v1.md`.
+- Newastraidea supervisor: "parent previously left worker idle ~7h after1919 despite goal unfinished; instructions/reminders did not by themselves produce a next assignment." This is a reported delay, not an independently measured harness effect. Source: message `66fa5719-0fb6-4a25-a0a7-bc7bc3b9037f`, parent `01a0c807`, plan `.pi/plan/bd719a-v1.md`.
+- Four supervisors reported stale worker-view activity. Lucid21 quoted "301 newer saved turns remain"; newastraidea quoted "336 newer saved turns remain". Manifold and j-steer-dev reported the same kind of mismatch between current headers and old activity. Several also reported duplicated Intercom/status messages and administrative acknowledgement loops. No elapsed cost was isolated for those messages.
+- Counterexamples: the j-steer worker quoted "proceed autonomously through finalartifacts, report genuineblockers not routinepermissionrequests" and reported queuing the authorized jobs without per-job permission. The manifold worker reported that direct parent correction preserved pure CAA equivalence against matched ordinary CAA, rather than an incorrect unsteered baseline. Goal persistence and discriminators helped when the scientific target was correct.
+
+Raw reports, including message IDs and artifact pointers: [collected feedback](.local/reviews/20260923-harness-feedback.md). That local capture is ignored; the durable source is this session's saved messages in `/home/code/.pi/agent/sessions/--home-code-.pi-agent-git-github.com-wassname-pi-goals--/2026-09-22T22-41-04-545Z_01a0cb47-a221-7158-b5c5-fdc7b41db9ec.jsonl`. Loaded harness revisions are unknown. Reports followed user corrections and are not blinded or independent evidence of causality.
+
+Source inspection at `7e07214` narrows the mechanical claims:
+
+- `src/worker-view.ts:buildWorkerView` reduces oversized summaries with `fresh.slice(0, ...)`: oldest unseen activity wins over newest activity. This directly explains the backlog display, although it does not prove why a supervisor left work idle.
+- `src/index.ts:reportStop` suppresses automatic unclassified finals after explicit same-run running/waiting/no_change/decision events; plain Intercom reports do not supply that classification. `ATTENTION_EVENTS` includes unclassified. Existing suppression must be preserved, not replaced with a rule that hides genuine stops.
+- Eight-turn upkeep queues context for the next ordinary prompt; it does not itself force a turn. Its text nevertheless leads with "update task ticks, evidence or Log" and "Finish any evidence review", encouraging the wrong emphasis.
+- Worker self-view does not pass a launch task into `savedWorkerView`, so "Launch task: unknown" is not evidence of lost attachment after compaction. Binding and assignment must be distinguished.
+
+Interpretation: my read is that weak goal framing and poor supervisor judgment are established in the inspected examples. Stale summaries and repetitive notices plausibly worsen them, but these reports do not identify their causal contribution. More generic reminders are unlikely to fix a supervisor that never verifies whether its next instruction was acted on.
+
+Changes made earlier in this session: `6819f1d` adjusted outcome wording, simplified check-ins and requested random fortunes; `73e040f` rewrote planning and supervisor purpose and put the two priorities first in AGENTS.md. Verification then showed 143 tests passing, typecheck and lint passing. A hypothetical five-case rehearsal preserved empirical goals, technical deliverables, credential investigation and bounded-task scope; it was not an overnight trial, and its run ended aborted after saving the response. At 10:29 AWST, the reflog records a reset to upstream `7e07214`. The user then explained "oh I reinstalled shit sorry" and "yeah I updated pi", and authorized restoring the changes. They were reapplied as `2c5d28c` and `99d976b` without disturbing the journal.
+
+Additional changes after the user identified fresh reminders as salient: replace the eight-turn bookkeeping reminder, context resync, requested review, final review and default scheduled check-in with outcome/diagnosis/action emphasis. Compact reminders now retain the user-visible result beside unfinished goal titles, without task/evidence/Log noise. Keep explicit pause and authorization boundaries; a completion acknowledgement is not evidence that the next action began. Existing saved scheduler prompts and active research sessions were not rewritten or reloaded.
+
+Verification of this revision: 143 tests passed, typecheck passed, lint passed, using locked dependencies in an isolated checkout. The reinstall had removed development dependencies (`vitest: not found`). One old assertion required the exact phrase "inspect current requirements"; removed that wording assertion, retaining its file-change behavior checks. The updated reminder regression checks that the outcome reaches the agent and task/history noise does not, not model compliance. Log: `.local/verification/20260923-reminders/checks.log`. No unattended behavioral validation yet.
+
+Installation diagnosis: the global settings listed pi-goals as a Git-managed package twice. The installed Pi package manager's `ensureGitRef` executes `git reset --hard` to its update target, then `cleanAndInstallGitDependencies` executes `git clean -fdx`. This matches the observed reset and lost local files; it does not establish which update command the user ran. Documented local-path development outside the managed cache to prevent recurrence.
+
+Remaining recommended follow-ups, not implemented here:
+
+- Default worker_view to a bounded newest-activity summary, with older history explicitly accessible. Preserve unanswered calls, latest errors and compaction uncertainty. Test that a recent failure or completion is visible behind a large backlog.
+- Coalesce redundant progress reports and omit stop-review boilerplate on ordinary waits, while preserving failure, decision and genuine-stop attention. Do not infer job liveness from a prose "waiting" claim or a child process count.
+- Validate the new reminder emphasis in actual unattended execution. The text now asks supervisors to inspect results and verify next action; it does not mechanically establish job liveness or prevent idle unfinished work.
+- Show binding separately from task metadata in worker self-view. Verify reported review-delivery and plan-update issues against saved receipts before adding another notification mechanism.
+- Keep working-outcome discriminators at planning and completion, and keep explicit bounded investigations bounded. Validate on an unattended task with a recoverable setup failure and an initially unsuccessful result, not only prompt wording or unit tests.
+
+-- PI/OpenAI
+
+The next change should help the supervisor see current evidence and advance the user's goal rather than create more administrative work.
