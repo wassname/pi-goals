@@ -150,3 +150,22 @@ Remaining recommended follow-ups, not implemented here:
 -- PI/OpenAI
 
 The next change should help the supervisor see current evidence and advance the user's goal rather than create more administrative work.
+
+## 2026-09-23 -- Supervisor approved a new judge despite inspecting the reference
+
+The user questioned whether a costly supervisor and worker arrangement was helping research judgment.
+
+Evidence from the j-steer-dev plan and saved Pi sessions:
+
+- The approved plan's User voice says, "Use one shared evaluator, not three pipelines." It also says, "First inspect the existing implementation and data, then propose the smallest useful first run." Source: `/workspace/2026/jspace/j-steer-dev/.pi/plan/c030fa-v1.md:12,22`.
+- The supervisor's saved session called `sed -n '1,155p' scripts/results/judge_demos.py` at 2026-09-22T07:41:24Z, and `sed -n '1,150p' scripts/results/judge_demos.py` again at 10:29:07Z. Source: `/home/code/.pi/agent/sessions/--workspace-2026-jspace-j-steer-dev--/2026-09-22T07-29-47-270Z_01a0c805-5306-7573-9e53-4483cec030fa.jsonl`, entries at lines 78 and 514. These are tool calls and a saved tool result, not proof the model reasoned about the script correctly.
+- The saved evaluation review says, "the judge includes complete response strings and separate on-axis/off-axis ratings", identifies its OpenRouter client, and recommends "retain rubric/schema concepts, not the existing transport or implicit row selection." Source: `/workspace/2026/jspace/j-steer-mean-vjp/slop/experiments/mean-vjp/evidence/evaluation-review.md:67-73`. The direct-provider boundary was a real constraint on using the old transport unchanged.
+- The supervisor's explicit worker assignment said, "Use approved native subscription-backed helpers for bounded blinded judgments/reviews; no new paid APIs or OpenRouter export." Later it directed, "run ONE small blinded native Astra-medium judge packet", then reported, "I checked all pilot answers" and allowed scaling. Source: same supervisor session JSONL, entries at lines 684, 788 and 824. The saved record shows review of pilot answers and scores, but not a rubric/schema comparison with the inspected reference before authorizing the new path.
+- The worker later launched a workflow with `length:43` judge tasks, and, after a failed launch and one validated retry, launched `length:42` remaining tasks. The supervisor was told about the retry and allowed it; its later update says "Eighteen finished; 24 failed" after the approved account reached its usage limit. Source: worker session `/home/code/.pi/agent/sessions/--workspace-2026-jspace-j-steer-mean-vjp--/2026-09-22T11-18-31-650Z_01a0c8d6-bde1-7104-8745-b7542f053471.jsonl`, entries at lines 3734 and 3801; supervisor session entries at lines 2825 and 2930. These counts are workflow outcomes, not a token or dollar cost estimate.
+- Only after the user's intervention did the supervisor say, "I approved 43 judge batches without first checking" and then "I failed to apply that to judging". Source: supervisor session entries at lines 2947 and 2962. The first admission is incomplete: the earlier tool calls show that it had already inspected that entry point.
+
+My interpretation: the failure was primarily supervisory judgment, not unclear user instructions or a worker-only handoff. The supervisor saw the reference and a review explaining why its OpenRouter transport could not simply be reused under the stated provider restriction. It then chose native judging without comparing or adapting the existing rubric/schema, checked pilot scores rather than that design decision, and approved expansion. The provider constraint explains the transport choice but does not explain dropping the reference comparison. The saved sessions establish this sequence, not why the model made that choice or how much money and time a different architecture would have saved. Single-thread work with a persistent goal extension is a reasonable lower-coordination comparison, not a demonstrated fix for the same model's judgment. Do not treat more prompt wording or passing harness tests as evidence of improved scientific oversight; test the next setup on an actual reference-code decision and account for total cost and result quality.
+
+The supervisor must verify that a delegated design follows the approved reference before paying to scale it.
+
+-- PI/OpenAI
