@@ -99,7 +99,11 @@ The plan file looks like this:
 
 ### User voice
 
-- │ "<the human's requirement, quoted in full word for word (with spelling fixes)>"
+- In reply to the assistant's proposal to reuse the existing evaluator:
+  > "yes"
+- > "<other consequential requirements in the user's exact words>"
+
+Keep brief speaker-attributed context outside a context-dependent quote; a bare "yes" does not tell a future reader which proposal was accepted. Do not attribute the assistant's wording to the user. <!-- Pi/OpenAI -->
 
 ### Goals
 

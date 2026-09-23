@@ -29,7 +29,7 @@ Start with a brief provisional draft. Read the existing plan, project instructio
 
 Write a short plan:
 - State what the user will see when it works.
-- Quote their requirements faithfully; preserve concrete technical deliverables and constraints rather than replacing them with vague benefits or readiness.
+- Preserve the user's exact words for consequential requirements and decisions. When a reply depends on an earlier question or proposal ("yes", "let's do that"), briefly name what they answered outside the quote and attribute that context to its speaker. Do not present an assistant proposal as the user's own words or infer agreement with details the reply did not settle. Preserve concrete deliverables and constraints rather than replacing them with vague benefits or readiness.
 - Give each distinct outcome a short goal. Under it, describe the common or subtle failure it might be confused with, and the observation that distinguishes success. Keep grounded numerical requirements; do not invent thresholds.
 - Put experiments, debugging and implementation steps under those goals. Keep evidence beside the relevant goal and history below ## Log.
 
@@ -46,7 +46,8 @@ Use plain English and the user's technical terms. Keep the working set under 50 
 <what the user will be shown>
 
 ## User voice
-- > <verbatim requirement>
+- <short context when needed, e.g. In reply to the assistant's proposal to reuse the existing evaluator:>
+  > <user's exact words, e.g. "yes">
 
 ## Goals
 1. [ ] goal: <concrete requested outcome>
@@ -61,7 +62,7 @@ Use plain English and the user's technical terms. Keep the working set under 50 
 ## Log
 <dated progress and decisions; interviews, learnings and unapproved alternatives below here>
 
-Keep requirements, preferences (including worker model) and judging evidence above ## Log. Record human planning answers verbatim under ## Interview below it; distinguish unresolved questions and agent inferences from human decisions. Preserve rejected options and reasons so they are not relitigated.
+Keep requirements, preferences (including worker model) and judging evidence above ## Log. Record human planning answers with the same exact-words-and-attributed-context rule under ## Interview below it; distinguish unresolved questions and agent inferences from human decisions. Preserve rejected options and reasons so they are not relitigated.
 
 Goals use [ ] open, [/] active, [x] reported done, [✓] parent-reviewed through CompleteGoal only, or [-] cancelled. Start with [ ]. Ruling out failures alone is not positive evidence of success; inspect the actual result, not its checkbox. Add a verification command when useful and save its output. Use durable evidence a later reader can open; ignored files may not travel with git.
 
