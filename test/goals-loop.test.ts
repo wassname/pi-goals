@@ -16,7 +16,7 @@ describe("planning and Ready", () => {
 		const h = setup({ choices: ["Ready"] });
 		await h.commands.get("goals").handler("new plot the data", h.ctx);
 		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
-		expect(file).toMatch(/\.pi\/goals\/sess-[\w]+\.md$/);
+		expect(file).toMatch(/\.pi\/goals\/sess-v1\.md$/);
 		expect(readFileSync(file, "utf8")).toContain("> /goals new plot the data");
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
@@ -30,6 +30,15 @@ describe("planning and Ready", () => {
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
+	});
+
+	it("a second /goals new in the same session makes -v2 and keeps v1", async () => {
+		const h = setup();
+		await h.commands.get("goals").handler("new first", h.ctx);
+		await h.commands.get("goals").handler("clear", h.ctx);
+		await h.commands.get("goals").handler("new second", h.ctx);
+		expect(h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file).toMatch(/sess-v2\.md$/);
+		expect(readFileSync(`${h.cwd}/.pi/goals/sess-v1.md`, "utf8")).toContain("new first");
 	});
 
 	it("Cancel starts nothing and keeps the file", async () => {

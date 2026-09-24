@@ -27,7 +27,7 @@ pi-goals bundles the scheduler. Install pi-subagents yourself (0.70.1 tested); t
 ## Use
 
 ```
-/goals new <idea>     discuss and draft .pi/goals/<session>-<id>.md; nothing runs yet
+/goals new <idea>     discuss and draft .pi/goals/<last 6 of session id>-vN.md; nothing runs yet
 /goals review         show the draft with Ready / Refine / Edit / Cancel
 /goals pause          remove the scheduled loop; the file stays
 /goals resume         start a new loop for the paused goals

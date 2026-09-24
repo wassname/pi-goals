@@ -1,6 +1,6 @@
 // PI/OpenAI: one agent, one goals file, human Ready, and a stock scheduled loop.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -124,11 +124,15 @@ export default function piGoals(pi: ExtensionAPI): void {
 				}
 				if (arg !== "new" && !arg.startsWith("new ")) throw new Error("Use /goals new [idea], review, pause, resume, clear, or judge.");
 				if (state.file) throw new Error("Clear the current goals before starting new ones; the file is preserved.");
-				const file = join(ctx.cwd, ".pi/goals", `${ctx.sessionManager.getSessionId()}-${randomUUID().slice(0, 8)}.md`);
-				mkdirSync(dirname(file), { recursive: true });
 				const idea = arg.slice(3).trim();
+				const dir = join(ctx.cwd, ".pi/goals");
+				mkdirSync(dir, { recursive: true });
+				// Session IDs start with a timestamp; the last 6 characters differ between sessions.
+				const suffix = ctx.sessionManager.getSessionId().slice(-6);
+				const taken = readdirSync(dir).map(name => Number(new RegExp(`^${suffix}-v(\\d+)\\.md$`).exec(name)?.[1] ?? 0));
+				const file = join(dir, `${suffix}-v${Math.max(0, ...taken) + 1}.md`);
 				// Slash commands skip the input hook; keep the user's opening words verbatim too.
-				writeFileSync(file, idea ? appendInterview("", `/goals new ${idea}`).trimStart() : "");
+				writeFileSync(file, idea ? appendInterview("", `/goals new ${idea}`).trimStart() : "", { flag: "wx" });
 				state = { ...state, owner: ctx.sessionManager.getSessionId(), phase: "planning", file };
 				generation++; reviewRequested = false; resyncDue = false;
 				persist(); refresh(ctx);
