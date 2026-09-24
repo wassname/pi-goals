@@ -72,12 +72,14 @@ Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` a
 
 | When | The agent receives | You see |
 |---|---|---|
-| `/goals new` | drafting rules and the default loop statement, as a user message | the same message |
+| `/goals new` | drafting rules, as a user message; the goals file starts from a template holding your default loop statement | the same message and the template file |
 | Review | the whole file | the whole file, then Ready / Refine / Edit / Cancel |
 | Ready | a short start prompt; `/schedule prompt every 1h` creates the loop task | both |
 | Each scheduled wake | the Loop statement and everything above `## Log`, read from disk then | the same text in chat |
 | After compaction or resume | the whole goals file once, including Log and Interview | nothing (hidden message) |
 | `CompleteGoal` | the judge result; accept marks `[✓]`, reject or judge failure leaves the goal open | the tool result |
+
+The `##` headings at Ready are the approved structure: an agent `write`/`edit` that drops one is undone. Interview entries removed by an agent edit, including through bash, are put back at the end of the turn. Your own edits between turns are kept.
 
 You can edit the goals file, including the loop statement, at any time; the next wake uses the new text. The agent may propose changes to the loop statement or User voice, and should edit them only after you agree (a prompt rule, not enforced in code).
 
