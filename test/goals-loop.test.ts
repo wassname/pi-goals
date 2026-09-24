@@ -18,6 +18,7 @@ describe("planning and Ready", () => {
 		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
 		expect(file).toMatch(/\.pi\/goals\/sess-v1\.md$/);
 		expect(readFileSync(file, "utf8")).toContain("> /goals new plot the data");
+		expect(readFileSync(file, "utf8")).toMatch(/## Loop statement\n\nYou are an autonomous agent[\s\S]*## Goals[\s\S]*## Interview/);
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
 		expect(readFileSync(file, "utf8")).toContain("> yes, reuse judge_demos.py");
@@ -74,6 +75,31 @@ describe("scheduled loop wake", () => {
 		expect(out.content).toHaveLength(2);
 		await h.hook("tool_call", { toolName: "edit", toolCallId: "c2", input: { path: file } });
 		expect(await h.hook("tool_result", { toolName: "edit", toolCallId: "c2", input: { path: file }, content: [] })).toBeUndefined();
+	});
+
+	it("undoes a write that drops an approved heading", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		await h.hook("tool_call", { toolName: "write", toolCallId: "c1", input: { path: file } });
+		writeFileSync(file, GOALS.replace("## User-visible result\n\nA plot.\n", ""));
+		const out = await h.hook("tool_result", { toolName: "write", toolCallId: "c1", input: { path: file }, content: [] });
+		expect(readFileSync(file, "utf8")).toBe(GOALS);
+		expect(out.content[0].text).toContain("User-visible result");
+	});
+
+	it("turn_end restores Interview after a shell edit, but respects the user's edits between turns", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		await h.hook("input", { source: "interactive", text: "keep me" });
+		await h.hook("input", { source: "interactive", text: "secret typo" });
+		writeFileSync(file, readFileSync(file, "utf8").replace(/### [^\n]+\n\n> keep me\n/, ""));
+		await h.hook("turn_end");
+		expect(readFileSync(file, "utf8")).toContain("> keep me");
+		expect(h.shown.at(-1)?.customType).toBe("goals-structure");
+		writeFileSync(file, readFileSync(file, "utf8").replace(/### [^\n]+\n\n> secret typo\n/, ""));
+		await h.hook("turn_start");
+		await h.hook("turn_end");
+		expect(readFileSync(file, "utf8")).not.toContain("secret typo");
 	});
 
 	it("keeps user answers given during work verbatim below the Log", async () => {

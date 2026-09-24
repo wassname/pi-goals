@@ -41,6 +41,7 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	const branch: any[] = [];
 	const sent: Array<{ text: string; options?: unknown }> = [];
 	const notes: string[] = [];
+	const shown: Array<{ customType: string; content: string }> = [];
 	const requests: any[] = [];
 	const agents: any[] = [];
 	const listeners = new Map<string, Set<(data: unknown) => void>>();
@@ -90,7 +91,7 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data: structuredClone(data) }),
-		sendMessage: () => {},
+		sendMessage: (message: { customType: string; content: string }) => shown.push(message),
 		sendUserMessage: (text: string, options?: unknown) => sent.push({ text, options }),
 		getCommands: () => ["schedule", "schedule-remove"].map(name => ({ name, source: "extension", sourceInfo: { path: SCHEDULER } })),
 	};
@@ -105,5 +106,5 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	}
 	const wake = (id: string, prompt: string) => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\n\n${prompt}` });
 	const complete = (goal: string) => tools.get("CompleteGoal").execute("call", { goal }, undefined, undefined, ctx);
-	return { branch, commands, complete, ctx, cwd, events, hook, notes, requests, agents, schedulerReceipt, sent, tools, wake };
+	return { branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake };
 }

@@ -4,7 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendInterview, appendLog, foldGoals, goals, hasRemainingGoals, interviewEntries, markGoal, restoreInterview, section, stamp, widgetLines, withoutSection } from "./goals.js";
+import { appendInterview, appendLog, foldGoals, goals, hasRemainingGoals, headings, interviewEntries, markGoal, restoreInterview, section, stamp, widgetLines, withoutSection } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { startLoop, stopLoop, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -18,6 +18,8 @@ interface State {
 	token?: string;
 	judge: boolean;
 	model?: string;
+	/** ## headings at Ready: the structure the user approved. */
+	headings?: string[];
 }
 const initial = (owner: string): State => ({ owner, phase: null, judge: true });
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -30,6 +32,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 	let resyncDue = false;
 	let reviewing = false;
 	let judging = false;
+	/** Interview entries the agent must not remove: snapshot at turn start plus new user messages. */
+	let knownInterview: string[] = [];
 	const persist = () => pi.appendEntry(STATE, { ...state });
 	const read = () => readFileSync(state.file!, "utf8");
 	const save = (text: string) => writeFileSync(state.file!, text);
@@ -63,7 +67,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		if (!section(text, "Loop statement") || !hasRemainingGoals(text, state.judge)) throw new Error("The goals file needs a Loop statement and unfinished goals.");
 		const token = randomUUID();
 		startLoop(pi, ctx, token);
-		state = { ...state, phase: "working", token };
+		state = { ...state, phase: "working", token, headings: headings(text) };
 		generation++;
 		persist();
 		refresh(ctx);
@@ -93,6 +97,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 					if (current !== generation) return;
 					if (!notes?.trim()) continue;
 					save(appendInterview(read(), notes));
+					knownInterview = interviewEntries(read());
 					pi.sendUserMessage(prompts.refine(state.file!, notes), { deliverAs: "followUp" });
 				}
 				if (choice === "Cancel") { state = initial(state.owner); generation++; persist(); refresh(ctx); }
@@ -132,7 +137,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const taken = readdirSync(dir).map(name => Number(new RegExp(`^${suffix}-v(\\d+)\\.md$`).exec(name)?.[1] ?? 0));
 				const file = join(dir, `${suffix}-v${Math.max(0, ...taken) + 1}.md`);
 				// Slash commands skip the input hook; keep the user's opening words verbatim too.
-				writeFileSync(file, idea ? appendInterview("", `/goals new ${idea}`).trimStart() : "", { flag: "wx" });
+				writeFileSync(file, idea ? appendInterview(prompts.goalsTemplate, `/goals new ${idea}`) : prompts.goalsTemplate, { flag: "wx" });
 				state = { ...state, owner: ctx.sessionManager.getSessionId(), phase: "planning", file };
 				generation++; reviewRequested = false; resyncDue = false;
 				persist(); refresh(ctx);
@@ -168,7 +173,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 			return { action: "transform" as const, text: prompts.loopPrompt(statement, withoutSection(foldGoals(text), "Loop statement"), state.file!) };
 		}
 		// Every user message is kept verbatim below the Log, so answers survive compaction.
-		if (state.file && event.source !== "extension" && event.text.trim()) save(appendInterview(read(), event.text));
+		if (state.file && event.source !== "extension" && event.text.trim()) {
+			save(appendInterview(read(), event.text));
+			knownInterview = interviewEntries(read());
+		}
 	});
 
 	// Whole goals file after compaction or resume: persisted at the next prompt, or transient once if an
@@ -185,24 +193,39 @@ export default function piGoals(pi: ExtensionAPI): void {
 		return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text: resyncText() }], timestamp: Date.now() }] };
 	});
 	pi.on("session_compact", async () => { resyncDue = true; });
-	pi.on("turn_end", async (_event, ctx) => { refresh(ctx); });
-	// Interview entries seen before each write/edit of the goals file, keyed by tool call.
-	const interviewBefore = new Map<string, string[]>();
+	pi.on("turn_end", async (_event, ctx) => {
+		if (state.file) for (const content of checkGoalsFile()) pi.sendMessage({ customType: "goals-structure", content, display: true }, { deliverAs: "steer", triggerTurn: true });
+		refresh(ctx);
+	});
+	// The user's words and the approved headings survive agent edits, including shell edits.
+	const textBefore = new Map<string, string>();
+	function checkGoalsFile(before?: string): string[] {
+		const current = read();
+		const lost = (state.headings ?? []).filter((heading) => !headings(current).includes(heading));
+		const revert = lost.length > 0 && before !== undefined;
+		const { text, restored } = restoreInterview(revert ? before : current, knownInterview);
+		if (text !== current) save(text);
+		knownInterview = interviewEntries(text);
+		if (revert) return [prompts.headingsReverted(lost)];
+		// Report a shell-made loss once, then accept the current structure; the loop wake fails loudly without a Loop statement.
+		if (lost.length) { state = { ...state, headings: headings(text) }; persist(); }
+		return [...(restored ? [prompts.interviewRestored(restored)] : []), ...(lost.length ? [prompts.headingsLost(lost)] : [])];
+	}
+	// Snapshot at turn start, so the user's own edits between turns are respected.
+	pi.on("turn_start", async () => { if (state.file) knownInterview = interviewEntries(read()); });
 	pi.on("tool_call", async (event, ctx) => {
 		const goalsEdit = ["write", "edit"].includes(event.toolName) && Boolean(state.file) && resolve(ctx.cwd, String((event.input as { path?: string }).path)) === state.file;
-		if (goalsEdit) interviewBefore.set(event.toolCallId, interviewEntries(read()));
+		if (goalsEdit) textBefore.set(event.toolCallId, read());
 		// Planning allows exploration; only file edits outside the goals file and completion are blocked.
 		if (state.phase !== "planning" || goalsEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
 		return { block: true, reason: prompts.planningState(state.file!) };
 	});
 	pi.on("tool_result", async (event) => {
-		const before = interviewBefore.get(event.toolCallId);
-		if (!before) return;
-		interviewBefore.delete(event.toolCallId);
-		const { text, restored } = restoreInterview(read(), before);
-		if (!restored) return;
-		save(text);
-		return { content: [...event.content, { type: "text" as const, text: prompts.interviewRestored(restored) }] };
+		const before = textBefore.get(event.toolCallId);
+		if (before === undefined) return;
+		textBefore.delete(event.toolCallId);
+		const notes = checkGoalsFile(before);
+		if (notes.length) return { content: [...event.content, ...notes.map((text) => ({ type: "text" as const, text }))] };
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		generation++; reviewRequested = false;

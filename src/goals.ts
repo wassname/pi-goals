@@ -38,6 +38,9 @@ function sectionRange(lines: string[], name: string): [number, number] | undefin
 	return [start, end === -1 ? lines.length : end];
 }
 
+/** Names of the ## headings, in order. */
+export const headings = (text: string) => [...text.matchAll(/^##[ \t]+(.+?)[ \t]*$/gm)].map((match) => match[1]);
+
 /** Body of a named section, without its heading. */
 export function section(text: string, name: string): string | undefined {
 	const lines = text.split("\n");
