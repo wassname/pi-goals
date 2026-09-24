@@ -14,6 +14,8 @@ Explore first as needed: read the supplied resources, code and data, run quick r
 
 Use the grilling approach for consequential gaps: one round of short, self-contained questions with your recommended answers. Ask about decisions the user owns, such as the outcome, scope, evaluation, spending and publication. Resolve routine choices yourself. Respect requests to skip questions.
 
+The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can. Record the answers under ## Resources.
+
 Aim for an outcome the user can see and check. Preserve the concrete deliverables they asked for; runs, tests and reports support the goal but do not replace it. Name the reference code or data the work must reuse, and record any deliberate change from it.
 
 The Loop statement is sent verbatim, with the current goals, on every scheduled loop wake. Start from the default below and ask the user whether to adapt it. It belongs to the user: record their wording.
@@ -46,6 +48,10 @@ ${DEFAULT_LOOP_STATEMENT}
      1. [ ] <step>
    - evidence: (empty until sign-off)
 
+## Resources
+
+- <credential, compute or budget fact>: <how it was checked, or the user's words>
+
 ## Out of scope
 
 ## Log
@@ -53,7 +59,8 @@ ${DEFAULT_LOOP_STATEMENT}
 ## Interview
 
 Conventions:
-- ## Interview is written by the extension with the user's exact planning messages. Keep its entries unchanged; do not add your own.
+- ## Interview is written by the extension with the user's exact messages. Keep its entries unchanged; do not add your own.
+- The Loop statement and User voice belong to the user. Propose changes; edit them only after the user agrees, and quote their agreement in User voice.
 - User voice keeps the user's exact words. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
 - One goal per distinct outcome. Steps go under a goal as tasks.
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
@@ -73,8 +80,11 @@ export function readyPrompt(path: string): string {
 
 // 3. Scheduled loop wake: the user's loop statement and the current goals, read from disk now.
 export function loopPrompt(statement: string, goalsText: string, path: string): string {
-	return `[pi-goals: loop] Loop statement from ${path}:\n\n${statement}\n\nCurrent goals (${path}, above ## Log):\n\n${goalsText}`;
+	return `[pi-goals: loop] Loop statement from ${path}:\n\n${statement}\n\nCurrent goals (${path}, above ## Log):\n\n${goalsText}\n\n${keepWorking}`;
 }
+
+// wassname: "I'd rather waste some tokens and avoid a model mistakenly waiting".
+const keepWorking = "Before you stop to wait for the user: search the goals file, including ## Interview below the Log, and the project setup (justfile, .env loaders, skills, docs) for the answer. Check access by trying it, not by assuming. Do not invent limits the user has not set. If a question remains, record your assumption in the goals file and continue with the best available work.";
 
 // 4. Compaction or resume: the whole file, once.
 export function resync(text: string, path: string, why: string): string {

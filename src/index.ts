@@ -163,7 +163,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 			if (!statement) throw new Error(`${state.file} has no Loop statement.`);
 			return { action: "transform" as const, text: prompts.loopPrompt(statement, withoutSection(foldGoals(text), "Loop statement"), state.file!) };
 		}
-		if (state.phase === "planning" && event.source !== "extension") save(appendInterview(read(), event.text));
+		// Every user message is kept verbatim below the Log, so answers survive compaction.
+		if (state.file && event.source !== "extension" && event.text.trim()) save(appendInterview(read(), event.text));
 	});
 
 	// Whole goals file after compaction or resume: persisted at the next prompt, or transient once if an

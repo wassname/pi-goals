@@ -54,6 +54,14 @@ describe("scheduled loop wake", () => {
 		expect(out.text).not.toContain("historical detail");
 	});
 
+	it("keeps user answers given during work verbatim below the Log", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		await h.hook("input", { source: "interactive", text: "aws is logged in, gpu queue is free" });
+		const text = readFileSync(file, "utf8");
+		expect(text.indexOf("> aws is logged in, gpu queue is free")).toBeGreaterThan(text.indexOf("## Log"));
+	});
+
 	it("drops wakes from another token and ignores ordinary text", async () => {
 		const h = setup({ choices: ["Ready"] });
 		await ready(h);

@@ -10,6 +10,10 @@ The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
 
 — wassname, 2026-09-24. The loop statement is meant to act like an assistance game (CIRL): the user knows the goal, the agent starts uncertain and keeps reducing that uncertainty while it works.
 
+> I'm often away for 8 or 24 hours. then they stop because they have a question (they often forgot the answer) or they think the .env is missing (it's not) or invented a budget... so I'd rather waste some tokens and avoid a model mistakenly waiting
+
+— wassname, 2026-09-24. So wakes stay hourly even while the agent waits. Each wake ends with a short line telling it to look for the answer (goals file, Interview, project setup) before waiting, and otherwise to record an assumption and continue. Planning records credentials, compute and limits under `## Resources`. All user messages are kept word for word under `## Interview`.
+
 So: one agent with its normal tools, a user-written paragraph repeated on a schedule, a goals file, and an optional stateless judge. Planning is an explore-and-ask phase; only edits outside the goals file are blocked. Add machinery only when a real run shows it is needed.
 
 ## Use
@@ -67,7 +71,7 @@ Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` a
 | After compaction or resume | the whole goals file once, including Log and Interview | nothing (hidden message) |
 | `CompleteGoal` | the judge result; accept marks `[✓]`, reject or judge failure leaves the goal open | the tool result |
 
-You can edit the goals file, including the loop statement, at any time; the next wake uses the new text.
+You can edit the goals file, including the loop statement, at any time; the next wake uses the new text. The agent may propose changes to the loop statement or User voice, and should edit them only after you agree (a prompt rule, not enforced in code).
 
 The loop uses the stock [@jl1990/pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) session-scoped task. Change its interval with the scheduler's own commands. Wakes from an older Ready or another session are dropped. The loop is removed on pause, clear, or when no unfinished goals remain.
 
