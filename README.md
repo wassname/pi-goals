@@ -4,6 +4,14 @@ One Pi agent works from one goals file you approve. A scheduled loop reminds it 
 
 The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
 
+## Design intent
+
+> hmm one idea is that we want to get as close to training as possible. and as ligth as possible. having pi-goals which just repeats a user written paragraph and one agent works seems the lightest.
+
+— wassname, 2026-09-24. The loop statement is meant to act like an assistance game (CIRL): the user knows the goal, the agent starts uncertain and keeps reducing that uncertainty while it works.
+
+So: one agent with its normal tools, a user-written paragraph repeated on a schedule, a goals file, and an optional stateless judge. Planning is an explore-and-ask phase; only edits outside the goals file are blocked. Add machinery only when a real run shows it is needed.
+
 ## Use
 
 ```
@@ -50,12 +58,16 @@ Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` a
 
 ## What happens when
 
-| When | The model receives |
-|---|---|
-| Ready | a short prompt to start work, and `/schedule prompt every 1h` creates the loop task |
-| Each scheduled wake | the Loop statement and everything above `## Log`, read from disk at that moment |
-| After compaction or resume | the whole goals file once, including Log and Interview |
-| `CompleteGoal` | the judge result; accept marks `[✓]`, reject or judge failure leaves the goal open |
+| When | The agent receives | You see |
+|---|---|---|
+| `/goals new` | drafting rules and the default loop statement, as a user message | the same message |
+| Review | the whole file | the whole file, then Ready / Refine / Edit / Cancel |
+| Ready | a short start prompt; `/schedule prompt every 1h` creates the loop task | both |
+| Each scheduled wake | the Loop statement and everything above `## Log`, read from disk then | the same text in chat |
+| After compaction or resume | the whole goals file once, including Log and Interview | nothing (hidden message) |
+| `CompleteGoal` | the judge result; accept marks `[✓]`, reject or judge failure leaves the goal open | the tool result |
+
+You can edit the goals file, including the loop statement, at any time; the next wake uses the new text.
 
 The loop uses the stock [@jl1990/pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) session-scoped task. Change its interval with the scheduler's own commands. Wakes from an older Ready or another session are dropped. The loop is removed on pause, clear, or when no unfinished goals remain.
 

@@ -20,14 +20,15 @@ describe("planning and Ready", () => {
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
 		expect(readFileSync(file, "utf8")).toContain("> yes, reuse judge_demos.py");
-		expect(await h.hook("tool_call", { toolName: "bash", input: { command: "python train.py" } })).toMatchObject({ block: true });
+		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toMatchObject({ block: true });
+		expect(await h.hook("tool_call", { toolName: "bash", input: { command: "head data.csv" } })).toBeUndefined();
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: file } })).toBeUndefined();
 		expect(h.sent.some(m => m.text.startsWith("/schedule "))).toBe(false);
 
 		await h.tools.get("RequestPlanReview").execute();
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
-		expect(await h.hook("tool_call", { toolName: "bash", input: { command: "python train.py" } })).toBeUndefined();
+		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
 	});
 
 	it("Cancel starts nothing and keeps the file", async () => {

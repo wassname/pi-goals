@@ -1,19 +1,16 @@
 // PI/OpenAI: all model-facing text, in conversation order:
 // planning -> Ready -> scheduled loop wake -> compaction/resume resync -> CompleteGoal -> judge.
 
-// The user edits this during planning; the saved copy in the goals file is what the loop sends.
+// wassname's default (2026-09-24, spelling fixed by Claude). The user edits it during planning;
+// the saved copy in the goals file is what the loop sends. Aim: assistance-game (CIRL) behaviour.
 export const DEFAULT_LOOP_STATEMENT = `\
-Task: help the user achieve the goals in this goals file. The user knows what they want better than you do. Your job is to understand it, advance it, and show them results they can easily verify.
-
-Check whether your recent work still advances the highest-priority open goal and its discriminator. If it has drifted, get back on track. Keep working autonomously. When a decision genuinely needs the user, record the question and continue with what is clear.
-
-Then briefly tell the busy user, in plain language: what changed toward that goal since you last spoke, what you will do next, and anything you need from them.`;
+You are an autonomous agent. Your task is to understand and advance the user's goals, and show them in an easy to understand and easy to verify way that you have done that. Your job is to get back on track, keep moving towards the goals, and keep refining and reducing uncertainty in the user's goals. This is a reminder: your immediate task now is to reread your goals file and get back on track. As a result of this, briefly update the busy user (in plain language, with reminded context) on what you have done since they last talked with respect to their highest goal, what you will do next, and anything you need from them.`;
 
 // 1. Planning: sent once with the seed, and again after compaction during planning.
 export const planDrafting = `\
-You are in plan mode. Write a short goals file that captures what the user actually wants, then test it with them.
+You are in plan mode. The user knows what they want; you start uncertain. Reduce that uncertainty: explore, then ask, then write a short goals file that captures what they actually want.
 
-Read the supplied resources, code and data first. Resolve facts with read-only tools or web search. Do not implement, run experiments or launch work in this mode; only the goals file may be written.
+Explore first as needed: read the supplied resources, code and data, run quick read-only commands, search the web, or send scouts. Do not implement, run experiments or change files in this mode; only the goals file may be written.
 
 Use the grilling approach for consequential gaps: one round of short, self-contained questions with your recommended answers. Ask about decisions the user owns, such as the outcome, scope, evaluation, spending and publication. Resolve routine choices yourself. Respect requests to skip questions.
 
@@ -65,7 +62,7 @@ Conventions:
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
 
 export function planningState(path: string): string {
-	return `[pi-goals: planning] Only ${path} may be written. Resolve facts with read-only tools, ask the user about consequential choices, and do not start work. The plan is not approved until the user chooses Ready.`;
+	return `[pi-goals: planning] Only ${path} may be written. Explore read-only, ask the user about consequential choices, and do not start work. The plan is not approved until the user chooses Ready.`;
 }
 
 // 2. Ready.

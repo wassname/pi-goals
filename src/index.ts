@@ -20,7 +20,6 @@ interface State {
 	model?: string;
 }
 const initial = (owner: string): State => ({ owner, phase: null, judge: true });
-const PLANNING_TOOLS = new Set(["read", "grep", "find", "ls", "ffgrep", "fffind", "web_search", "fetch_content", "get_search_content", "source_check", "copilot_search", "RequestPlanReview"]);
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 const handled = { action: "handled" as const };
 
@@ -181,8 +180,9 @@ export default function piGoals(pi: ExtensionAPI): void {
 	pi.on("session_compact", async () => { resyncDue = true; });
 	pi.on("turn_end", async (_event, ctx) => { refresh(ctx); });
 	pi.on("tool_call", async (event, ctx) => {
-		if (state.phase !== "planning" || PLANNING_TOOLS.has(event.toolName)) return;
-		if (["write", "edit"].includes(event.toolName) && resolve(ctx.cwd, String((event.input as { path?: string }).path)) === state.file) return;
+		// Planning allows exploration; only file edits outside the goals file and completion are blocked.
+		if (state.phase !== "planning" || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
+		if (event.toolName !== "CompleteGoal" && resolve(ctx.cwd, String((event.input as { path?: string }).path)) === state.file) return;
 		return { block: true, reason: prompts.planningState(state.file!) };
 	});
 	pi.on("session_start", async (_event, ctx) => {
