@@ -16,6 +16,14 @@ The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
 
 So: one agent with its normal tools, a user-written paragraph repeated on a schedule, a goals file, and an optional stateless judge. Planning is an explore-and-ask phase; only edits outside the goals file are blocked. Add machinery only when a real run shows it is needed.
 
+## Install
+
+```json
+"packages": ["npm:pi-subagents", "~/path/to/pi-goals"]
+```
+
+pi-goals bundles the scheduler. Install pi-subagents yourself (0.70.1 tested); the judge needs it.
+
 ## Use
 
 ```

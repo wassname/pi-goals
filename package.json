@@ -26,10 +26,9 @@
   },
   "dependencies": {
     "@jl1990/pi-scheduler": "https://registry.npmjs.org/@jl1990/pi-scheduler/-/pi-scheduler-0.5.0.tgz",
-    "pi-subagents": "0.66.0"
+    "pi-subagents": "0.70.1"
   },
   "bundleDependencies": [
-    "pi-subagents",
     "@jl1990/pi-scheduler"
   ],
   "files": [
@@ -59,7 +58,6 @@
   "pi": {
     "extensions": [
       "./src/index.ts",
-      "./node_modules/pi-subagents/index.ts",
       "./node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts"
     ],
     "image": "https://cdn.jsdelivr.net/gh/wassname/pi-goals@main/media/screenshot.png"

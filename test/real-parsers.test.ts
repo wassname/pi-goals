@@ -1,8 +1,8 @@
 // Checks the fakes in harness.ts against the real scheduler core and pi-subagents parsers.
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.ts";
-import { parseSubagentDelegationRequest } from "../node_modules/pi-subagents/src/slash/delegation-request.ts";
+import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.js";
+import { parseSubagentDelegationRequest } from "../node_modules/pi-subagents/src/slash/delegation-request.js";
 import { runJudge } from "../src/judge.js";
 import { marker, wakeToken } from "../src/loop.js";
 

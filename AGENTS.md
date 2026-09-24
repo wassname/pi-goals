@@ -16,6 +16,6 @@ For a real load check without a model:
 
 ```bash
 cd "$(mktemp -d)" && echo '{"id":"1","type":"get_commands"}' | pi --mode rpc --no-extensions \
-  -e <repo>/src/index.ts -e <repo>/node_modules/pi-subagents/index.ts \
+  -e <repo>/src/index.ts -e <repo>/node_modules/pi-subagents/index.js \
   -e <repo>/node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts
 ```
