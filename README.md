@@ -1,103 +1,69 @@
-# pi-goals
+# pi-goals (single agent)
 
-Make a short list of goals in one Markdown plan file. This is easy to review, and a subagent can check whether each goal is complete.
+One Pi agent works from one goals file you approve. A scheduled loop reminds it of your loop statement and the current goals. An optional fresh, read-only judge checks the evidence before a goal counts as accepted.
 
-The plan file looks like this:
-
-```md
-## <short plan title>
-
-<context: one short paragraph. What the human wants and why.>
-
-### User-visible result
-
-<one concrete sentence naming the final artifact or behavior the human will inspect>
-
-### User voice
-
-- │ "<the human's requirement, quoted in full word for word (with spelling fixes)>"
-
-### Goals
-
-1. [ ] goal: <one short judgeable imperative outcome>
-- subtle failure mode: <a way this could look done but isn't>
-- discriminator: <the concrete observation that tells real success from that failure>
-- tasks:
-    1. [ ] <subtask>
-- evidence: (empty until sign-off)
-
-### Future work / out of scope
-
-### Log
-
-### Interview
-
-### Learnings
-
-### Papercuts - problems, gotchas, suggestions
-```
-
-![the widget: live goals from the session's plan file, with the active goal's open subtasks](media/screenshot.png)
-
-## Related work
-
-Like [pi-milestones](https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/milestone) and
-[burneikis/pi-plan](https://github.com/burneikis/pi-plan), it guides rather than guards. The
-reminder cadence is copied from [tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) and the
-resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-x).
-
-## Install
-
-```bash
-pi install npm:@wassname2/pi-goals
-```
-
-Or for development:
-
-```bash
-git clone https://github.com/wassname/pi-goals && cd pi-goals && npm install
-pi -e ./src/index.ts
-```
+The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
 
 ## Use
 
 ```
-/goals CSV export for the report view
+/goals new <idea>     discuss and draft .pi/goals/<session>-<id>.md; nothing runs yet
+/goals review         show the draft with Ready / Refine / Edit / Cancel
+/goals pause          remove the scheduled loop; the file stays
+/goals resume         start a new loop for the paused goals
+/goals clear          pause and detach this session from the file
+/goals judge off|on|<provider/model>
 ```
 
-`/goals` enters plan mode and starts a conversation; the objective is an optional seed. From there:
+During planning the agent may only read, search and write the goals file. It calls `RequestPlanReview` when the draft is settled. Only your Ready choice starts work.
 
-1. Plan. The agent explores read-only and drafts the plan.
-2. Review. After Pi settles, the full plan is printed in the transcript. Check that User-visible
-   result names the final artifact or behavior you expect. The menu offers Ready, Refine, Edit, or
-   Cancel. Refine collects short notes. Edit opens the full plan in Pi's editor.
-3. Work. Ready is the only review action that starts work. The agent ticks subtasks, appends to
-   `## Log` and `## Learnings`, fills `evidence:`, and calls `CompleteGoal` when a discriminator is
-   satisfied. Every human reply and Refine note in plan mode is saved verbatim under `## Interview`.
-   After eight turns without a change above `## Log`, the working set is sent back with a short upkeep
-   reminder.
+## The goals file
 
-Other commands: `/goals --clear` disconnects this session from its active plan, preserving the
-versioned file on disk; `/goals --auto [minutes|off]` continues active goals after the agent settles
-and then on that interval. It pauses after two automatic wakes with no working-plan change; `/goals
---judge <model-ref>` picks a sign-off judge model (default: your current session model, else pi's
-default). The `--` prefix
-keeps ordinary objectives such as `judge model quality` from being parsed as commands.
+```md
+# <title>
 
-## Prompts
+## Loop statement
+<your words: what the agent should check and report on each wake>
 
-All model-facing text lives in [`src/prompts.ts`](src/prompts.ts), in flow order.
+## User-visible result
+<what you will be shown when this works>
 
-## Develop
+## User voice
+- > "<your exact words>"
+- In reply to <the question you answered>:
+  > "yes"
 
-```bash
-pi -e ./src/index.ts        # load locally
-npm test                    # all unit, flow, and Pi RPC tests
-npm run test:rpc            # Pi RPC review flow with a local offline model
-npm run typecheck
-npm run lint
+## Goals
+1. [/] goal: <outcome>
+   - references: <code or data to reuse>
+   - subtle failure mode: <how it could look done but not be>
+   - discriminator: <the observation that tells real success from that failure>
+   - tasks:
+     1. [ ] <step>
+   - evidence:
+
+## Log
+## Interview
 ```
 
-## License
+Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` accepted by the judge, `[-]` cancelled.
 
-MIT
+## What happens when
+
+| When | The model receives |
+|---|---|
+| Ready | a short prompt to start work, and `/schedule prompt every 1h` creates the loop task |
+| Each scheduled wake | the Loop statement and everything above `## Log`, read from disk at that moment |
+| After compaction or resume | the whole goals file once, including Log and Interview |
+| `CompleteGoal` | the judge result; accept marks `[✓]`, reject or judge failure leaves the goal open |
+
+The loop uses the stock [@jl1990/pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) session-scoped task. Change its interval with the scheduler's own commands. Wakes from an older Ready or another session are dropped. The loop is removed on pause, clear, or when no unfinished goals remain.
+
+The judge is a [pi-subagents](https://github.com/nicobailon/pi-subagents) runtime agent with `read`, `grep`, `find` and `ls` only, fresh context and no project context. It reads the goals file and the cited artifacts, and must quote the files it opened. Each review is saved in `.pi/goals/reviews/`. A judge accept is a second reading of the evidence, not proof that the result is right.
+
+## Limits
+
+- Tests use a fake Pi and check data flow against the real scheduler and pi-subagents parsers. A real multi-hour unattended run has not been tested.
+- The loop only reminds. If the agent drifts between wakes, nothing corrects it until the next wake.
+
+<!-- Claude (PI/claude-opus) -->

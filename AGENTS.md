@@ -1,16 +1,21 @@
 # pi-goals contributor notes
 
+Keep the design small: one agent, one goals file, the stock scheduler for wakes, pi-subagents for the judge. Do not add a private timer, task store or second agent runtime.
+
+All model-facing text is in `src/prompts.ts`, in conversation order.
+
 ## Tests
 
-Run `npm test` before a commit. It includes unit and flow tests plus the RPC review test.
+Run `npm test`, `npm run typecheck` and `npm run lint` before committing.
 
-- `test/*.test.ts` unit and flow tests use a small Pi API mock. They check plan state, tool gates, and plan-file updates.
-- `npm run test:rpc` runs `test/rpc-review.test.ts`. It starts the installed Pi executable in RPC mode, uses Pi's real `select` and `editor` protocol, and uses a local deterministic HTTP model. It does not need a credential or spend API credits. This is the closest automated session test.
-- Use tmux for visual TUI debugging when the RPC test fails or a terminal-only problem is reported:
+- `test/harness.ts` fakes Pi, the scheduler commands and the pi-subagents event owner.
+- `test/contracts.test.ts` checks the fakes against the real scheduler core and pi-subagents parsers. Update it when those dependencies change.
+- Test data flow, ownership and lifecycle. Do not assert exact prompt wording.
 
-  ```bash
-  tmux new-session -s pi-goals-debug 'cd /path/to/pi-goals && pi -e ./src/index.ts'
-  ```
+For a real load check without a model:
 
-  Run `/goals <objective>` in that pane. Tmux checks the rendered menu, editor focus, widget, and keyboard handling. RPC does not render the terminal UI.
-- `pi -p` has no UI, so it cannot test `Ready`, `Refine`, `Edit`, or `Cancel`.
+```bash
+cd "$(mktemp -d)" && echo '{"id":"1","type":"get_commands"}' | pi --mode rpc --no-extensions \
+  -e <repo>/src/index.ts -e <repo>/node_modules/pi-subagents/index.ts \
+  -e <repo>/node_modules/@jl1990/pi-scheduler/extensions/scheduler/index.ts
+```

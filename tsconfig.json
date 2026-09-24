@@ -6,6 +6,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "paths": { "pi-subagents/agents": ["./src/subagents-agents.d.ts"] },
     "jsx": "react-jsx",
     "outDir": "dist",
     "rootDir": "src",
