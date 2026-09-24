@@ -28,7 +28,7 @@ pi-goals bundles the scheduler. Install pi-subagents yourself (0.70.1 tested); t
 
 ```
 /goals new <idea>     discuss and draft .pi/goals/<last 6 of session id>-vN.md; nothing runs yet
-/goals review         show the draft with Ready / Refine / Edit / Cancel
+/goals review         show the draft with Ready / Discuss in chat / Edit / Cancel
 /goals pause          remove the scheduled loop; the file stays
 /goals resume         start a new loop for the paused goals
 /goals clear          pause and detach this session from the file
@@ -73,7 +73,7 @@ Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` a
 | When | The agent receives | You see |
 |---|---|---|
 | `/goals new` | drafting rules, as a user message; the goals file starts from a template holding your default loop statement | the same message and the template file |
-| Review | the whole file | the whole file, then Ready / Refine / Edit / Cancel |
+| Review | the whole file | the whole file, then Ready / Discuss in chat / Edit / Cancel |
 | Ready | a short start prompt; `/schedule prompt every 1h` creates the loop task | both |
 | Each scheduled wake | the Loop statement and everything above `## Log`, read from disk then | the same text in chat |
 | After compaction or resume | the whole goals file once, including Log and Interview | nothing (hidden message) |

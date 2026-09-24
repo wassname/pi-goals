@@ -42,6 +42,22 @@ describe("planning and Ready", () => {
 		expect(readFileSync(`${h.cwd}/.pi/goals/sess-v1.md`, "utf8")).toContain("new first");
 	});
 
+	it("a review request is dropped when a later message arrives, and Discuss returns to chat", async () => {
+		const h = setup({ choices: ["Discuss in chat"] });
+		await h.commands.get("goals").handler("new", h.ctx);
+		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
+		writeFileSync(file, GOALS);
+		await h.tools.get("RequestPlanReview").execute();
+		await h.hook("message_start", { message: { role: "user" } });
+		await h.hook("agent_settled");
+		expect(h.shown.some(m => m.customType === "goals-draft")).toBe(false);
+		await h.tools.get("RequestPlanReview").execute();
+		await h.hook("agent_settled");
+		expect(h.shown.some(m => m.customType === "goals-draft")).toBe(true);
+		expect(h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.phase).toBe("planning");
+		expect(h.sent.some(m => m.text.startsWith("/schedule "))).toBe(false);
+	});
+
 	it("Cancel starts nothing and keeps the file", async () => {
 		const h = setup({ choices: ["Cancel"] });
 		const file = await ready(h);

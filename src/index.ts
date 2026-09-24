@@ -83,7 +83,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const text = read();
 				if (!goals(text).length || !section(text, "Loop statement")) throw new Error("Draft the goals and Loop statement before requesting Ready.");
 				pi.sendMessage({ customType: "goals-draft", content: text, display: true });
-				const choice = await ctx.ui.select(`Goals: ${relative(ctx.cwd, state.file!)}`, ["Ready", "Refine", "Edit", "Cancel"]);
+				// Discuss (or Escape) closes the menu and keeps planning, so the user can answer in chat.
+				const choice = await ctx.ui.select(`Goals: ${relative(ctx.cwd, state.file!)}`, ["Ready", "Discuss in chat", "Edit", "Cancel"]);
 				if (current !== generation) return;
 				if (choice === "Ready") return begin(ctx);
 				if (choice === "Edit") {
@@ -91,14 +92,6 @@ export default function piGoals(pi: ExtensionAPI): void {
 					if (current !== generation) return;
 					if (edited !== undefined) save(edited);
 					continue;
-				}
-				if (choice === "Refine") {
-					const notes = await ctx.ui.editor("What should change?", "");
-					if (current !== generation) return;
-					if (!notes?.trim()) continue;
-					save(appendInterview(read(), notes));
-					knownInterview = interviewEntries(read());
-					pi.sendUserMessage(prompts.refine(state.file!, notes), { deliverAs: "followUp" });
 				}
 				if (choice === "Cancel") { state = initial(state.owner); generation++; persist(); refresh(ctx); }
 				return;
@@ -141,7 +134,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 				state = { ...state, owner: ctx.sessionManager.getSessionId(), phase: "planning", file };
 				generation++; reviewRequested = false; resyncDue = false;
 				persist(); refresh(ctx);
-				pi.sendUserMessage(prompts.draft(file, idea), { deliverAs: "followUp" });
+				// Steer: a busy agent must get the planning rules now, not after it has already drafted.
+				pi.sendUserMessage(prompts.draft(file, idea), { deliverAs: "steer" });
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},
 	});
@@ -156,6 +150,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 		},
 	});
 
+	// A review request is for the turn that made it; a later message (answers, queued prompts) cancels it.
+	pi.on("message_start", async (event) => {
+		if (event.message.role === "user") reviewRequested = false;
+	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!reviewRequested) return;
 		reviewRequested = false;
