@@ -17,6 +17,7 @@ describe("planning and Ready", () => {
 		await h.commands.get("goals").handler("new plot the data", h.ctx);
 		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
 		expect(file).toMatch(/\.pi\/goals\/sess-[\w]+\.md$/);
+		expect(readFileSync(file, "utf8")).toContain("> /goals new plot the data");
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
 		expect(readFileSync(file, "utf8")).toContain("> yes, reuse judge_demos.py");

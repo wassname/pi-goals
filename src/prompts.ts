@@ -53,6 +53,7 @@ ${DEFAULT_LOOP_STATEMENT}
 ## Interview
 
 Conventions:
+- ## Interview is written by the extension with the user's exact planning messages. Keep its entries unchanged; do not add your own.
 - User voice keeps the user's exact words. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
 - One goal per distinct outcome. Steps go under a goal as tasks.
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.

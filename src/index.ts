@@ -126,11 +126,13 @@ export default function piGoals(pi: ExtensionAPI): void {
 				if (state.file) throw new Error("Clear the current goals before starting new ones; the file is preserved.");
 				const file = join(ctx.cwd, ".pi/goals", `${ctx.sessionManager.getSessionId()}-${randomUUID().slice(0, 8)}.md`);
 				mkdirSync(dirname(file), { recursive: true });
-				writeFileSync(file, "");
+				const idea = arg.slice(3).trim();
+				// Slash commands skip the input hook; keep the user's opening words verbatim too.
+				writeFileSync(file, idea ? appendInterview("", `/goals new ${idea}`).trimStart() : "");
 				state = { ...state, owner: ctx.sessionManager.getSessionId(), phase: "planning", file };
 				generation++; reviewRequested = false; resyncDue = false;
 				persist(); refresh(ctx);
-				pi.sendUserMessage(prompts.draft(file, arg.slice(3).trim()), { deliverAs: "followUp" });
+				pi.sendUserMessage(prompts.draft(file, idea), { deliverAs: "followUp" });
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
 		},
 	});
