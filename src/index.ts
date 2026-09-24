@@ -4,7 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendInterview, appendLog, foldGoals, goals, hasRemainingGoals, markGoal, section, stamp, widgetLines, withoutSection } from "./goals.js";
+import { appendInterview, appendLog, foldGoals, goals, hasRemainingGoals, interviewEntries, markGoal, restoreInterview, section, stamp, widgetLines, withoutSection } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { startLoop, stopLoop, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -186,11 +186,23 @@ export default function piGoals(pi: ExtensionAPI): void {
 	});
 	pi.on("session_compact", async () => { resyncDue = true; });
 	pi.on("turn_end", async (_event, ctx) => { refresh(ctx); });
+	// Interview entries seen before each write/edit of the goals file, keyed by tool call.
+	const interviewBefore = new Map<string, string[]>();
 	pi.on("tool_call", async (event, ctx) => {
+		const goalsEdit = ["write", "edit"].includes(event.toolName) && Boolean(state.file) && resolve(ctx.cwd, String((event.input as { path?: string }).path)) === state.file;
+		if (goalsEdit) interviewBefore.set(event.toolCallId, interviewEntries(read()));
 		// Planning allows exploration; only file edits outside the goals file and completion are blocked.
-		if (state.phase !== "planning" || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
-		if (event.toolName !== "CompleteGoal" && resolve(ctx.cwd, String((event.input as { path?: string }).path)) === state.file) return;
+		if (state.phase !== "planning" || goalsEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
 		return { block: true, reason: prompts.planningState(state.file!) };
+	});
+	pi.on("tool_result", async (event) => {
+		const before = interviewBefore.get(event.toolCallId);
+		if (!before) return;
+		interviewBefore.delete(event.toolCallId);
+		const { text, restored } = restoreInterview(read(), before);
+		if (!restored) return;
+		save(text);
+		return { content: [...event.content, { type: "text" as const, text: prompts.interviewRestored(restored) }] };
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		generation++; reviewRequested = false;

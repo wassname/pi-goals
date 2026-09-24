@@ -63,6 +63,19 @@ describe("scheduled loop wake", () => {
 		expect(out.text).not.toContain("historical detail");
 	});
 
+	it("puts back Interview entries that an agent write removed, and tells the agent", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		await h.hook("input", { source: "interactive", text: "2 the harder direction is more important" });
+		await h.hook("tool_call", { toolName: "write", toolCallId: "c1", input: { path: file } });
+		writeFileSync(file, `${GOALS}\n## Interview\n`);
+		const out = await h.hook("tool_result", { toolName: "write", toolCallId: "c1", input: { path: file }, content: [{ type: "text", text: "ok" }] });
+		expect(readFileSync(file, "utf8")).toContain("> 2 the harder direction is more important");
+		expect(out.content).toHaveLength(2);
+		await h.hook("tool_call", { toolName: "edit", toolCallId: "c2", input: { path: file } });
+		expect(await h.hook("tool_result", { toolName: "edit", toolCallId: "c2", input: { path: file }, content: [] })).toBeUndefined();
+	});
+
 	it("keeps user answers given during work verbatim below the Log", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);

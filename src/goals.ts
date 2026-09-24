@@ -105,9 +105,25 @@ export function appendLog(text: string, entry: string): string {
 	return lines.join("\n");
 }
 
-/** Keep the user's planning replies verbatim below the fold. */
+/** Keep the user's messages verbatim below the fold. */
 export function appendInterview(text: string, answer: string): string {
-	const entry = [`### ${stamp()}`, "", ...answer.split("\n").map((line) => `> ${line}`), ""].join("\n");
+	return insertInterview(text, [`### ${stamp()}`, "", ...answer.split("\n").map((line) => `> ${line}`), ""].join("\n"));
+}
+
+/** Entries (### stamp + quoted message) in ## Interview. */
+export function interviewEntries(text: string): string[] {
+	const body = section(text, "Interview");
+	return body ? body.split(/^(?=### )/m).map((entry) => entry.trim()).filter(Boolean) : [];
+}
+
+/** Put back entries an agent edit removed; the user's words are not the agent's to rewrite. */
+export function restoreInterview(text: string, entries: string[]): { text: string; restored: number } {
+	const kept = new Set(interviewEntries(text));
+	const missing = entries.filter((entry) => !kept.has(entry));
+	return { text: missing.reduce((out, entry) => insertInterview(out, `${entry}\n`), text), restored: missing.length };
+}
+
+function insertInterview(text: string, entry: string): string {
 	const lines = text.split("\n");
 	const header = lines.findIndex((line) => /^##\s+Interview\s*$/i.test(line));
 	if (header === -1) return `${text.replace(/\n+$/, "")}\n\n## Interview\n\n${entry}`;
