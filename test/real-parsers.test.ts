@@ -1,4 +1,4 @@
-// Real scheduler and pi-subagents parsers: the fakes in harness.ts must match these contracts.
+// Checks the fakes in harness.ts against the real scheduler core and pi-subagents parsers.
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.ts";
@@ -8,7 +8,7 @@ import { marker, wakeToken } from "../src/loop.js";
 
 const core = createRequire(import.meta.url)("@jl1990/pi-scheduler/extensions/scheduler/scheduler-core.cjs");
 
-describe("pi-scheduler contract", () => {
+describe("real pi-scheduler core", () => {
 	it("our /schedule payload creates a recurring session prompt whose receipt carries the marker", () => {
 		const parsed = core.splitScheduleCommand(`prompt every 1h :: ${marker("abc-1")}`, new Date());
 		const task = core.createScheduledTask({ action: parsed.action, type: parsed.type, schedule: parsed.schedule, prompt: parsed.payload, scope: "session", sessionFile: "/s.jsonl", cwd: "/" }, new Date());
@@ -22,7 +22,7 @@ describe("pi-scheduler contract", () => {
 	});
 });
 
-describe("pi-subagents contract", () => {
+describe("real pi-subagents parsers", () => {
 	it("registers the judge agent and emits a request the real parser accepts", async () => {
 		const listeners = new Map<string, Array<(data: unknown) => void>>();
 		const events = {

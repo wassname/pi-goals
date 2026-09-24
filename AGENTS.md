@@ -9,7 +9,7 @@ All model-facing text is in `src/prompts.ts`, in conversation order.
 Run `npm test`, `npm run typecheck` and `npm run lint` before committing.
 
 - `test/harness.ts` fakes Pi, the scheduler commands and the pi-subagents event owner.
-- `test/contracts.test.ts` checks the fakes against the real scheduler core and pi-subagents parsers. Update it when those dependencies change.
+- `test/real-parsers.test.ts` checks the fakes against the real scheduler core and pi-subagents parsers. Update it when those dependencies change.
 - Test data flow, ownership and lifecycle. Do not assert exact prompt wording.
 
 For a real load check without a model:
