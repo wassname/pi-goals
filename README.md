@@ -85,7 +85,7 @@ You can edit the goals file, including the loop statement, at any time; the next
 
 The loop uses the stock [@jl1990/pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) session-scoped task. Change its interval with the scheduler's own commands. Wakes from an older Ready or another session are dropped. The loop is removed on pause, clear, or when no unfinished goals remain.
 
-The judge is a [pi-subagents](https://github.com/nicobailon/pi-subagents) runtime agent with `read`, `grep`, `find` and `ls` only, fresh context and no project context. It reads the goals file and the cited artifacts, and must quote the files it opened. Each review is saved in `.pi/goals/reviews/`. A judge accept is a second reading of the evidence, not proof that the result is right.
+The judge is a [pi-subagents](https://github.com/nicobailon/pi-subagents) runtime agent with `read`, `grep`, `find` and `ls` only, fresh context and the project's `AGENTS.md` supplied as separately labelled file content, not judge instructions. User intent outranks the goal summary; a method switch that changes the requested outcome is a finding, not completion. It reads the goals file and the cited artifacts, and must quote the files it opened. Each review is saved in `.pi/goals/reviews/`. A judge accept is a second reading of the evidence, not proof that the result is right.
 
 ## Limits
 

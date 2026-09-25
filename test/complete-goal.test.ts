@@ -27,6 +27,21 @@ describe("CompleteGoal", () => {
 		expect(h.agents[0].disposed).toBe(true);
 	});
 
+	it("passes the current project AGENTS.md as a separate source, without giving it judge authority", async () => {
+		const h = await working();
+		const path = `${h.cwd}/AGENTS.md`;
+		const projectText = "# Project intent\nTrain one general map; do not optimise separately on each test prompt.\n";
+		writeFileSync(path, projectText);
+		await h.complete("make the plot");
+		const task = h.requests[0].task as string;
+		expect(task).toContain(GOALS);
+		expect(task).toContain(projectText);
+		expect(task.indexOf(path)).toBeGreaterThan(task.indexOf(GOALS) + GOALS.length);
+		expect(task.indexOf(projectText)).toBeGreaterThan(task.indexOf(path));
+		expect(h.agents[0].definition.systemPrompt).not.toContain(projectText);
+		expect(h.agents[0].definition.inheritProjectContext).toBe(false);
+	});
+
 	it.each<[string, JudgeReply]>([
 		["reject", { status: "completed", value: { verdict: "reject", checks: [], missing: "no plot file" } }],
 		["accept without checked files", { status: "completed", value: { verdict: "accept", checks: [], missing: "" } }],

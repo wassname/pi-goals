@@ -1,6 +1,8 @@
 // PI/OpenAI: stateless sign-off judge through pi-subagents' structured delegation events.
 // PI/OpenAI: register an explicit read-only agent rather than trust a user-overridden reviewer.
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { registerAgentViaEvents } from "pi-subagents/agents";
 import {
 	SUBAGENT_DELEGATION_CANCEL_EVENT,
@@ -38,11 +40,15 @@ export function runJudge(
 	signal?: AbortSignal,
 	timeouts = { startMs: START_TIMEOUT_MS, totalMs: JUDGE_TIMEOUT_MS },
 ): Promise<JudgeResult> {
+	const project: { path: string; text?: string } = { path: resolve(input.cwd, "AGENTS.md") };
+	try { project.text = readFileSync(project.path, "utf8"); } catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	const identity = { requestId: randomUUID(), ownerRunId: `pi-goals-${randomUUID()}`, nodeId: "judge" };
 	const request: SubagentDelegationRequest = {
 		...identity,
 		agent: JUDGE_AGENT,
-		task: judgeTask(input.goal, input.text, input.path),
+		task: judgeTask(input.goal, input.text, input.path, project),
 		context: "fresh",
 		cwd: input.cwd,
 		...(input.model ? { model: input.model } : {}),
