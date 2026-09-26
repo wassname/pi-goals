@@ -160,22 +160,23 @@ describe("scheduled loop wake", () => {
 });
 
 describe("widget rendering", () => {
-	it.each(["tui", "rpc"])("caps long goals and subtasks without changing the file (%s)", async (mode) => {
+	it.each(["tui", "rpc"])("shows only goal titles/status, excludes tasks and evidence, and fits the width (%s)", async (mode) => {
 		const h = setup({ choices: ["Ready"] });
 		h.ctx.mode = mode;
 		const file = await ready(h);
 		const text = GOALS.replace("make the plot", "概念 🧪 é ".repeat(100))
-			.replace("load data", "Experiment history ".repeat(300));
+			.replace("load data", "Experiment history ".repeat(300))
+			.replace("   - tasks:", "   - evidence: 48/89 vs 37/89\n   - tasks:");
 		writeFileSync(file, text);
 		await h.hook("session_start");
 		const component = mode === "tui" ? h.ctx.widget() : undefined;
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
-			expect(lines).toHaveLength(4);
+			expect(lines).toHaveLength(3);
 			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1:.*…$/);
-			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {3}◦ .*…$/);
+			expect(lines[1]).toBe("◻ G2: write the note");
+			expect(lines.join("\n")).not.toMatch(/Experiment history|48\/89|◦/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
-			expect(visibleWidth(lines[1])).toBe(width);
 		}
 		expect(readFileSync(file, "utf8")).toBe(text);
 	});
@@ -198,7 +199,7 @@ describe("context after compaction and resume", () => {
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
 		expect(h.ctx.widget[0]).toBe("◼ G1: make the plot");
-		expect(h.ctx.widget[1]).toBe("   ◦ load data");
+		expect(h.ctx.widget[1]).toBe("◻ G2: write the note");
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(await h.hook("before_agent_start")).toBeUndefined();

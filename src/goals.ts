@@ -3,7 +3,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
 export const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*goal:\s*(.*)$/i;
-const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
 const FOLD_LINE = /^#{1,6}[ \t]+Log[ \t]*\r?$/im;
 const HEADING = /^(#{1,6})[ \t]+(.+?)[ \t]*$/;
 const WIDGET_GOAL_LIMIT = 3;
@@ -58,28 +57,17 @@ export function withoutSection(text: string, name: string): string {
 	return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-export function openSubtasks(text: string, goalLine: number): string[] {
-	const lines = text.split("\n");
-	const out: string[] = [];
-	for (let i = goalLine + 1; i < lines.length && !GOAL_LINE.test(lines[i]) && !HEADING.test(lines[i]); i++) {
-		const match = SUBTASK_LINE.exec(lines[i]);
-		if (match && (match[1] === " " || match[1] === "/")) out.push(match[2].trim());
-	}
-	return out;
-}
-
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "x", open: "◻", done: "✓", cancelled: "✗" };
 const PRIORITY: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, done: 3, cancelled: 4 };
 
-/** Widget: current goals first, open subtasks under the first unfinished goal, then the file path. */
+/** PI/OpenAI: goal titles/status only; tasks and evidence stay in the file. */
 export function widgetLines(text: string, path: string, width = 100): string[] {
 	const items = goals(text);
 	const sorted = [...items].sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
 	const lines: string[] = [];
-	sorted.slice(0, WIDGET_GOAL_LIMIT).forEach((goal, index) => {
+	for (const goal of sorted.slice(0, WIDGET_GOAL_LIMIT)) {
 		lines.push(`${MARK[goal.status]} G${items.indexOf(goal) + 1}: ${goal.subject}`);
-		if (index === 0 && (goal.status === "active" || goal.status === "open")) lines.push(...openSubtasks(text, goal.line).slice(0, 3).map((task) => `   ◦ ${task}`));
-	});
+	}
 	const hidden = sorted.slice(WIDGET_GOAL_LIMIT);
 	const counts = (Object.keys(MARK) as GoalStatus[]).map((status) => {
 		const count = hidden.filter((goal) => goal.status === status).length;
