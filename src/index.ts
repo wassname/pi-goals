@@ -48,7 +48,13 @@ export default function piGoals(pi: ExtensionAPI): void {
 			const text = read();
 			const items = goals(text);
 			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted`);
-			ctx.ui.setWidget("goals", widgetLines(text, relative(ctx.cwd, state.file)));
+			const path = relative(ctx.cwd, state.file);
+			if (ctx.mode === "tui") {
+				ctx.ui.setWidget("goals", () => ({
+					render: (width) => widgetLines(text, path, width),
+					invalidate() {},
+				}));
+			} else ctx.ui.setWidget("goals", widgetLines(text, path));
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 

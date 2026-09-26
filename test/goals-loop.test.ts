@@ -1,4 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { GOALS, LOOP, setup } from "./harness.js";
 
@@ -154,6 +156,28 @@ describe("scheduled loop wake", () => {
 		writeFileSync(file, GOALS.replace("[/] goal: make", "[✓] goal: make").replace("[ ] goal: write", "[-] goal: write"));
 		expect(await h.wake("t1", prompt)).toEqual({ action: "handled" });
 		expect(h.sent.at(-1)?.text).toBe("/schedule-remove t1");
+	});
+});
+
+describe("widget rendering", () => {
+	it.each(["tui", "rpc"])("caps long goals and subtasks without changing the file (%s)", async (mode) => {
+		const h = setup({ choices: ["Ready"] });
+		h.ctx.mode = mode;
+		const file = await ready(h);
+		const text = GOALS.replace("make the plot", "概念 🧪 é ".repeat(100))
+			.replace("load data", "Experiment history ".repeat(300));
+		writeFileSync(file, text);
+		await h.hook("session_start");
+		const component = mode === "tui" ? h.ctx.widget() : undefined;
+		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
+			const lines = component ? component.render(width) : h.ctx.widget;
+			expect(lines).toHaveLength(4);
+			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1:.*…$/);
+			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {3}◦ .*…$/);
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			expect(visibleWidth(lines[1])).toBe(width);
+		}
+		expect(readFileSync(file, "utf8")).toBe(text);
 	});
 });
 

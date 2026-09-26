@@ -1,5 +1,7 @@
 // PI/OpenAI: goals-file helpers. The file is prose for the user, agent and judge; code reads only
 // goal lines, named sections and the Log fold.
+import { truncateToWidth } from "@earendil-works/pi-tui";
+
 export const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*goal:\s*(.*)$/i;
 const SUBTASK_LINE = /^\s+(?:\d+\.|[-*])\s*\[([ xX/-])\]\s*(.*)$/;
 const FOLD_LINE = /^#{1,6}[ \t]+Log[ \t]*\r?$/im;
@@ -70,7 +72,7 @@ const MARK: Record<GoalStatus, string> = { active: "◼", reported: "x", open: "
 const PRIORITY: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, done: 3, cancelled: 4 };
 
 /** Widget: current goals first, open subtasks under the first unfinished goal, then the file path. */
-export function widgetLines(text: string, path: string): string[] {
+export function widgetLines(text: string, path: string, width = 100): string[] {
 	const items = goals(text);
 	const sorted = [...items].sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
 	const lines: string[] = [];
@@ -84,7 +86,7 @@ export function widgetLines(text: string, path: string): string[] {
 		return count ? `${count} ${MARK[status]}` : "";
 	}).filter(Boolean);
 	lines.push(`${counts.length ? `… ${counts.join(", ")}; ` : ""}${path}`);
-	return lines;
+	return lines.map(line => truncateToWidth(line, width, "…"));
 }
 
 /** Set the checkbox of the one goal whose subject matches exactly (case-insensitive). */
