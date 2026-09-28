@@ -1,14 +1,17 @@
 // PI/OpenAI: use stock scheduler commands; no private continuation timer or task store.
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const SOURCE = fileURLToPath(import.meta.resolve("@jl1990/pi-scheduler/extensions/scheduler/index.ts"));
+// Compare real paths: pi records the path it loaded from (e.g. via a ~/dev -> /workspace symlink).
+const realpath = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+const SOURCE = realpath(fileURLToPath(import.meta.resolve("@jl1990/pi-scheduler/extensions/scheduler/index.ts")));
 export const marker = (token: string) => `pi-goals-loop:${token}`;
 // Scheduler wakes are "[Scheduled task <id> fired]", header lines, a blank line, then the stored prompt.
 export const wakeToken = (text: string) => /^\[Scheduled task [^\]\n]+ fired\][\s\S]*\npi-goals-loop:([\w-]+)\s*$/.exec(text)?.[1];
 
 export function schedulerCommand(pi: ExtensionAPI, name: string): string {
-	const command = pi.getCommands().find(c => c.source === "extension" && c.sourceInfo?.path === SOURCE && (c.name === name || c.name.startsWith(`${name}:`)));
+	const command = pi.getCommands().find(c => c.source === "extension" && !!c.sourceInfo?.path && realpath(c.sourceInfo.path) === SOURCE && (c.name === name || c.name.startsWith(`${name}:`)));
 	if (!command) throw new Error(`Load @jl1990/pi-scheduler before using goals (/${name} unavailable).`);
 	return command.name;
 }
