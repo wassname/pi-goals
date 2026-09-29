@@ -134,7 +134,7 @@ resync-after-compaction from [tmonk/pi-goal-x](https://github.com/tmonk/pi-goal-
 
 ## Install
 
-Requires Herdr. Includes [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) 0.66.0, pi-intercom and @jl1990/pi-scheduler 0.5.0, pinned to its official registry archive and lockfile integrity.
+Requires Herdr. Uses exact npm registry versions for [pi-subagents](https://github.com/nicobailon/pi-subagents) 0.66.0, pi-intercom 0.13.0, @jl1990/pi-scheduler 0.5.0 and @sting8k/pi-vcc 0.6.0. The lockfile pins this checkout; published packages install from `package.json`.
 
 ```bash
 pi install git:github.com/wassname/pi-goals
