@@ -61,7 +61,7 @@ The user is often away for a day while you work. Settle now what could stop you 
 
 Aim for an outcome the user can see and check. Preserve the concrete deliverables they asked for; runs, tests and reports support the goal but do not replace it. Name the reference code or data the work must reuse, and record any deliberate change from it.
 
-The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim, with the current goals, on every scheduled loop wake. Ask the user whether to adapt it, and record their wording.
+The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome and goal status on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
 
 Conventions:
 - ${intentGuidance}
@@ -71,7 +71,7 @@ Conventions:
 - One goal per distinct outcome. Steps go under a goal as tasks.
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
-- Everything above ## Log is re-sent on loop wakes; keep it under about 50 lines, excluding User voice. Log, Interview and notes below it are history.
+- Loop wakes repeat only the outcome and goal status, so keep those concise. Put full requirements and evidence in the goals file; Log and Interview preserve history.
 
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
 
@@ -80,13 +80,13 @@ export function planningState(path: string): string {
 }
 
 // 2. Ready.
-export function readyPrompt(path: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goals. Mark the goal you work on [/], keep its tasks and evidence current, and when its discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement and goals.`;
+export function readyPrompt(path: string, text: string): string {
+	return `[pi-goals] The user approved ${path}. Work the goals. Mark the goal you work on [/], keep its tasks and evidence current, and when its discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome and goal status.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
-// 3. Scheduled loop wake: the user's loop statement and the current goals, read from disk now.
-export function loopPrompt(statement: string, goalsText: string, path: string): string {
-	return `[pi-goals: loop] Loop statement from ${path}:\n\n${statement}\n\nCurrent goals (${path}, above ## Log):\n\n${goalsText}\n\n${keepWorking}`;
+// 3. Scheduled loop wake: the user's loop statement and the current outcome/status, read from disk now.
+export function loopPrompt(statement: string, focus: string, path: string): string {
+	return `[pi-goals: loop] Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\n${keepWorking}`;
 }
 
 // wassname: "I'd rather waste some tokens and avoid a model mistakenly waiting".

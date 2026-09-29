@@ -18,9 +18,11 @@ const goalLine = (file: string) => readFileSync(file, "utf8").split("\n").find(l
 describe("CompleteGoal", () => {
 	it("accept marks [✓] and logs; the judge is fresh, read-only and gets the goals file", async () => {
 		const h = await working();
-		await h.complete("make the plot");
+		const result = await h.complete("make the plot");
 		expect(goalLine(h.file)).toContain("[✓]");
 		expect(readFileSync(h.file, "utf8")).toMatch(/accepted "make the plot"/);
+		expect(result.content[0].text).toContain("[pi-goals: resync] Goal status changed.");
+		expect(result.content[0].text).toContain(readFileSync(h.file, "utf8"));
 		expect(h.requests[0]).toMatchObject({ agent: "pi-goals-judge", context: "fresh", model: "p/m", result: { kind: "structured" } });
 		expect(h.requests[0].task).toContain("## User-visible result");
 		expect(h.agents[0].definition.tools).toEqual(["read", "grep", "find", "ls"]);
@@ -49,8 +51,9 @@ describe("CompleteGoal", () => {
 		["malformed verdict", { status: "completed", value: { verdict: "maybe" } }],
 	])("%s leaves the goal unfinished", async (_name, judge) => {
 		const h = await working(judge);
-		await h.complete("make the plot");
+		const result = await h.complete("make the plot");
 		expect(goalLine(h.file)).toContain("[/]");
+		expect(result.content[0].text).not.toContain("[pi-goals: resync]");
 	});
 
 	it("missing pi-subagents leaves the goal unfinished", async () => {

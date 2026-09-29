@@ -4,7 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendInterview, appendLog, foldGoals, goals, hasRemainingGoals, headings, interviewEntries, markGoal, restoreInterview, section, stamp, widgetLines, withoutSection } from "./goals.js";
+import { appendInterview, appendLog, goals, hasRemainingGoals, headings, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { startLoop, stopLoop, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -77,7 +77,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		generation++;
 		persist();
 		refresh(ctx);
-		pi.sendUserMessage(prompts.readyPrompt(state.file!), { deliverAs: "followUp" });
+		pi.sendUserMessage(prompts.readyPrompt(state.file!, text), { deliverAs: "followUp" });
 	}
 
 	async function review(ctx: ExtensionContext) {
@@ -174,7 +174,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 			if (!hasRemainingGoals(text, state.judge)) { pause(ctx); return handled; }
 			const statement = section(text, "Loop statement");
 			if (!statement) throw new Error(`${state.file} has no Loop statement.`);
-			return { action: "transform" as const, text: prompts.loopPrompt(statement, withoutSection(foldGoals(text), "Loop statement"), state.file!) };
+			return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), state.file!) };
 		}
 		// Every user message is kept verbatim below the Log, so answers survive compaction.
 		if (state.file && event.source !== "extension" && event.text.trim()) {
@@ -262,10 +262,11 @@ export default function piGoals(pi: ExtensionAPI): void {
 				mkdirSync(dirname(report), { recursive: true });
 				writeFileSync(report, JSON.stringify({ goal: params.goal, goals: text, result: reviewed ?? "self-verification", model }, null, 2));
 				const updated = outcome.mark ? markGoal(text, params.goal, outcome.mark)! : text;
-				save(appendLog(updated, `${stamp()} ${outcome.log}; ${relative(ctx.cwd, report)}`));
+				const saved = appendLog(updated, `${stamp()} ${outcome.log}; ${relative(ctx.cwd, report)}`);
+				save(saved);
 				refresh(ctx);
 				if (!hasRemainingGoals(updated, state.judge)) pause(ctx);
-				return result(`${outcome.text}\n\n${relative(ctx.cwd, report)}`);
+				return result(`${outcome.text}\n\n${relative(ctx.cwd, report)}${outcome.mark ? `\n\n${prompts.resync(saved, state.file!, "Goal status changed.")}` : ""}`);
 			} finally { judging = false; }
 		},
 	});

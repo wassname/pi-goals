@@ -32,6 +32,7 @@ describe("planning and Ready", () => {
 		await h.tools.get("RequestPlanReview").execute();
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
+		expect(h.sent.find(m => m.text.startsWith("[pi-goals] The user approved"))?.text).toContain(GOALS);
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
 	});
 
@@ -69,17 +70,22 @@ describe("planning and Ready", () => {
 });
 
 describe("scheduled loop wake", () => {
-	it("injects the current loop statement and goals from disk, without Log history", async () => {
+	it("repeats the loop statement, outcome and goal status, not the long plan", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
 		const prompt = h.schedulerReceipt("t1");
-		writeFileSync(file, GOALS.replace("A plot.", "A plot with error bars."));
+		const longNote = "Long note for the full plan. ".repeat(1_000);
+		writeFileSync(file, GOALS.replace("A plot.", "A plot with error bars.").replace("## Goals", `## User voice\n\n${longNote}\n\n## Goals`));
 		const out = await h.wake("t1", prompt);
 		expect(out.action).toBe("transform");
 		expect(out.text).toContain(LOOP);
 		expect(out.text).toContain("A plot with error bars.");
-		expect(out.text).toContain("goal: make the plot");
+		expect(out.text).toContain("[/] goal: make the plot");
+		expect(out.text).toContain("[ ] goal: write the note");
+		expect(out.text).not.toContain(longNote);
+		expect(out.text).not.toContain("load data");
 		expect(out.text).not.toContain("historical detail");
+		expect(out.text.length).toBeLessThan(2_000);
 	});
 
 	it("puts back Interview entries that an agent write removed, and tells the agent", async () => {

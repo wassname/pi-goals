@@ -49,12 +49,11 @@ export function section(text: string, name: string): string | undefined {
 	return range && lines.slice(range[0] + 1, range[1]).join("\n").trim();
 }
 
-export function withoutSection(text: string, name: string): string {
-	const lines = text.split("\n");
-	const range = sectionRange(lines, name);
-	if (!range) return text;
-	lines.splice(range[0], range[1] - range[0]);
-	return lines.join("\n").replace(/\n{3,}/g, "\n\n");
+export function loopFocus(text: string): string {
+	const lines = foldGoals(text).split("\n");
+	const outcome = section(text, "User-visible result");
+	if (!outcome) throw new Error("The goals file needs a User-visible result.");
+	return `User-visible result:\n${outcome}\n\nGoal status:\n${goals(text).map(goal => lines[goal.line].trim()).join("\n")}`;
 }
 
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "x", open: "◻", done: "✓", cancelled: "✗" };

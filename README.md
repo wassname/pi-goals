@@ -1,6 +1,6 @@
 # pi-goals (single agent)
 
-One Pi agent works from one goals file you approve. A scheduled loop reminds it of your loop statement and the current goals. An optional fresh, read-only judge checks the evidence before a goal counts as accepted.
+One Pi agent works from one goals file you approve. A scheduled loop repeats your loop statement, intended result and goal status; the full file returns at key transitions. An optional fresh, read-only judge checks the evidence before a goal counts as accepted.
 
 The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
 
@@ -74,10 +74,10 @@ Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` a
 |---|---|---|
 | `/goals new` | drafting rules, as a user message; the goals file starts from a template holding your default loop statement | the same message and the template file |
 | Review | the whole file | the whole file, then Ready / Discuss in chat / Edit / Cancel |
-| Ready | a short start prompt; `/schedule prompt every 1h` creates the loop task | both |
-| Each scheduled wake | the Loop statement and everything above `## Log`, read from disk then | the same text in chat |
+| Ready | start prompt and the whole goals file; `/schedule prompt every 1h` creates the loop task | both |
+| Each scheduled wake | the Loop statement, User-visible result and goal-status lines, read from disk then | the same text in chat |
 | After compaction or resume | the whole goals file once, including Log and Interview | nothing (hidden message) |
-| `CompleteGoal` | the judge result; accept marks `[✓]`, reject or judge failure leaves the goal open | the tool result |
+| `CompleteGoal` | judge result; on an accepted or self-verified goal, the updated whole file | the tool result |
 
 The `##` headings at Ready are the approved structure: an agent `write`/`edit` that drops one is undone. Interview entries removed by an agent edit, including through bash, are put back at the end of the turn. Your own edits between turns are kept.
 
