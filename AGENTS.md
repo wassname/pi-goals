@@ -59,4 +59,6 @@ Stop workers before reloading legacy supervisor/test sessions: later worker exit
 
 Keep temporary plans, audits and captures under ignored `.local/`. Git history retains the removed historical material. Do not add root handovers or duplicate READMEs. Never touch human-named files or credentials.
 
+README changes need wassname's sign-off. Fix only facts that became wrong (install, commands); do not append explanatory prose, which belongs in code comments or tests. <!-- PI[gpt-6-sol], agreed by wassname 2026-09-30 -->
+
 Branch instructions consolidated by Pi/OpenAI from wassname's preferences.
