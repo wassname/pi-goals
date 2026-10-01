@@ -86,8 +86,11 @@ export function readyPrompt(path: string, text: string): string {
 
 // 3. Scheduled loop wake: the user's loop statement and the current outcome/status, read from disk now.
 export function loopPrompt(statement: string, focus: string, path: string): string {
-	return `[pi-goals: loop] Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\n${keepWorking}`;
+	return `[pi-goals: loop] Automated reminder, not a message from the user. Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\n${loopAnchor} ${keepWorking}`;
 }
+
+// Pi/Sol feedback 2026-10-01: hourly wakes made agents anchor /busy on their own last note or a sign-off.
+const loopAnchor = "When you update the user, count from your last substantive exchange with them about the goal or plan, not from your own last update, a sign-off or an earlier reminder. If nothing changed since your last update, say so in one line.";
 
 // wassname: "I'd rather waste some tokens and avoid a model mistakenly waiting".
 const keepWorking = "Before you stop to wait for the user: search the goals file, including ## Interview below the Log, and the project setup (justfile, .env loaders, skills, docs) for the answer. Check access by trying it, not by assuming. Do not invent limits the user has not set. If a question remains, record your assumption in the goals file and continue with the best available work.";

@@ -79,6 +79,8 @@ describe("scheduled loop wake", () => {
 		const out = await h.wake("t1", prompt);
 		expect(out.action).toBe("transform");
 		expect(out.text).toContain(LOOP);
+		expect(out.text).toContain("not a message from the user");
+		expect(out.text).toContain("last substantive exchange");
 		expect(out.text).toContain("A plot with error bars.");
 		expect(out.text).toContain("[/] goal: make the plot");
 		expect(out.text).toContain("[ ] goal: write the note");
