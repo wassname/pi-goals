@@ -701,7 +701,8 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		// Stock owns helper contracts and capabilities. Inspection and cancellation stay available.
 		if (event.toolName === "subagent" && typeof action === "string" && ["list", "get", "models", "guide", "status", "children.list", "project.status", "stop", "interrupt"].includes(action)) return;
 		const nativeWorkerControl = event.toolName === "OpenGoalWorker" || typeof action === "string" && action.startsWith("project.");
-		if (["planning", "paused"].includes(state.mode)) return { block: true, reason: goalToolBlocked(state.mode) };
+		// Planning may consult helpers (oracles, scouts); workers wait for Ready. Pause blocks all launches.
+		if (state.mode === "paused" || (state.mode === "planning" && nativeWorkerControl)) return { block: true, reason: goalToolBlocked(state.mode) };
 		if (nativeWorkerControl && (state.child || state.mode === "solo")) return { block: true, reason: goalToolBlocked(state.child ? "worker" : state.mode) };
 	});
 

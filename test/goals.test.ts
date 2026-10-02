@@ -208,8 +208,10 @@ it.each(["menu", "command"])("enters planning conversation through %s without a 
 	expect(f.ctx.ui.editor).toHaveBeenCalledTimes(route === "menu" ? 1 : 0);
 	expect(f.messages).toHaveLength(1);
 	expect(f.messages[0].message.content).toContain(route === "menu" ? "Initial idea: supplied instructions" : "Use the existing conversation");
-	expect(f.hooks.get("tool_call")({ toolName: "subagent" }).block).toBe(true);
+	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { agent: "oracle", task: "brief" } })).toBeUndefined();
 	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action: "status" } })).toBeUndefined();
+	expect(f.hooks.get("tool_call")({ toolName: "subagent", input: { action: "project.open" } }).block).toBe(true);
+	expect(f.hooks.get("tool_call")({ toolName: "OpenGoalWorker", input: { task: "work" } }).block).toBe(true);
 });
 
 it("cancelled menu New creates nothing and sends nothing", async () => {
