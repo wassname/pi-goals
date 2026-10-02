@@ -90,7 +90,10 @@ export function loopPrompt(statement: string, focus: string, path: string): stri
 }
 
 // wassname: "I'd rather waste some tokens and avoid a model mistakenly waiting".
-const keepWorking = "Before you stop to wait for the user: search the goals file, including ## Interview below the Log, and the project setup (justfile, .env loaders, skills, docs) for the answer. Check access by trying it, not by assuming. Do not invent limits the user has not set. If a question remains, record your assumption in the goals file and continue with the best available work.";
+const keepWorking = "Before you stop to wait for the user: search the goals file, including ## Interview below the Log, and the project setup (justfile, .env loaders, skills, docs) for the answer. Check access by trying it, not by assuming. Do not invent limits the user has not set. If a question remains, record your assumption in the goals file and continue the current goal by its agreed method; do not switch to another method or side goal while the question is open. If the user has changed this session's purpose, pause and propose a new plan rather than serve the old goals.";
+
+// UI only. Owner check in session_start: forks get a new session ID.
+export const forkNotice = (file: string) => `This session was forked from one with goals ${file}. Goals are not inherited; use /goals new for this session's own purpose.`;
 
 // 4. Compaction or resume: the whole file, once.
 export function resync(text: string, path: string, why: string): string {

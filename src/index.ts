@@ -237,6 +237,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 		const last = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === STATE).at(-1);
 		const saved = last?.type === "custom" ? last.data as State : undefined;
 		state = saved?.owner === ctx.sessionManager.getSessionId() ? saved : initial(ctx.sessionManager.getSessionId());
+		// A fork has a new session ID, so it does not inherit goals; say so once, then record that this session has none.
+		if (saved?.file && saved.owner !== state.owner) { ctx.ui.notify(prompts.forkNotice(saved.file), "info"); persist(); }
 		resyncDue = Boolean(state.file);
 		refresh(ctx);
 	});

@@ -83,6 +83,7 @@ describe("scheduled loop wake", () => {
 		expect(out.action).toBe("transform");
 		expect(out.text).toContain(LOOP);
 		expect(out.text).toContain("not a message from the user");
+		expect(out.text).toContain("do not switch to another method");
 		expect(out.text).toContain("A plot with error bars.");
 		expect(out.text).toContain("[/] goal: make the plot");
 		expect(out.text).toContain("[ ] goal: write the note");
@@ -212,6 +213,10 @@ describe("context after compaction and resume", () => {
 		expect(h.ctx.widget[1]).toBe("◻ G2: write the note");
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
+		expect(h.notes.at(-1)).toContain("forked from one with goals x");
+		const shown = h.notes.length;
+		await h.hook("session_start");
+		expect(h.notes.length).toBe(shown);
 		expect(await h.hook("before_agent_start")).toBeUndefined();
 		expect(h.ctx.widget).toBeUndefined();
 	});
