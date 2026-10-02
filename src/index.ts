@@ -220,8 +220,9 @@ export default function piGoals(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		const goalsEdit = ["write", "edit"].includes(event.toolName) && Boolean(state.file) && resolve(ctx.cwd, String((event.input as { path?: string }).path)) === state.file;
 		if (goalsEdit) textBefore.set(event.toolCallId, read());
-		// Planning allows exploration; only file edits outside the goals file and completion are blocked.
-		if (state.phase !== "planning" || goalsEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
+		// Planning allows exploration; only file edits outside the goals file and slop/ (briefs, notes), and completion, are blocked.
+		const slopEdit = ["write", "edit"].includes(event.toolName) && !relative(resolve(ctx.cwd, "slop"), resolve(ctx.cwd, String((event.input as { path?: string }).path))).startsWith("..");
+		if (state.phase !== "planning" || goalsEdit || slopEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
 		return { block: true, reason: prompts.planningState(state.file!) };
 	});
 	pi.on("tool_result", async (event) => {

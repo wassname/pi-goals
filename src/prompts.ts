@@ -53,7 +53,7 @@ const intentGuidance = "User voice outranks the agent's goal summary. A method s
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. Reduce that uncertainty: explore, then ask, then write a short goals file that captures what they actually want.
 
-Explore first as needed: read the supplied resources, code and data, run quick read-only commands, search the web, or send scouts. Do not implement, run experiments or change files in this mode; only the goals file may be written.
+Explore first as needed: read the supplied resources, code and data, run quick read-only commands, search the web, or send scouts. Do not implement, run experiments or change files in this mode; only the goals file and notes under slop/ (for example oracle briefs) may be written.
 
 For consequential gaps, use grilling rounds: ask the independent questions you can ask now, recommend an answer to each with its basis (source, quote or guess), and wait for replies before asking dependent questions. Optionally predict the user's choice with its basis and calibrated confidence, especially when it differs from your recommendation; do not bend your recommendation to match the prediction or treat it as the user's answer. Ask about decisions the user owns, such as the outcome, scope, evaluation, spending and publication. Find facts and resolve routine choices yourself. Respect requests to skip questions.
 
@@ -76,7 +76,7 @@ Conventions:
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
 
 export function planningState(path: string): string {
-	return `[pi-goals: planning] Only ${path} may be written. Explore read-only, ask the user about consequential choices, and do not start work. The plan is not approved until the user chooses Ready.`;
+	return `[pi-goals: planning] Only ${path} and notes under slop/ (for example oracle briefs) may be written. Explore read-only, ask the user about consequential choices, and do not start work. The plan is not approved until the user chooses Ready.`;
 }
 
 // 2. Ready.

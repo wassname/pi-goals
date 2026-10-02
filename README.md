@@ -14,7 +14,7 @@ The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
 
 — wassname, 2026-09-24. So wakes stay hourly even while the agent waits. Each wake ends with a short line telling it to look for the answer (goals file, Interview, project setup) before waiting, and otherwise to record an assumption and continue. Planning records credentials, compute and limits under `## Resources`. All user messages are kept word for word under `## Interview`.
 
-So: one agent with its normal tools, a user-written paragraph repeated on a schedule, a goals file, and an optional stateless judge. Planning is an explore-and-ask phase; only edits outside the goals file are blocked. Add machinery only when a real run shows it is needed.
+So: one agent with its normal tools, a user-written paragraph repeated on a schedule, a goals file, and an optional stateless judge. Planning is an explore-and-ask phase; only edits outside the goals file and `slop/` are blocked. Add machinery only when a real run shows it is needed.
 
 ## Install
 
@@ -35,7 +35,7 @@ pi-goals bundles the scheduler. Install pi-subagents yourself (0.70.1 tested); t
 /goals judge off|on|<provider/model>
 ```
 
-During planning the agent may only read, search and write the goals file. It calls `RequestPlanReview` when the draft is settled. Only your Ready choice starts work.
+During planning the agent may only read, search, ask helpers such as oracles, and write the goals file and notes under `slop/` (for example oracle briefs). It calls `RequestPlanReview` when the draft is settled. Only your Ready choice starts work.
 
 ## The goals file
 

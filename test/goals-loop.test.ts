@@ -27,6 +27,9 @@ describe("planning and Ready", () => {
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toMatchObject({ block: true });
 		expect(await h.hook("tool_call", { toolName: "bash", input: { command: "head data.csv" } })).toBeUndefined();
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: file } })).toBeUndefined();
+		expect(await h.hook("tool_call", { toolName: "write", input: { path: "slop/briefs/oracle.md" } })).toBeUndefined();
+		expect(await h.hook("tool_call", { toolName: "write", input: { path: "slop/../train.py" } })).toMatchObject({ block: true });
+		expect(await h.hook("tool_call", { toolName: "edit", input: { path: "slopx/a.md" } })).toMatchObject({ block: true });
 		expect(h.sent.some(m => m.text.startsWith("/schedule "))).toBe(false);
 
 		await h.tools.get("RequestPlanReview").execute();
