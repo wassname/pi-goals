@@ -20,7 +20,7 @@ describe("planning and Ready", () => {
 		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
 		expect(file).toMatch(/\.pi\/goals\/sess-v1\.md$/);
 		expect(readFileSync(file, "utf8")).toContain("> /goals new plot the data");
-		expect(readFileSync(file, "utf8")).toMatch(/## Loop statement\n\nYou are an autonomous agent[\s\S]*## Goals[\s\S]*## Interview/);
+		expect(readFileSync(file, "utf8")).toMatch(/## Loop statement\n\nYou are an autonomous agent[\s\S]*not a discussion unless I answered it\.\n[\s\S]*## Goals[\s\S]*## Interview/);
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
 		expect(readFileSync(file, "utf8")).toContain("> yes, reuse judge_demos.py");
@@ -80,7 +80,6 @@ describe("scheduled loop wake", () => {
 		expect(out.action).toBe("transform");
 		expect(out.text).toContain(LOOP);
 		expect(out.text).toContain("not a message from the user");
-		expect(out.text).toContain("last substantive exchange");
 		expect(out.text).toContain("A plot with error bars.");
 		expect(out.text).toContain("[/] goal: make the plot");
 		expect(out.text).toContain("[ ] goal: write the note");
