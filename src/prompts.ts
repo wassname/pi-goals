@@ -161,6 +161,10 @@ export function finalReview(planPath: string, text: string): string {
 }
 
 // Check-ins. The installed scheduler owns storage/timing/UI; only new default wakes are one line.
+// PI/OpenAI: Read the working set when a scheduled message is consumed, including queued follow-ups.
+export function checkInPlanContext(planPath: string, text: string): string {
+	return `[pi-goals: current check-in plan]\nThis file snapshot supersedes earlier plan excerpts. Compare it with the latest results; correct stale facts without silently changing agreed goals or success criteria.\n\n${quotedPlan(planPath, foldPlan(text), "current plan above Log, read at check-in delivery")}`;
+}
 export const goalCheckInWake = "Goal check-in: only while supervising unfinished authorized goals, read the plan and latest worker evidence. Keep the user's outcome and preferences in view. Does the result demonstrate that outcome, including its failure discriminators? If not, diagnose and give the next useful instruction. Investigate claimed blockers through existing project setup and tools before escalating; verify action rather than an acknowledgement. Let a genuinely running, followed job proceed without paperwork. Use formal review only when considering a stop. When results change, briefly show the user what they mean and what happens next. Keep unchanged waits to one line and slow reliable check-ins. Respect pauses, do not replay completed work or create a timer from this wake.";
 export const schedulerMessages = {
 	unconfirmed: "Owned check-in removal unconfirmed: no fresh scheduler result could be observed in this saved session. The request is cancelled; later results will not trigger removal. Inspect /schedules all and use exact owned IDs with /schedule-remove.",

@@ -392,6 +392,14 @@ it("plans and reviews the same worker across failure, delivery retry and reload"
 		const wakeView = await parent.waitFor(m => m.type === "tool_execution_end" && m.toolName === "worker_view", checkInAt);
 		await parent.waitFor(m => m.type === "agent_settled", parent.messages.indexOf(wakeView));
 		expect(owned()).toMatchObject({ schedule: "2h", prompt: customCheckIn });
+		// PI/OpenAI: The real model request and saved transcript receive the delivery-time plan.
+		const checkInRequest = requests.parent.slice().reverse().find(request => JSON.stringify(request.messages.filter(message => message.role === "user").at(-1)?.content).includes("[pi-goals: current check-in plan]"))!;
+		const checkInContent = checkInRequest.messages.filter(message => message.role === "user").at(-1)!.content;
+		const checkInText = typeof checkInContent === "string" ? checkInContent : checkInContent.map(part => part.text).join("\n");
+		expect(checkInText).toContain(customCheckIn);
+		expect(checkInText).toContain(foldPlan(readFileSync(planPath, "utf8")));
+		expect(checkInText).not.toContain("Archived notes stay on disk.");
+		expect(readFileSync(parentState.sessionFile, "utf8")).toContain("[pi-goals: current check-in plan]");
 		expect(allTasks().find((task: any) => task.id === foreign.id)).toEqual(foreign);
 		if (process.env.PI_GOALS_TEST_EVIDENCE) writeFileSync(join(process.env.PI_GOALS_TEST_EVIDENCE, "owned-check-in.json"), JSON.stringify({ initial: normalTask, afterWake: owned(), foreign }, null, 2));
 		// Retain the busy-Clear discriminator: passive scheduler output can flush after five seconds.

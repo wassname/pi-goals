@@ -14,6 +14,7 @@ import { FOLD_LINE, foldPlan, GOAL_LINE, planRequirements as requirements } from
 import { planViews } from "./plan-view.js";
 import {
 	attachGoalPlanDescription,
+	checkInPlanContext,
 	childPlanAttached,
 	childPlanRole,
 	completeGoalDescription,
@@ -182,6 +183,10 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 			for (const task of data?.task ? [data.task] : data?.tasks ?? []) if (ownsCheckIn(task, ctx)) ids.add(task.id);
 		}
 		return ids;
+	}
+	function ownedCheckInWake(text: string, ctx: ExtensionContext) {
+		const wake = /^\[Scheduled task ([a-zA-Z0-9_-]+) fired\]\nName: ([^\n]+)\nAction: prompt\n/.exec(text);
+		return Boolean(wake && wake[2] === `goals-${ctx.sessionManager.getSessionId()}` && ownedCheckInIds(ctx).has(wake[1]));
 	}
 	const schedulerCommand = (name: string) => pi.getCommands().find(command => command.source === "extension" && command.sourceInfo?.path === SCHEDULER_SOURCE && (command.name === name || command.name.startsWith(name + ":")))?.name;
 	function requestCheckInRemoval(ctx: ExtensionContext) {
@@ -603,6 +608,13 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 		if (event.message.role === "custom" && event.message.customType === "intercom_message") reconcileReports(ctx);
 		if (event.message.role !== "user" && !(event.message.role === "custom" && event.message.customType === "pi-goals-prompt")) return;
 		const content = typeof event.message.content === "string" ? event.message.content : event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+		// PI/OpenAI: message_end also sees follow-ups consumed within an existing agent run.
+		if (event.message.role === "user" && state.mode === "supervising" && ownedCheckInWake(content, ctx)) {
+			const snapshot = readPlan();
+			const parts = typeof event.message.content === "string" ? [{ type: "text" as const, text: event.message.content }] : event.message.content;
+			const message: typeof event.message = { ...event.message, content: [...parts, { type: "text", text: snapshot.text === undefined ? snapshot.error : checkInPlanContext(state.plan!, snapshot.text) }] };
+			return { message };
+		}
 		if (pendingPlanNotice && content === `[pi-goals]\n${pendingPlanNotice}`) pendingPlanNotice = undefined;
 		if (!state.finalReview || !["supervising", "solo"].includes(state.mode)) return;
 		const snapshot = readPlan();
@@ -669,8 +681,7 @@ export default function mainSupervisor(pi: ExtensionAPI) {
 	});
 	pi.on("input", (event, ctx) => {
 		if (event.source !== "extension") { requestedPlanReview = undefined; pauseCheckIn = false; return; }
-		const wake = /^\[Scheduled task ([a-zA-Z0-9_-]+) fired\]\nName: ([^\n]+)\nAction: prompt\n/.exec(event.text);
-		if (!wake || wake[2] !== `goals-${ctx.sessionManager.getSessionId()}` || !ownedCheckInIds(ctx).has(wake[1])) return;
+		if (!ownedCheckInWake(event.text, ctx)) return;
 		const snapshot = readPlan();
 		if (state.mode !== "supervising" || snapshot.text !== undefined && !unfinishedGoals(snapshot.text)) return { action: "handled" as const };
 	});

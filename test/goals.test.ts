@@ -249,6 +249,42 @@ it("edits even an empty draft directly without a model call", async () => {
 	expect(f.messages).toHaveLength(before);
 });
 
+// PI/OpenAI: A queued wake must read current discriminators, not its scheduling-time snapshot.
+it("wraps an owned check-in with the plan at delivery without changing its custom prompt", async () => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	const task = { id: "owned", name: "goals-copy-only", action: "prompt", scope: "session", sessionFile: f.ctx.sessionManager.getSessionFile(), prompt: "Keep this custom instruction." };
+	f.ctx.sessionManager.getBranch().push({ type: "custom_message", customType: "scheduled-task", details: { task } });
+	const text = `[Scheduled task owned fired]\nName: goals-copy-only\nAction: prompt\nType: interval\n\n${task.prompt}`;
+	expect(f.hooks.get("input")({ source: "extension", text, streamingBehavior: "followUp" }, f.ctx)).toBeUndefined();
+	const current = "# Current plan\n\n## User-visible result\nSide-by-side replies.\n\n## Goals\n- [/] goal: clean replies name the goal\n  - discriminator: paired task-success interval above zero\n  - evidence: 8 vs 6 of 64; unresolved\n\n## Log\nHistorical experiment must stay out.\n";
+	writeFileSync(f.path, current);
+	const message = { role: "user", content: [{ type: "text", text }], timestamp: 123 };
+	const delivered = f.hooks.get("message_end")({ message }, f.ctx).message;
+	expect(delivered).toMatchObject({ role: "user", timestamp: 123 });
+	expect(delivered.content[0]).toEqual(message.content[0]);
+	expect(f.hooks.get("message_end")({ message: { ...message, content: text } }, f.ctx).message.content[0]).toEqual({ type: "text", text });
+	const snapshot = delivered.content[1].text;
+	for (const visible of [f.path, "Side-by-side replies.", "paired task-success interval above zero", "8 vs 6 of 64; unresolved"]) expect(snapshot).toContain(visible);
+	for (const hidden of ["first output", "## Log", "Historical experiment must stay out."]) expect(snapshot).not.toContain(hidden);
+	expect(task.prompt).toBe("Keep this custom instruction.");
+	expect(readFileSync(f.path, "utf8")).toBe(current);
+	for (const other of ["Ordinary user input", text.replace("owned fired", "foreign fired")]) expect(f.hooks.get("message_end")({ message: { ...message, content: [{ type: "text", text: other }] } }, f.ctx)).toBeUndefined();
+	await f.command("stop");
+	expect(f.hooks.get("message_end")({ message }, f.ctx)).toBeUndefined();
+});
+
+it.each(["missing", "empty"])("reports a %s plan at check-in delivery instead of inserting stale context", async failure => {
+	const f = fixture(); await f.draft(); await f.command("ready");
+	const task = { id: "owned", name: "goals-copy-only", action: "prompt", scope: "session", sessionFile: f.ctx.sessionManager.getSessionFile() };
+	f.ctx.sessionManager.getBranch().push({ type: "custom_message", customType: "scheduled-task", details: { task } });
+	if (failure === "missing") rmSync(f.path); else writeFileSync(f.path, "");
+	const message = { role: "user", content: [{ type: "text", text: "[Scheduled task owned fired]\nName: goals-copy-only\nAction: prompt\n" }] };
+	const snapshot = f.hooks.get("message_end")({ message }, f.ctx).message.content[1].text;
+	expect(snapshot).toContain("unavailable");
+	expect(snapshot).toContain("Do not implement or sign off");
+	expect(snapshot).not.toContain("first output");
+});
+
 it("clear preserves the plan without a backup, warns for misbound jobs and allows a separate new draft", async () => {
 	const f = fixture(); await f.draft(); await f.command("ready");
 	await f.launch({ id: "stale", sessionFile: "/tmp/old-worker.jsonl" });
