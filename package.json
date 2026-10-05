@@ -26,7 +26,7 @@
     "typebox": "*"
   },
   "dependencies": {
-    "@jl1990/pi-scheduler": "0.5.0",
+    "@jl1990/pi-scheduler": "0.5.1",
     "pi-subagents": "0.76.0"
   },
   "bundleDependencies": [
@@ -49,13 +49,13 @@
     "lint:fix": "biome check --fix src/ test/"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
-    "@types/node": "^22.19.0",
+    "@biomejs/biome": "^2.5.15",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-tui": "1.0.2",
+    "@types/node": "^22.20.5",
     "typebox": "1.3.27",
     "typescript": "^5.9.3",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.3"
   },
   "pi": {
     "extensions": [
