@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@jl1990/pi-scheduler": "0.5.0",
-    "pi-subagents": "0.72.0"
+    "pi-subagents": "0.76.0"
   },
   "bundleDependencies": [
     "@jl1990/pi-scheduler"
