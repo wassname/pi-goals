@@ -22,7 +22,7 @@ So: one agent with its normal tools, a user-written paragraph repeated on a sche
 "packages": ["npm:pi-subagents", "~/path/to/pi-goals"]
 ```
 
-pi-goals bundles the scheduler. Install pi-subagents yourself (0.70.1 tested); the judge needs it.
+Needs pi 1.0 (tested with 1.0.0). pi-goals bundles the scheduler. Install pi-subagents yourself (0.72.0 tested); the judge needs it.
 
 ## Use
 
