@@ -38,7 +38,22 @@ export default function piGoals(pi: ExtensionAPI): void {
 	const read = () => readFileSync(state.file!, "utf8");
 	const save = (text: string) => writeFileSync(state.file!, text);
 
+	// Goal mode: steps live in the goals file, so pi-tasks may not create a second list. TaskUpdate stays,
+	// because pi-tasks keeps reminding about leftover tasks until they are deleted.
+	let removedTaskCreate = false;
+	function syncTaskTools() {
+		const active = pi.getActiveTools();
+		if (state.phase === "working" && active.includes("TaskCreate")) {
+			pi.setActiveTools(active.filter((name) => name !== "TaskCreate"));
+			removedTaskCreate = true;
+		} else if (state.phase !== "working" && removedTaskCreate) {
+			pi.setActiveTools([...active, "TaskCreate"]);
+			removedTaskCreate = false;
+		}
+	}
+
 	function refresh(ctx: ExtensionContext) {
+		syncTaskTools();
 		if (!state.file) {
 			ctx.ui.setStatus("goals", undefined);
 			ctx.ui.setWidget("goals", undefined);

@@ -6,6 +6,8 @@ export const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*goal:\s*(.*)$/
 const FOLD_LINE = /^#{1,6}[ \t]+Log[ \t]*\r?$/im;
 const HEADING = /^(#{1,6})[ \t]+(.+?)[ \t]*$/;
 const WIDGET_GOAL_LIMIT = 3;
+const WIDGET_TASK_LIMIT = 5;
+const TASK_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*(.*)$/;
 
 // [x] means reported done without a judge accept; [✓] means the judge accepted it.
 export type GoalStatus = "open" | "active" | "reported" | "done" | "cancelled";
@@ -21,6 +23,27 @@ export function goals(text: string): Goal[] {
 		const match = GOAL_LINE.exec(line);
 		return match ? [{ status: STATUS[match[1].toLowerCase()] ?? "open", subject: match[2].trim(), line: index }] : [];
 	});
+}
+
+/** Checkbox lines between this goal and the next goal; done = [x]/[✓]/[-]. */
+function goalTasks(text: string, goal: Goal): { mark: string; subject: string; done: boolean }[] {
+	const lines = foldGoals(text).split("\n");
+	const end = lines.findIndex((line, index) => index > goal.line && (GOAL_LINE.test(line) || HEADING.test(line)));
+	return lines.slice(goal.line + 1, end === -1 ? lines.length : end).flatMap((line) => {
+		const match = TASK_LINE.exec(line);
+		return match ? [{ mark: match[1], subject: match[2].trim(), done: !" /".includes(match[1]) }] : [];
+	});
+}
+
+/** Open and active tasks of [/] goals, indented under the goal line; finished ones are counted. */
+function activeTaskLines(text: string, goal: Goal, limit = Infinity): string[] {
+	if (goal.status !== "active") return [];
+	const tasks = goalTasks(text, goal);
+	const open = tasks.filter((task) => !task.done);
+	const done = tasks.length - open.length;
+	const hidden = Math.max(0, open.length - limit);
+	const tail = [hidden ? `${hidden} more` : "", done ? `${done} done` : ""].filter(Boolean).join(", ");
+	return [...open.slice(0, limit).map((task) => `    [${task.mark}] ${task.subject}`), ...(tail ? [`    … ${tail}`] : [])];
 }
 
 export const hasRemainingGoals = (text: string, judge = true) => goals(text).some((goal) => goal.status === "open" || goal.status === "active" || (judge && goal.status === "reported"));
@@ -53,19 +76,19 @@ export function loopFocus(text: string): string {
 	const lines = foldGoals(text).split("\n");
 	const outcome = section(text, "User-visible result");
 	if (!outcome) throw new Error("The goals file needs a User-visible result.");
-	return `User-visible result:\n${outcome}\n\nGoal status:\n${goals(text).map(goal => lines[goal.line].trim()).join("\n")}`;
+	return `User-visible result:\n${outcome}\n\nGoal status:\n${goals(text).flatMap(goal => [lines[goal.line].trim(), ...activeTaskLines(text, goal)]).join("\n")}`;
 }
 
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "x", open: "◻", done: "✓", cancelled: "✗" };
 const PRIORITY: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, done: 3, cancelled: 4 };
 
-/** PI/OpenAI: goal titles/status only; tasks and evidence stay in the file. */
+/** PI/OpenAI: goal titles/status; open tasks only under [/] goals, to keep the widget short. */
 export function widgetLines(text: string, path: string, width = 100): string[] {
 	const items = goals(text);
 	const sorted = [...items].sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
 	const lines: string[] = [];
 	for (const goal of sorted.slice(0, WIDGET_GOAL_LIMIT)) {
-		lines.push(`${MARK[goal.status]} G${items.indexOf(goal) + 1}: ${goal.subject}`);
+		lines.push(`${MARK[goal.status]} G${items.indexOf(goal) + 1}: ${goal.subject}`, ...activeTaskLines(text, goal, WIDGET_TASK_LIMIT));
 	}
 	const hidden = sorted.slice(WIDGET_GOAL_LIMIT);
 	const counts = (Object.keys(MARK) as GoalStatus[]).map((status) => {

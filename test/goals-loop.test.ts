@@ -88,7 +88,8 @@ describe("scheduled loop wake", () => {
 		expect(out.text).toContain("[/] goal: make the plot");
 		expect(out.text).toContain("[ ] goal: write the note");
 		expect(out.text).not.toContain(longNote);
-		expect(out.text).not.toContain("load data");
+		expect(out.text).toContain("[ ] load data");
+		expect(out.text).not.toContain("old step");
 		expect(out.text).not.toContain("historical detail");
 		expect(out.text.length).toBeLessThan(2_000);
 	});
@@ -170,8 +171,21 @@ describe("scheduled loop wake", () => {
 	});
 });
 
+describe("pi-tasks in goal mode", () => {
+	it("removes TaskCreate while working, keeps TaskUpdate, and restores TaskCreate on pause", async () => {
+		const h = setup({ choices: ["Ready"] });
+		expect(h.activeTools()).toContain("TaskCreate");
+		await ready(h);
+		expect(h.activeTools()).not.toContain("TaskCreate");
+		expect(h.activeTools()).toContain("TaskUpdate");
+		expect(h.sent.at(-1)!.text).toContain("TaskCreate is off in goal mode");
+		await h.commands.get("goals").handler("pause", h.ctx);
+		expect(h.activeTools()).toContain("TaskCreate");
+	});
+});
+
 describe("widget rendering", () => {
-	it.each(["tui", "rpc"])("shows only goal titles/status, excludes tasks and evidence, and fits the width (%s)", async (mode) => {
+	it.each(["tui", "rpc"])("shows goal titles/status and open tasks of the [/] goal only, excludes evidence, and fits the width (%s)", async (mode) => {
 		const h = setup({ choices: ["Ready"] });
 		h.ctx.mode = mode;
 		const file = await ready(h);
@@ -183,10 +197,12 @@ describe("widget rendering", () => {
 		const component = mode === "tui" ? h.ctx.widget() : undefined;
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
-			expect(lines).toHaveLength(3);
+			expect(lines).toHaveLength(5);
 			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1:.*…$/);
-			expect(lines[1]).toBe("◻ G2: write the note");
-			expect(lines.join("\n")).not.toMatch(/Experiment history|48\/89|◦/);
+			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {4}\[ \] Experiment.*…$/);
+			expect(stripVTControlCharacters(lines[2])).toBe("    … 1 done");
+			expect(lines[3]).toBe("◻ G2: write the note");
+			expect(lines.join("\n")).not.toMatch(/48\/89|old step|◦/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 		expect(readFileSync(file, "utf8")).toBe(text);
@@ -209,8 +225,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget[0]).toBe("◼ G1: make the plot");
-		expect(h.ctx.widget[1]).toBe("◻ G2: write the note");
+		expect(h.ctx.widget.slice(0, 4)).toEqual(["◼ G1: make the plot", "    [ ] load data", "    … 1 done", "◻ G2: write the note"]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

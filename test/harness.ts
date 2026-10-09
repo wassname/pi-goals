@@ -85,8 +85,11 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 			editor: async () => undefined,
 		},
 	};
+	let activeTools = ["read", "bash", "TaskCreate", "TaskUpdate"];
 	const pi = {
 		events,
+		getActiveTools: () => [...activeTools],
+		setActiveTools: (names: string[]) => { activeTools = [...names]; },
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		on: (name: string, handler: any) => hooks.set(name, handler),
@@ -106,5 +109,5 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	}
 	const wake = (id: string, prompt: string) => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\n\n${prompt}` });
 	const complete = (goal: string) => tools.get("CompleteGoal").execute("call", { goal }, undefined, undefined, ctx);
-	return { branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake };
+	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake };
 }

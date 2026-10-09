@@ -68,6 +68,8 @@ During planning the agent may only read, search, ask helpers such as oracles, an
 
 Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` accepted by the judge, `[-]` cancelled.
 
+Steps live only as tasks under their goal. While goals are running, pi-goals turns off pi-tasks' `TaskCreate`, so there is one list (`TaskUpdate` stays, so the agent can delete leftover tasks; pi-tasks keeps reminding until the list is empty). Without a running goals file, pi-tasks works as usual. The widget and each wake show the open tasks of `[/]` goals only, to keep the widget short.
+
 ## What happens when
 
 | When | The agent receives | You see |

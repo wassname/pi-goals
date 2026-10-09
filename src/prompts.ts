@@ -81,7 +81,7 @@ export function planningState(path: string): string {
 
 // 2. Ready.
 export function readyPrompt(path: string, text: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goals. Mark the goal you work on [/], keep its tasks and evidence current, and when its discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome and goal status.\n\n${resync(text, path, "Ready approved.")}`;
+	return `[pi-goals] The user approved ${path}. Work the goals. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each wake, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome and goal status.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
 // 3. Scheduled loop wake: the user's loop statement and the current outcome/status, read from disk now.
