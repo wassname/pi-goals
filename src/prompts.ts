@@ -19,6 +19,10 @@ ${DEFAULT_LOOP_STATEMENT}
 
 <one concrete sentence: what the user will be shown when this works>
 
+## Review preview
+
+<agreed results mock-up, under 25 lines total across all goals; illustrative, not measured>
+
 ## User voice
 
 - > "<a requirement in the user's exact words>"
@@ -61,6 +65,14 @@ The user is often away for a day while you work. Settle now what could stop you 
 
 Aim for an outcome the user can see and check. Preserve the concrete deliverables they asked for; runs, tests and reports support the goal but do not replace it. Name the reference code or data the work must reuse, and record any deliberate change from it.
 
+During grilling, show a results mock-up under 25 lines total across all goals. Use words the user understands and question headings, such as "Did healing restore maths without losing the moral change?" Prefer small results tables following markdown-tables, or short demo excerpts with links to full prompts and replies. Reuse ok-tables if the project uses it; include training-log excerpts only when useful. Use variables or clearly labelled example values, never invented pass thresholds or measurements presented as real. Show how working, not working or unclear results would read.
+
+Give each result a short bottom line: what changed, the uncertainty where available (name what it measures), and what that means for the goal. For example: "Maths accuracy changed from B% to X%, with uncertainty Y; moral behaviour [stayed similar / improved / weakened]. This means [conclusion supported by those results]."
+
+Add a short "What I checked" line: which data and replies were read and how selected, available model reasoning, judge verdicts and reasons, and independent code review where relevant. In the mock-up these are planned checks or placeholders, not completed work. In actual reports name only checks performed, their scope and findings, link the evidence, and state what remains uncertain. Test counts or byte-identical outputs do not establish that the user's goal works; explain what the checks establish and avoid circular comparisons.
+
+Ask whether this is how the user wants to see and evaluate the result, and what is missing. Revise it with their answers and keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
+
 The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome and goal status on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
 
 Conventions:
@@ -81,7 +93,7 @@ export function planningState(path: string): string {
 
 // 2. Ready.
 export function readyPrompt(path: string, text: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goals. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each wake, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome and goal status.\n\n${resync(text, path, "Ready approved.")}`;
+	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each wake, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome and goal status.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
 // 3. Scheduled loop wake: the user's loop statement and the current outcome/status, read from disk now.

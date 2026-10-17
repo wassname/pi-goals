@@ -37,6 +37,9 @@ Needs pi 1.0 (tested with 1.0.2). pi-goals bundles the scheduler. Install pi-sub
 
 During planning the agent may only read, search, ask helpers such as oracles, and write the goals file and notes under `slop/` (for example oracle briefs). It calls `RequestPlanReview` when the draft is settled. Only your Ready choice starts work.
 
+Grilling includes a results mock-up under 25 lines across all goals: plain-language question headings, small results tables or short demos with full-source links, and a bottom line explaining what changed and what it means. Variables or labelled examples show working, not working and unclear outcomes without inventing pass thresholds. You agree how you want to review the result; the agent saves that layout under `## Review preview` and uses it in reports. A short “What I checked” line names the checks actually performed, their scope and findings, with evidence links and remaining uncertainty. Checks in the mock-up are explicitly planned, not claimed as done.
+<!-- PI/OpenAI: agreed results-preview and evidence-reporting format. -->
+
 ## The goals file
 
 ```md
@@ -47,6 +50,9 @@ During planning the agent may only read, search, ask helpers such as oracles, an
 
 ## User-visible result
 <what you will be shown when this works>
+
+## Review preview
+<agreed results mock-up, under 25 lines total; illustrative, not measured>
 
 ## User voice
 - > "<your exact words>"
