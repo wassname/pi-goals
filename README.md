@@ -1,103 +1,54 @@
-# pi-goals (single agent)
+# pi-goals
 
-One Pi agent works from one goals file you approve. A scheduled loop repeats your loop statement, intended result and goal status; the full file returns at key transitions. An optional fresh, read-only judge checks the evidence before a goal counts as accepted.
+A Pi extension for work that takes more than one conversation. You agree on goals and how to check the results. The agent keeps those goals in view while it works, including when you're away.
 
-The supervisor/worker/Herdr design is on the `supervisor-worker-herdr` branch.
+## Workflow
 
-## Design intent
+1. Run `/goals new <idea>`. The agent explores and asks clarifying questions before drafting a plan.
+2. Agree on the goals and a short mock-up of how you'll review the results. The mock-up shows possible outcomes, not results already measured.
+3. Review the plan and choose **Ready** to start work. During planning, the agent can only read, search, consult helpers, and write the goals file or notes under `slop/`.
+4. Follow goals and tasks in a widget. Hourly reminders repeat your instructions and current progress to the agent.
+5. Before a goal is ticked off, a fresh, read-only subagent checks the evidence. This judge can reject completion if the work misses what you asked for.
 
-> hmm one idea is that we want to get as close to training as possible. and as ligth as possible. having pi-goals which just repeats a user written paragraph and one agent works seems the lightest.
-
-— wassname, 2026-09-24. The loop statement is meant to act like an assistance game (CIRL): the user knows the goal, the agent starts uncertain and keeps reducing that uncertainty while it works.
-
-> I'm often away for 8 or 24 hours. then they stop because they have a question (they often forgot the answer) or they think the .env is missing (it's not) or invented a budget... so I'd rather waste some tokens and avoid a model mistakenly waiting
-
-— wassname, 2026-09-24. So wakes stay hourly even while the agent waits. Each wake ends with a short line telling it to look for the answer (goals file, Interview, project setup) before waiting, and otherwise to record an assumption and continue. Planning records credentials, compute and limits under `## Resources`. All user messages are kept word for word under `## Interview`.
-
-So: one agent with its normal tools, a user-written paragraph repeated on a schedule, a goals file, and an optional stateless judge. Planning is an explore-and-ask phase; only edits outside the goals file and `slop/` are blocked. Add machinery only when a real run shows it is needed.
+The judge is optional. With it off, the agent marks goals as self-verified. A judge's acceptance is another reading of the evidence, not a guarantee that the result is correct.
 
 ## Install
+
+Add to your Pi settings:
 
 ```json
 "packages": ["npm:pi-subagents@0.76.0", "~/path/to/pi-goals"]
 ```
 
-Needs pi 1.0 (tested with 1.0.2). pi-goals bundles the scheduler. Install pi-subagents yourself, at the version pi-goals uses (0.76.0); the judge needs it.
+Requires Pi 1.0 (tested with 1.0.2). The scheduler is bundled; install pi-subagents 0.76.0 separately for the judge.
 
-## Use
+## Commands
 
-```
-/goals new <idea>     discuss and draft .pi/goals/<last 6 of session id>-vN.md; nothing runs yet
-/goals review         show the draft with Ready / Discuss in chat / Edit / Cancel
-/goals pause          remove the scheduled loop; the file stays
-/goals resume         start a new loop for the paused goals
-/goals clear          pause and detach this session from the file
+```text
+/goals new <idea>      discuss and draft a plan
+/goals review          open Ready / Discuss in chat / Edit / Cancel
+/goals pause           stop reminders; keep the goals file
+/goals resume          restart reminders
+/goals clear           stop reminders and detach the goals file
 /goals judge off|on|<provider/model>
 ```
 
-During planning the agent may only read, search, ask helpers such as oracles, and write the goals file and notes under `slop/` (for example oracle briefs). It calls `RequestPlanReview` when the draft is settled. Only your Ready choice starts work.
+## Goals and evidence
 
-Grilling includes a results mock-up under 25 lines across all goals: plain-language question headings, small results tables or short demos with full-source links, and a bottom line explaining what changed and what it means. Variables or labelled examples show working, not working and unclear outcomes without inventing pass thresholds. You agree how you want to review the result; the agent saves that layout under `## Review preview` and uses it in reports. A short “What I checked” line names the checks actually performed, their scope and findings, with evidence links and remaining uncertainty. Checks in the mock-up are explicitly planned, not claimed as done.
-<!-- PI/OpenAI: agreed results-preview and evidence-reporting format. -->
+The plan is saved in `.pi/goals/`. It keeps your messages word for word, alongside the agreed result, review mock-up, goals, tasks and evidence. Each goal describes how the work could look complete but still be wrong, and what check would catch that.
 
-## The goals file
+You can edit the file at any time. The next reminder uses your changes. The agent should ask before changing your instructions or recorded preferences.
 
-```md
-# <title>
+Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified, `[✓]` accepted by the judge, `[-]` cancelled. The widget shows open tasks for active goals. While goals run, tasks stay in this file instead of a separate pi-tasks list.
 
-## Loop statement
-<your words: what the agent should check and report on each wake>
+The judge reads the goals file and cited files; it cannot run tests. The working agent must run checks and save their output first. Judge reviews are saved in `.pi/goals/reviews/`.
 
-## User-visible result
-<what you will be shown when this works>
+## Design intent
 
-## Review preview
-<agreed results mock-up, under 25 lines total; illustrative, not measured>
+One working agent, one goals file, scheduled reminders, and an optional judge. The extension uses [pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) and [pi-subagents](https://github.com/nicobailon/pi-subagents). Change the reminder interval through the scheduler's commands.
 
-## User voice
-- > "<your exact words>"
-- In reply to <the question you answered>:
-  > "yes"
+The default instructions tell the agent to look for answers before waiting for you, record assumptions, and continue. While jobs run normally, it should avoid repeated polling and status reports. Existing goals files keep their saved instructions.
 
-## Goals
-1. [/] goal: <outcome>
-   - references: <code or data to reuse>
-   - subtle failure mode: <how it could look done but not be>
-   - discriminator: <the observation that tells real success from that failure>
-   - tasks:
-     1. [ ] <step>
-   - evidence:
+Reminders stop when you pause, clear, or finish all goals. They can remind an agent of its goals; they cannot prevent drift between reminders. Tests cover data flow with a fake Pi and real dependency parsers. A multi-hour unattended run has not been tested.
 
-## Log
-## Interview
-```
-
-Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified (judge off), `[✓]` accepted by the judge, `[-]` cancelled.
-
-Steps live only as tasks under their goal. While goals are running, pi-goals turns off pi-tasks' `TaskCreate`, so there is one list (`TaskUpdate` stays, so the agent can delete leftover tasks; pi-tasks keeps reminding until the list is empty). Without a running goals file, pi-tasks works as usual. The widget and each wake show the open tasks of `[/]` goals only, to keep the widget short.
-
-## What happens when
-
-| When | The agent receives | You see |
-|---|---|---|
-| `/goals new` | drafting rules, as a user message; the goals file starts from a template holding your default loop statement | the same message and the template file |
-| Review | the whole file | the whole file, then Ready / Discuss in chat / Edit / Cancel |
-| Ready | start prompt and the whole goals file; `/schedule prompt every 1h` creates the loop task | both |
-| Each scheduled wake | the Loop statement, User-visible result and goal-status lines, read from disk then | the same text in chat |
-| After compaction or resume | the whole goals file once, including Log and Interview | nothing (hidden message) |
-| `CompleteGoal` | judge result; on an accepted or self-verified goal, the updated whole file | the tool result |
-
-The `##` headings at Ready are the approved structure: an agent `write`/`edit` that drops one is undone. Interview entries removed by an agent edit, including through bash, are put back at the end of the turn. Your own edits between turns are kept.
-
-You can edit the goals file, including the loop statement, at any time; the next wake uses the new text. The agent may propose changes to the loop statement or User voice, and should edit them only after you agree (a prompt rule, not enforced in code).
-
-The loop uses the stock [@jl1990/pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) session-scoped task. Change its interval with the scheduler's own commands. Wakes from an older Ready or another session are dropped. The loop is removed on pause, clear, or when no unfinished goals remain.
-
-The judge is a [pi-subagents](https://github.com/nicobailon/pi-subagents) runtime agent with `read`, `grep`, `find` and `ls` only, fresh context and the project's `AGENTS.md` supplied as separately labelled file content, not judge instructions. User intent outranks the goal summary; a method switch that changes the requested outcome is a finding, not completion. It reads the goals file and the cited artifacts, and must quote the files it opened. Each review is saved in `.pi/goals/reviews/`. A judge accept is a second reading of the evidence, not proof that the result is right.
-
-## Limits
-
-- Tests use a fake Pi and check data flow against the real scheduler and pi-subagents parsers. A real multi-hour unattended run has not been tested.
-- The loop only reminds. If the agent drifts between wakes, nothing corrects it until the next wake.
-
-<!-- Claude (PI/claude-opus) -->
+<!-- README rewrite: PI/OpenAI. -->
