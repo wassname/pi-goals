@@ -36,7 +36,8 @@ ${DEFAULT_LOOP_STATEMENT}
    - subtle failure mode: <how this could look done but not be>
    - discriminator: <the observation that tells real success from that failure>
    - tasks:
-     1. [ ] <step>
+     1. [ ] <short action>
+        - details: <constraints or context, if needed>
    - evidence: (empty until sign-off)
 
 ## Resources
@@ -53,6 +54,8 @@ ${DEFAULT_LOOP_STATEMENT}
 // Sent once with the seed, and again after compaction during planning.
 // PI/OpenAI: share the intent rule between planning and completion.
 const intentGuidance = "User voice outranks the agent's goal summary. A method switch must still deliver what the user asked for; otherwise record it as a finding, not goal completion.";
+// PI/OpenAI: keep widget labels separate from requirements and run history.
+const taskGuidance = "Keep each task checkbox line to one short action, about 5–10 words. Put constraints in indented notes, observations in evidence, and run history in Log. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels.";
 
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. Reduce that uncertainty: explore, then ask, then write a short goals file that captures what they actually want.
@@ -81,6 +84,7 @@ Conventions:
 - The Loop statement and User voice belong to the user. Propose changes; edit them only after the user agrees, and quote their agreement in User voice.
 - User voice keeps the user's exact words. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
 - One goal per distinct outcome. Steps go under a goal as tasks.
+- ${taskGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
 - Loop wakes repeat only the outcome and goal status, so keep those concise. Put full requirements and evidence in the goals file; Log and Interview preserve history.
@@ -98,7 +102,7 @@ export function readyPrompt(path: string, text: string): string {
 
 // 3. Scheduled loop wake: the user's loop statement and the current outcome/status, read from disk now.
 export function loopPrompt(statement: string, focus: string, path: string): string {
-	return `[pi-goals: loop] Automated reminder, not a message from the user. Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\n${keepWorking}`;
+	return `[pi-goals: loop] Automated reminder, not a message from the user. Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\n${taskGuidance}\n\n${keepWorking}`;
 }
 
 // wassname: "I'd rather waste some tokens and avoid a model mistakenly waiting".
@@ -109,7 +113,7 @@ export const forkNotice = (file: string) => `This session was forked from one wi
 
 // 4. Compaction or resume: the whole file, once.
 export function resync(text: string, path: string, why: string): string {
-	return `[pi-goals: resync] ${why} This is the whole goals file (${path}). Continue the current goal; the user's latest message outranks the file.\n\n${text}`;
+	return `[pi-goals: resync] ${why} This is the whole goals file (${path}). Continue the current goal; the user's latest message outranks the file. ${taskGuidance}\n\n${text}`;
 }
 
 // 5. CompleteGoal, agent side.
