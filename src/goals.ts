@@ -25,11 +25,15 @@ export function goals(text: string): Goal[] {
 	});
 }
 
+/** PI/OpenAI: keep nested headings inside a goal; stop at the next goal or top-level section. */
+function goalBlock(lines: string[], goal: Goal): string[] {
+	const end = lines.findIndex((line, index) => index > goal.line && (GOAL_LINE.test(line) || (HEADING.exec(line)?.[1].length ?? Infinity) <= 2));
+	return lines.slice(goal.line, end === -1 ? lines.length : end);
+}
+
 /** Checkbox lines between this goal and the next goal; done = [x]/[✓]/[-]. */
 function goalTasks(text: string, goal: Goal): { mark: string; subject: string; done: boolean }[] {
-	const lines = foldGoals(text).split("\n");
-	const end = lines.findIndex((line, index) => index > goal.line && (GOAL_LINE.test(line) || HEADING.test(line)));
-	return lines.slice(goal.line + 1, end === -1 ? lines.length : end).flatMap((line) => {
+	return goalBlock(foldGoals(text).split("\n"), goal).slice(1).flatMap((line) => {
 		const match = TASK_LINE.exec(line);
 		return match ? [{ mark: match[1], subject: match[2].trim(), done: !" /".includes(match[1]) }] : [];
 	});
@@ -76,7 +80,9 @@ export function loopFocus(text: string): string {
 	const lines = foldGoals(text).split("\n");
 	const outcome = section(text, "User-visible result");
 	if (!outcome) throw new Error("The goals file needs a User-visible result.");
-	return `User-visible result:\n${outcome}\n\nGoal status:\n${goals(text).flatMap(goal => [lines[goal.line].trim(), ...activeTaskLines(text, goal)]).join("\n")}`;
+	const items = goals(text);
+	const active = items.filter(goal => goal.status === "active").map(goal => goalBlock(lines, goal).join("\n").trimEnd());
+	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map(goal => lines[goal.line].trim()).join("\n")}${active.length ? `\n\nActive goals (complete blocks):\n${active.join("\n\n")}` : ""}`;
 }
 
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "x", open: "◻", done: "✓", cancelled: "✗" };

@@ -73,25 +73,68 @@ describe("planning and Ready", () => {
 });
 
 describe("scheduled loop wake", () => {
-	it("repeats the loop statement, outcome and goal status, not the long plan", async () => {
+	it("repeats complete active blocks and fresh evidence without unrelated sections", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
 		const prompt = h.schedulerReceipt("t1");
 		const longNote = "Long note for the full plan. ".repeat(1_000);
-		writeFileSync(file, GOALS.replace("A plot.", "A plot with error bars.").replace("## Goals", `## User voice\n\n${longNote}\n\n## Goals`));
+		const active = `1. [/] goal: make the plot
+   - references: saved_cases.jsonl and postprocess.py
+   - subtle failure mode: only the smoke-test cases are corrected
+   - completion criteria: corrected post-processing of all 6,149 saved cases
+   - discriminator: every saved case has a corrected result
+   - verify: just postprocess-all
+   - tasks:
+     1. [ ] load data
+        - details: preserve case IDs
+     2. [x] old step
+### Evidence
+   - results/run.md: "41/6149 processed"; processing is incomplete
+   - notes: ${"Case-level evidence. ".repeat(150).trimEnd()}`;
+		const second = `2. [/] goal: write the note
+   - completion criteria: report the complete dataset, not a sample
+### Findings
+   - evidence: results/counts.json is still missing`;
+		const text = GOALS.replace("A plot.", "A plot with error bars.")
+			.replace("## Goals", `## User voice\n\n${longNote}\n\n## Goals`)
+			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n## Log)/, `${active}\n\n${second}\n\n3. [ ] goal: review the results\n   - details: pending-only detail\n4. [✓] goal: prepare the data\n   - evidence: completed-only detail\n\n## Resources\n\nResource-only detail\n`);
+		writeFileSync(file, text);
 		const out = await h.wake("t1", prompt);
 		expect(out.action).toBe("transform");
 		expect(out.text).toContain(LOOP);
 		expect(out.text).toContain("not a message from the user");
 		expect(out.text).toContain("do not switch to another method");
 		expect(out.text).toContain("A plot with error bars.");
-		expect(out.text).toContain("[/] goal: make the plot");
+		expect(out.text).toContain(active);
+		expect(out.text).toContain(second);
+		expect(out.text).toContain("[ ] goal: review the results");
+		expect(out.text).toContain("[✓] goal: prepare the data");
+		for (const omitted of [longNote, "pending-only detail", "completed-only detail", "Resource-only detail", "historical detail"]) {
+			expect(out.text).not.toContain(omitted);
+		}
+
+		writeFileSync(file, text.replace("41/6149 processed", "6149/6149 processed"));
+		const updated = await h.wake("t1", prompt);
+		expect(updated.text).toContain("6149/6149 processed");
+		expect(updated.text).not.toContain('"41/6149 processed"');
+
+		writeFileSync(file, text.replace("[/] goal: make the plot", "[✓] goal: make the plot"));
+		const completed = await h.wake("t1", prompt);
+		expect(completed.text).toContain("[✓] goal: make the plot");
+		expect(completed.text).toContain(second);
+		expect(completed.text).not.toContain("saved_cases.jsonl");
+	});
+
+	it("keeps open goal status when no goal is marked active", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		const prompt = h.schedulerReceipt("t1");
+		writeFileSync(file, GOALS.replace("[/] goal:", "[ ] goal:"));
+		const out = await h.wake("t1", prompt);
+		expect(out.action).toBe("transform");
+		expect(out.text).toContain("[ ] goal: make the plot");
 		expect(out.text).toContain("[ ] goal: write the note");
-		expect(out.text).not.toContain(longNote);
-		expect(out.text).toContain("[ ] load data");
-		expect(out.text).not.toContain("old step");
-		expect(out.text).not.toContain("historical detail");
-		expect(out.text.length).toBeLessThan(2_000);
+		expect(out.text).not.toContain("load data");
 	});
 
 	it("puts back Interview entries that an agent write removed, and tells the agent", async () => {

@@ -1,0 +1,47 @@
+
+> @wassname2/pi-goals@0.4.0 test
+> vitest run --dir test
+
+
+ RUN  v5.0.3 /workspace/pi-ext/pi-goals
+
+
+ Test Files  3 passed (3)
+      Tests  34 passed (34)
+   Start at  15:35:47
+   Duration  873ms (transform 56%, import 34%, tests 9%, worker 1%)
+
+
+> @wassname2/pi-goals@0.4.0 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.4.0 lint
+> biome check src/ test/
+
+Checked 9 files in 44ms. No fixes applied.
+RPC load: success=true; registered goals, schedule, schedule-remove; stderr empty.
+
+Staged changes only (pre-existing Loop edits excluded):
+
+> @wassname2/pi-goals@0.4.0 test
+> vitest run --dir test
+
+
+ RUN  v5.0.3 /tmp/pi-goals-staged-4ueRPO
+
+
+ Test Files  3 passed (3)
+      Tests  33 passed (33)
+   Start at  15:38:10
+   Duration  688ms (transform 47%, import 43%, tests 9%, worker 1%)
+
+
+> @wassname2/pi-goals@0.4.0 typecheck
+> tsc --noEmit
+
+
+> @wassname2/pi-goals@0.4.0 lint
+> biome check src/ test/
+
+Checked 9 files in 104ms. No fixes applied.

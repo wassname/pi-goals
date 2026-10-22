@@ -7,7 +7,7 @@ A Pi extension for work that takes more than one conversation. You agree on goal
 1. Run `/goals new <idea>`. The agent explores and asks clarifying questions before drafting a plan.
 2. Agree on the goals and a short mock-up of how you'll review the results. The mock-up shows possible outcomes, not results already measured.
 3. Review the plan and choose **Ready** to start work. During planning, the agent can only read, search, consult helpers, and write the goals file or notes under `slop/`.
-4. Follow goals and tasks in a widget. Hourly reminders repeat your instructions and current progress to the agent.
+4. Follow goals and tasks in a widget. Hourly reminders repeat your instructions, the outcome, goal status and complete active goals, including failure modes, completion criteria and evidence. They ask what observations change the agent's understanding and which next action is most useful toward the goal, considering its cost.
 5. Before a goal is ticked off, a fresh, read-only subagent checks the evidence. This judge can reject completion if the work misses what you asked for.
 
 The judge is optional. With it off, the agent marks goals as self-verified. A judge's acceptance is another reading of the evidence, not a guarantee that the result is correct.

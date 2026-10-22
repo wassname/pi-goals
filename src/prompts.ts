@@ -76,7 +76,7 @@ Add a short "What I checked" line: which data and replies were read and how sele
 
 Ask whether this is how the user wants to see and evaluate the result, and what is missing. Revise it with their answers and keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
 
-The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome and goal status on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
+The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and complete active goal blocks on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
 
 Conventions:
 - ${intentGuidance}
@@ -87,7 +87,7 @@ Conventions:
 - ${taskGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
-- Loop wakes repeat only the outcome and goal status, so keep those concise. Put full requirements and evidence in the goals file; Log and Interview preserve history.
+- Loop wakes repeat the outcome, goal status and complete active goal blocks, including requirements, failure modes, completion criteria and evidence. Keep those blocks current; Log and Interview preserve history.
 
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
 
@@ -97,12 +97,12 @@ export function planningState(path: string): string {
 
 // 2. Ready.
 export function readyPrompt(path: string, text: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each wake, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome and goal status.\n\n${resync(text, path, "Ready approved.")}`;
+	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each wake, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome, goal status and complete active goal blocks.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
-// 3. Scheduled loop wake: the user's loop statement and the current outcome/status, read from disk now.
+// PI/OpenAI: scheduled wake reads the saved Loop statement, outcome, status and active goal blocks.
 export function loopPrompt(statement: string, focus: string, path: string): string {
-	return `[pi-goals: loop] Automated reminder, not a message from the user. Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\n${taskGuidance}\n\n${keepWorking}`;
+	return `[pi-goals: loop] Automated reminder, not a message from the user. Loop statement from ${path}:\n\n${statement}\n\nCurrent focus (${path}):\n\n${focus}\n\nWhat did you observe, and how does it change your current understanding? Given what remains uncertain, what next action is most useful toward the goal, considering its cost?\n\n${taskGuidance}\n\n${keepWorking}`;
 }
 
 // wassname: "I'd rather waste some tokens and avoid a model mistakenly waiting".
