@@ -1,0 +1,15 @@
+# const_v2 judge validator repair
+
+Checked: 2026-10-25T06:41:15.754Z
+Schema: pi-goals/src/prompts.ts judgeSchema
+Validator: global pi-subagents 0.76.0
+Repair: npm install --ignore-scripts --legacy-peer-deps --save-exact --offline typebox@1.3.27
+
+PASS 2026-10-25T06:29:51.999Z: original accept submission, 19 checks; canonical schema validation and file capture/readback.
+PASS 2026-10-25T06:31:12.160Z: original accept submission, 19 checks; canonical schema validation and file capture/readback.
+PASS: invalid verdict rejected.
+PASS: missing required field rejected.
+
+No model calls. No research goals, statuses, schedules or judge receipts changed.
+A live CompleteGoal retry has not been run.
+-- PI/OpenAI
