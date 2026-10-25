@@ -85,7 +85,7 @@ export function loopFocus(text: string): string {
 	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map(goal => lines[goal.line].trim()).join("\n")}${active.length ? `\n\nActive goals (complete blocks):\n${active.join("\n\n")}` : ""}`;
 }
 
-const MARK: Record<GoalStatus, string> = { active: "◼", reported: "x", open: "◻", done: "✓", cancelled: "✗" };
+const MARK: Record<GoalStatus, string> = { active: "◼", reported: "☑", open: "◻", done: "✓", cancelled: "✗" };
 const PRIORITY: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, done: 3, cancelled: 4 };
 
 /** PI/OpenAI: goal titles/status; open tasks only under [/] goals, to keep the widget short. */
