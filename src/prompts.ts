@@ -28,7 +28,7 @@ ${DEFAULT_LOOP_STATEMENT}
 
 - > "<a requirement in the user's words>"
 - In reply to <the question or proposal they answered>:
-  > "<their exact short reply, e.g. yes>"
+  > "<their short reply, e.g. yes>"
 
 ## Goals
 
@@ -83,7 +83,7 @@ Conventions:
 - ${intentGuidance}
 - ## Interview is written by the extension with the user's exact messages. Keep its entries unchanged; do not add your own.
 - The Loop statement and User voice belong to the user. Propose changes; edit them only after the user agrees, and quote their agreement in User voice.
-- User voice quotes the user's words. Fix small spelling errors and typos without a visible mark; keep their words in order, mark cuts with ... and added words with [brackets]. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
+- User voice quotes the user faithfully but cleaned up: fix spelling and typos without a mark, keep their words in order and their meaning, mark cuts with ... and added words with [brackets]. Only ## Interview needs the exact text. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
 - One goal per distinct outcome. Steps go under a goal as tasks.
 - ${taskGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
