@@ -26,6 +26,8 @@ ${DEFAULT_LOOP_STATEMENT}
 
 ## User voice
 
+Quotes are <user>'s words with spelling corrected; ## Interview has the exact text.
+
 - > "<a requirement in the user's words>"
 - In reply to <the question or proposal they answered>:
   > "<their short reply, e.g. yes>"
