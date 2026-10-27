@@ -2,6 +2,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { section } from "../src/goals.js";
+import { DEFAULT_LOOP_STATEMENT } from "../src/prompts.js";
 import { GOALS, LOOP, setup } from "./harness.js";
 
 async function ready(h: ReturnType<typeof setup>) {
@@ -20,7 +22,7 @@ describe("planning and Ready", () => {
 		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
 		expect(file).toMatch(/\.pi\/goals\/sess-v1\.md$/);
 		expect(readFileSync(file, "utf8")).toContain("> /goals new plot the data");
-		expect(readFileSync(file, "utf8")).toMatch(/## Loop statement\n\nYou are an autonomous agent[\s\S]*not a discussion unless I answered it\.\n[\s\S]*## Goals[\s\S]*## Interview/);
+		expect(section(readFileSync(file, "utf8"), "Loop statement")).toBe(DEFAULT_LOOP_STATEMENT);
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
 		expect(readFileSync(file, "utf8")).toContain("> yes, reuse judge_demos.py");
@@ -73,6 +75,28 @@ describe("planning and Ready", () => {
 });
 
 describe("scheduled loop wake", () => {
+	it("uses the seeded default until the saved statement changes, including after resume", async () => {
+		const h = setup({ choices: ["Ready"] });
+		await h.commands.get("goals").handler("new plot the data", h.ctx);
+		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
+		const statement = section(readFileSync(file, "utf8"), "Loop statement")!;
+		writeFileSync(file, GOALS.replace(LOOP, statement));
+		await h.tools.get("RequestPlanReview").execute();
+		await h.hook("agent_settled");
+		const prompt = h.schedulerReceipt("t1");
+		expect((await h.wake("t1", prompt)).text).toContain(DEFAULT_LOOP_STATEMENT);
+
+		writeFileSync(file, GOALS);
+		const edited = await h.wake("t1", prompt);
+		expect(edited.text).toContain(LOOP);
+		expect(edited.text).not.toContain(DEFAULT_LOOP_STATEMENT);
+		await h.commands.get("goals").handler("pause", h.ctx);
+		await h.commands.get("goals").handler("resume", h.ctx);
+		const resumed = await h.wake("t2", h.schedulerReceipt("t2"));
+		expect(resumed.text).toContain(LOOP);
+		expect(resumed.text).not.toContain(DEFAULT_LOOP_STATEMENT);
+	});
+
 	it("repeats complete active blocks and fresh evidence without unrelated sections", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);

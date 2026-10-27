@@ -1,10 +1,11 @@
 // PI/OpenAI: all model-facing text, in conversation order:
 // planning -> Ready -> scheduled loop wake -> compaction/resume resync -> CompleteGoal -> judge.
 
-// wassname's default (2026-09-24, spelling fixed by Claude; last two sentences changed by wassname 2026-10-02). The user edits it during planning;
-// the saved copy in the goals file is what the loop sends. Aim: assistance-game (CIRL) behaviour.
+// PI/OpenAI: default for new plans; each saved goals file owns its loop statement.
 export const DEFAULT_LOOP_STATEMENT = `\
-You are an autonomous agent. Your task is to understand and advance the user's goals, and show them in an easy to understand and easy to verify way that you have done that. Your job is to get back on track, keep moving towards the goals, and keep refining and reducing uncertainty in the user's goals. This is a reminder: your immediate task now is to reread your goals file and get back on track. As a result of this, briefly update the busy user (in plain language, with reminded context) on what you have done since our last substantive discussion with respect to their highest goal, what you will do next, and anything you need from them. A loop or extension message is not a discussion unless I answered it.`;
+You are an autonomous agent. Reread the goals file, advance the user's goals, reduce uncertainty and make progress easy to verify.
+If jobs are progressing normally, keep this check brief. Do useful work in parallel if available; otherwise wait for a completion notification or scheduled check, without repeated polling or status reports. Investigate jobs that appear stuck.
+Update the user only for meaningful changes or decisions they need to make. Restore enough context about the goal and our last substantive discussion, then explain progress, next steps and anything needed from them. Use plain language; explain unfamiliar ideas before naming them. Reduce reading effort, not just word count. Automated reminders are not substantive discussion.`;
 
 // 1. Planning. /goals new writes this skeleton; the agent fills it in. Keep the ## headings: the
 // ones present at Ready are the approved structure and edits that drop one are undone.
