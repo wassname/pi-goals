@@ -19,7 +19,8 @@ describe("goal status glyphs", () => {
 		expect(goals(text).map((goal) => goal.subject)).toEqual(["real"]);
 		const focus = loopFocus(text);
 		expect(focus).toContain("discriminator: kept in full");
-		expect(focus).toMatch(/notes: (long ){10}.*… \[cut, \d+ more chars in the goals file\]/);
+		expect(focus).toContain(`notes: ${"long ".repeat(20)}`);
+		expect(focus).not.toContain("long ".repeat(40));
 		expect(markGoal(text, "real", "x")).toBe(text.replace("1. [/] goal: real", "1. [x] goal: real"));
 	});
 });

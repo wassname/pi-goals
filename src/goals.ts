@@ -11,8 +11,6 @@ const WIDGET_TASK_LIMIT = 5;
 const FIELD_PREVIEW = 160;
 // What defines done; repeated in full on every wake.
 const WAKE_FIELDS = new Set(["subtle failure mode", "discriminator", "verify", "completion criteria"]);
-// [x] is not a GFM task here: plain CommonMark keeps "[/] goal: …" as the item's first text.
-const CHECKBOX = /^\[([ xX/✓-])\][ \t]*/;
 
 // [x] means reported done without a judge accept; [✓] means the judge accepted it.
 export type GoalStatus = "open" | "active" | "reported" | "done" | "cancelled";
@@ -23,88 +21,56 @@ export interface Goal {
 	/** "1. [/] goal: subject", as written. */
 	line: string;
 	item: ListItem;
-	/** Where this goal's block ends: the next goal, a heading of level 1-2, or the Log fold. */
-	end: number;
 }
 interface Checkbox { mark: string; label: string; item: ListItem }
 
 const from = (node: Nodes) => node.position!.start.offset!;
 const to = (node: Nodes) => node.position!.end.offset!;
 const parse = (text: string): Root => fromMarkdown(text);
+const firstLine = (text: string, node: Nodes) => text.slice(from(node), to(node)).split("\n")[0];
+const plain = (node: Nodes): string => "value" in node ? node.value : "children" in node ? (node.children as Nodes[]).map(plain).join("") : "";
+/** Heading text as written (keeps `code` marks): saved heading lists are compared against it. */
 const headingName = (text: string, heading: Heading) => heading.children.length ? text.slice(from(heading.children[0]), to(heading.children[heading.children.length - 1])).trim() : "";
 const rootHeadings = (root: Root) => root.children.filter((node): node is Heading => node.type === "heading");
-const firstLine = (text: string, node: Nodes) => text.slice(from(node), to(node)).split("\n")[0];
+const allItems = (node: Nodes): ListItem[] => [...(node.type === "listItem" ? [node] : []), ...("children" in node ? (node.children as Nodes[]).flatMap(allItems) : [])];
+/** Items of the lists directly inside an item: a goal's fields, or a field's entries. */
+const subItems = (item: ListItem) => item.children.flatMap((child) => child.type === "list" ? child.children : []);
+/** "subtle failure mode" from "- subtle failure mode: …"; "tasks" from "- tasks (wassname: …):". */
+function fieldKey(item: ListItem): string | undefined {
+	const head = item.children[0];
+	const words = head?.type === "paragraph" ? plain(head).split("\n")[0] : "";
+	const colon = words.indexOf(":");
+	return colon > 0 ? words.slice(0, colon).split("(")[0].trim().toLowerCase() : undefined;
+}
 
-/** A list item whose first paragraph starts with [c]. */
+/** A list item whose first paragraph starts with [c]. Not GFM task syntax, which has no [/], [✓] or [-]. */
 function checkbox(text: string, item: ListItem): Checkbox | undefined {
 	const head = item.children[0];
-	if (head?.type !== "paragraph") return undefined;
-	const match = CHECKBOX.exec(firstLine(text, head));
-	return match ? { mark: match[1], label: firstLine(text, head).slice(match[0].length).trim(), item } : undefined;
+	const line = head?.type === "paragraph" ? firstLine(text, head) : "";
+	return line[0] === "[" && line[2] === "]" && line[1].toLowerCase() in STATUS ? { mark: line[1], label: line.slice(3).trim(), item } : undefined;
 }
-
-/** Block nodes that start in [lo, hi), outermost only; lists are opened into their items. */
-function blocksIn(node: Nodes, lo: number, hi: number, out: Nodes[] = []): Nodes[] {
-	if (from(node) >= hi || to(node) <= lo) return out;
-	if (from(node) >= lo && node.type !== "list" && node.type !== "root") out.push(node);
-	else if ("children" in node && node.type !== "paragraph" && node.type !== "heading") for (const child of node.children) blocksIn(child as Nodes, lo, hi, out);
-	return out;
-}
-
-const allItems = (node: Nodes): ListItem[] => [
-	...(node.type === "listItem" ? [node] : []),
-	...("children" in node ? (node.children as Nodes[]).flatMap(allItems) : []),
-];
 
 /** Goals above the Log heading (any level). */
 export function goals(text: string): Goal[] {
 	const root = parse(text);
 	const log = rootHeadings(root).find((heading) => headingName(text, heading).toLowerCase() === "log");
-	const fold = log ? from(log) : text.length;
-	const found = allItems(root).flatMap((item) => {
+	return allItems(root).flatMap((item) => {
 		const box = checkbox(text, item);
-		const subject = box?.label.match(/^goal:\s*(.*)$/i)?.[1];
-		return box && subject !== undefined && from(item) < fold ? [{ box, subject }] : [];
+		if (!box?.label.toLowerCase().startsWith("goal:") || (log && from(item) > from(log))) return [];
+		return [{ status: STATUS[box.mark.toLowerCase()], subject: box.label.slice(5).trim(), line: text.slice(from(item), from(item.children[0])) + firstLine(text, item.children[0]), item }];
 	});
-	const stops = [...found.map(({ box }) => from(box.item)), ...rootHeadings(root).filter((heading) => heading.depth <= 2).map(from), fold];
-	return found.map(({ box, subject }) => ({
-		status: STATUS[box.mark.toLowerCase()] ?? "open",
-		subject: subject.trim(),
-		line: text.slice(from(box.item), from(box.item.children[0])) + firstLine(text, box.item.children[0]),
-		item: box.item,
-		end: Math.min(...stops.filter((stop) => stop > from(box.item))),
-	}));
 }
 
-/** The goal's own parts: named fields, tasks, nested headings and loose notes. */
-function goalParts(text: string, goal: Goal) {
-	const parts = blocksIn(parse(text), to(goal.item.children[0]), goal.end);
-	const fields: { key: string; item: ListItem }[] = [];
-	const tasks: Checkbox[] = [];
-	const headings: string[] = [];
-	let notes = 0;
-	for (const part of parts) {
-		if (part.type === "heading") headings.push(headingName(text, part));
-		else if (headings.length) continue; // content under a nested heading belongs to that heading
-		else if (part.type !== "listItem") notes++;
-		else if (checkbox(text, part)) tasks.push(checkbox(text, part)!);
-		else {
-			// "tasks (wassname: …):" is the tasks field
-			const key = firstLine(text, part.children[0] ?? part).match(/^([^:(]{1,80}?)\s*[:(]/)?.[1].toLowerCase();
-			if (!key) notes++;
-			else if (key === "tasks") tasks.push(...part.children.flatMap((child) => child.type === "list" ? child.children.flatMap((item) => checkbox(text, item) ?? []) : []));
-			else fields.push({ key, item: part });
-		}
-	}
-	return { fields, tasks, headings, notes };
-}
+/** Checkbox items directly under the goal or under its "tasks:" field. */
+const goalTasks = (text: string, goal: Goal): Checkbox[] =>
+	subItems(goal.item).flatMap((item) => checkbox(text, item) ?? (fieldKey(item) === "tasks" ? subItems(item).flatMap((task) => checkbox(text, task) ?? []) : []));
 
 const isDone = (task: Checkbox) => !" /".includes(task.mark);
 
 /** Open and active tasks of [/] goals, indented under the goal line; finished ones are counted. */
 function activeTaskLines(text: string, goal: Goal, limit = Infinity): string[] {
 	if (goal.status !== "active") return [];
-	const tasks = goalParts(text, goal).tasks;
+	const tasks = goalTasks(text, goal);
 	const open = tasks.filter((task) => !isDone(task));
 	const done = tasks.length - open.length;
 	const hidden = Math.max(0, open.length - limit);
@@ -131,31 +97,25 @@ export function section(text: string, name: string): string | undefined {
 	return range && text.slice(...range).trim();
 }
 
-/** Source of a node, re-indented to its column so nested lines keep their shape. */
-const block = (text: string, node: Nodes) => " ".repeat(node.position!.start.column - 1) + text.slice(from(node), to(node)).trimEnd();
-
-/** PI/Claude: a [/] goal for the loop wake. Fields that define done in full, other fields cut to one
- * marked line, unfinished task titles; evidence, finished tasks and task details are counted. */
+/** PI/Claude: a [/] goal for the loop wake: fields that define done in full, other fields cut to one marked
+ * line, unfinished task titles. The whole file is sent after compaction and resume. */
 function wakeSummary(text: string, goal: Goal): string[] {
-	const { fields, tasks, headings: nested, notes } = goalParts(text, goal);
 	const pad = " ".repeat(goal.item.position!.start.column + 2);
-	const shown = [goal.line.trimStart()];
-	const hidden: string[] = [];
-	for (const { key, item } of fields) {
-		if (WAKE_FIELDS.has(key)) shown.push(block(text, item));
-		else if (key === "evidence") hidden.push(allItems(item).length > 1 ? `evidence (${allItems(item).length - 1} items)` : "evidence");
+	const lines = [goal.line.trimStart()];
+	for (const item of subItems(goal.item)) {
+		const key = fieldKey(item);
+		const source = text.slice(from(item), to(item));
+		if (key === "tasks" || checkbox(text, item)) continue;
+		if (key && WAKE_FIELDS.has(key)) lines.push(pad + source.trimEnd());
 		else {
-			const flat = text.slice(from(item.children[0]), to(item)).replace(/\s+/g, " ").trim();
-			shown.push(flat.length <= FIELD_PREVIEW ? `${pad}- ${flat}` : `${pad}- ${flat.slice(0, FIELD_PREVIEW)}… [cut, ${flat.length - FIELD_PREVIEW} more chars in the goals file]`);
+			const flat = source.split("\n").map((line) => line.trim()).join(" ");
+			lines.push(pad + (flat.length <= FIELD_PREVIEW ? flat : `${flat.slice(0, FIELD_PREVIEW)}… [cut, ${flat.length - FIELD_PREVIEW} more chars in the goals file]`));
 		}
 	}
+	const tasks = goalTasks(text, goal);
 	const open = tasks.filter((task) => !isDone(task));
-	if (open.length) shown.push(`${pad}- unfinished tasks:`, ...open.map((task) => `${pad}  ${firstLine(text, task.item)}`));
-	if (tasks.length > open.length) hidden.push(`${tasks.length - open.length} finished tasks`);
-	if (open.some((task) => task.item.children.length > 1)) hidden.push("task details");
-	hidden.push(...nested, ...(notes ? [`notes (${notes})`] : []));
-	if (hidden.length) shown.push(`${pad}- not shown here: ${hidden.join("; ")}`);
-	return shown;
+	lines.push(`${pad}- unfinished tasks (${tasks.length - open.length} finished not shown):`, ...open.map((task) => `${pad}  ${firstLine(text, task.item)}`));
+	return lines;
 }
 
 export function loopFocus(text: string): string {

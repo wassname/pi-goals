@@ -112,43 +112,27 @@ describe("scheduled loop wake", () => {
      1. [ ] load data
         - details: preserve case IDs
      2. [x] old step
-### Evidence
-   - results/run.md: "41/6149 processed"; processing is incomplete
-   - notes: ${"Case-level evidence. ".repeat(150).trimEnd()}`;
-		const second = `2. [/] goal: write the note
-   - completion criteria: report the complete dataset, not a sample
-### Findings
-   - evidence: results/counts.json is still missing`;
+   - evidence:
+     - results/run.md: "41/6149 processed"; ${"Case-level evidence. ".repeat(150).trimEnd()}`;
 		const text = GOALS.replace("A plot.", "A plot with error bars.")
 			.replace("## Goals", `## User voice\n\n${longNote}\n\n## Goals`)
-			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n## Log)/, `${active}\n\n${second}\n\n3. [ ] goal: review the results\n   - details: pending-only detail\n4. [✓] goal: prepare the data\n   - evidence: completed-only detail\n\n## Resources\n\nResource-only detail\n`);
+			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n## Log)/, `${active}\n2. [/] goal: write the note\n   - completion criteria: report the complete dataset\n3. [ ] goal: review the results\n   - details: pending-only detail\n4. [✓] goal: prepare the data\n   - evidence: completed-only detail\n\n## Resources\n\nResource-only detail\n`);
 		writeFileSync(file, text);
 		const out = await h.wake("t1", prompt);
 		expect(out.action).toBe("transform");
-		expect(out.text).toContain(LOOP);
-		expect(out.text).toContain("not a message from the user");
-		expect(out.text).toContain("do not switch to another method");
-		expect(out.text).toContain("A plot with error bars.");
-		for (const kept of ["1. [/] goal: make the plot", "references: saved_cases.jsonl and postprocess.py", "subtle failure mode: only the smoke-test cases", "completion criteria: corrected post-processing of all 6,149", "discriminator: every saved case", "verify: just postprocess-all", "1. [ ] load data", "2. [/] goal: write the note", "completion criteria: report the complete dataset"]) {
+		for (const kept of [LOOP, "not a message from the user", "A plot with error bars.", "references: saved_cases.jsonl", "only the smoke-test cases", "all 6,149 saved cases", "every saved case has a corrected result", "just postprocess-all", "1. [ ] load data", "report the complete dataset", "[ ] goal: review the results", "[✓] goal: prepare the data", "41/6149 processed"]) {
 			expect(out.text).toContain(kept);
 		}
-		expect(out.text).toMatch(/not shown here: 1 finished tasks; task details; Evidence/);
-		expect(out.text).toMatch(/not shown here: Findings/);
-		expect(out.text).toContain("[ ] goal: review the results");
-		expect(out.text).toContain("[✓] goal: prepare the data");
-		for (const omitted of [longNote, "old step", "preserve case IDs", "41/6149 processed", "Case-level evidence", "results/counts.json", "pending-only detail", "completed-only detail", "Resource-only detail", "historical detail"]) {
+		for (const omitted of [longNote, "old step", "preserve case IDs", "Case-level evidence. ".repeat(20), "pending-only detail", "completed-only detail", "Resource-only detail"]) {
 			expect(out.text).not.toContain(omitted);
 		}
 
 		writeFileSync(file, text.replace("1. [ ] load data", "1. [x] load data"));
-		const updated = await h.wake("t1", prompt);
-		expect(updated.text).not.toContain("load data");
-		expect(updated.text).toMatch(/not shown here: 2 finished tasks; Evidence/);
+		expect((await h.wake("t1", prompt)).text).not.toContain("load data");
 
 		writeFileSync(file, text.replace("[/] goal: make the plot", "[✓] goal: make the plot"));
 		const completed = await h.wake("t1", prompt);
-		expect(completed.text).toContain("[✓] goal: make the plot");
-		expect(completed.text).toContain("completion criteria: report the complete dataset");
+		expect(completed.text).toContain("report the complete dataset");
 		expect(completed.text).not.toContain("only the smoke-test cases");
 	});
 
