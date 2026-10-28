@@ -2,7 +2,7 @@
 // only goal and task items, named sections and the Log fold, from a CommonMark syntax tree.
 // Edits splice the source at node offsets, so the rest of the file keeps its exact text.
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { Heading, ListItem, Nodes, Paragraph, Root } from "mdast";
+import type { Heading, ListItem, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 const WIDGET_GOAL_LIMIT = 3;
@@ -56,14 +56,11 @@ const allItems = (node: Nodes): ListItem[] => [
 	...("children" in node ? (node.children as Nodes[]).flatMap(allItems) : []),
 ];
 
-/** Offset of the Log heading (any level): goals are read above it. */
-function foldAt(text: string, root: Root): number {
+/** Goals above the Log heading (any level). */
+export function goals(text: string): Goal[] {
+	const root = parse(text);
 	const log = rootHeadings(root).find((heading) => headingName(text, heading).toLowerCase() === "log");
-	return log ? from(log) : text.length;
-}
-
-function parseGoals(text: string, root = parse(text)): Goal[] {
-	const fold = foldAt(text, root);
+	const fold = log ? from(log) : text.length;
 	const found = allItems(root).flatMap((item) => {
 		const box = checkbox(text, item);
 		const subject = box?.label.match(/^goal:\s*(.*)$/i)?.[1];
@@ -79,12 +76,10 @@ function parseGoals(text: string, root = parse(text)): Goal[] {
 	}));
 }
 
-export const goals = (text: string): Goal[] => parseGoals(text);
-
 /** The goal's own parts: named fields, tasks, nested headings and loose notes. */
 function goalParts(text: string, goal: Goal) {
 	const parts = blocksIn(parse(text), to(goal.item.children[0]), goal.end);
-	const fields: { name: string; key: string; item: ListItem }[] = [];
+	const fields: { key: string; item: ListItem }[] = [];
 	const tasks: Checkbox[] = [];
 	const headings: string[] = [];
 	let notes = 0;
@@ -94,12 +89,11 @@ function goalParts(text: string, goal: Goal) {
 		else if (part.type !== "listItem") notes++;
 		else if (checkbox(text, part)) tasks.push(checkbox(text, part)!);
 		else {
-			const head = part.children[0];
-			const name = head?.type === "paragraph" ? firstLine(text, head).match(/^([^:]{1,80}?):/)?.[1].trim() : undefined;
-			const key = name?.replace(/\s*\(.*$/, "").toLowerCase(); // "tasks (wassname: …)" is the tasks field
-			if (!name || !key) notes++;
-			else if (key === "tasks") tasks.push(...part.children.slice(1).flatMap((child) => blocksIn(child, from(child), to(child))).flatMap((node) => node.type === "listItem" && checkbox(text, node) ? [checkbox(text, node)!] : []));
-			else fields.push({ name, key, item: part });
+			// "tasks (wassname: …):" is the tasks field
+			const key = firstLine(text, part.children[0] ?? part).match(/^([^:(]{1,80}?)\s*[:(]/)?.[1].toLowerCase();
+			if (!key) notes++;
+			else if (key === "tasks") tasks.push(...part.children.flatMap((child) => child.type === "list" ? child.children.flatMap((item) => checkbox(text, item) ?? []) : []));
+			else fields.push({ key, item: part });
 		}
 	}
 	return { fields, tasks, headings, notes };
@@ -197,7 +191,7 @@ export function markGoal(text: string, goal: string, mark: "x" | "✓"): string 
 	const want = goal.trim().toLowerCase();
 	const hits = goals(text).filter((item) => item.subject.toLowerCase() === want);
 	if (hits.length !== 1) return undefined;
-	const at = from(hits[0].item.children[0] as Paragraph) + 1;
+	const at = from(hits[0].item.children[0]) + 1;
 	return text.slice(0, at) + mark + text.slice(at + 1);
 }
 
