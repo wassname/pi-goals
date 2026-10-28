@@ -65,8 +65,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted`);
 			const path = relative(ctx.cwd, state.file);
 			if (ctx.mode === "tui") {
+				// Parsing a large goals file takes tens of ms; render runs on every repaint.
+				let cached: { width: number; lines: string[] } | undefined;
 				ctx.ui.setWidget("goals", () => ({
-					render: (width) => widgetLines(text, path, width),
+					render: (width) => (cached?.width === width ? cached : (cached = { width, lines: widgetLines(text, path, width) })).lines,
 					invalidate() {},
 				}));
 			} else ctx.ui.setWidget("goals", widgetLines(text, path));
