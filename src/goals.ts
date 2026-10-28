@@ -32,7 +32,8 @@ const plain = (node: Nodes): string => "value" in node ? node.value : "children"
 /** Heading text as written (keeps `code` marks): saved heading lists are compared against it. */
 const headingName = (text: string, heading: Heading) => heading.children.length ? text.slice(from(heading.children[0]), to(heading.children[heading.children.length - 1])).trim() : "";
 const rootHeadings = (root: Root) => root.children.filter((node): node is Heading => node.type === "heading");
-const allItems = (node: Nodes): ListItem[] => [...(node.type === "listItem" ? [node] : []), ...("children" in node ? (node.children as Nodes[]).flatMap(allItems) : [])];
+/** List items, not inside blockquotes: a quoted goal is an example, not a goal. */
+const allItems = (node: Nodes): ListItem[] => node.type === "blockquote" ? [] : [...(node.type === "listItem" ? [node] : []), ...("children" in node ? (node.children as Nodes[]).flatMap(allItems) : [])];
 /** Items of the lists directly inside an item: a goal's fields, or a field's entries. */
 const subItems = (item: ListItem) => item.children.flatMap((child) => child.type === "list" ? child.children : []);
 /** "subtle failure mode" from "- subtle failure mode: …"; "tasks" from "- tasks (wassname: …):". */
@@ -102,10 +103,11 @@ export function section(text: string, name: string): string | undefined {
 function wakeSummary(text: string, goal: Goal): string[] {
 	const pad = " ".repeat(goal.item.position!.start.column + 2);
 	const lines = [goal.line.trimStart()];
-	for (const item of subItems(goal.item)) {
-		const key = fieldKey(item);
+	// Fields, plus any indented headings or paragraphs in the goal item, so nothing is silently dropped.
+	for (const item of goal.item.children.slice(1).flatMap((child): Nodes[] => child.type === "list" ? child.children : [child])) {
+		const key = item.type === "listItem" ? fieldKey(item) : undefined;
 		const source = text.slice(from(item), to(item));
-		if (key === "tasks" || checkbox(text, item)) continue;
+		if (key === "tasks" || (item.type === "listItem" && checkbox(text, item))) continue;
 		if (key && WAKE_FIELDS.has(key)) lines.push(pad + source.trimEnd());
 		else {
 			const flat = source.split("\n").map((line) => line.trim()).join(" ");
