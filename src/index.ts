@@ -68,7 +68,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 				// Parsing a large goals file takes tens of ms; render runs on every repaint.
 				let cached: { width: number; lines: string[] } | undefined;
 				ctx.ui.setWidget("goals", () => ({
-					render: (width) => (cached?.width === width ? cached : (cached = { width, lines: widgetLines(text, path, width) })).lines,
+					render: (width) => {
+						if (cached?.width !== width) cached = { width, lines: widgetLines(text, path, width) };
+						return cached.lines;
+					},
 					invalidate() {},
 				}));
 			} else ctx.ui.setWidget("goals", widgetLines(text, path));
