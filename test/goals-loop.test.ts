@@ -97,7 +97,7 @@ describe("scheduled loop wake", () => {
 		expect(resumed.text).not.toContain(DEFAULT_LOOP_STATEMENT);
 	});
 
-	it("repeats complete active blocks and fresh evidence without unrelated sections", async () => {
+	it("summarises active goals: done criteria and open tasks, other fields named only", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
 		const prompt = h.schedulerReceipt("t1");
@@ -129,24 +129,27 @@ describe("scheduled loop wake", () => {
 		expect(out.text).toContain("not a message from the user");
 		expect(out.text).toContain("do not switch to another method");
 		expect(out.text).toContain("A plot with error bars.");
-		expect(out.text).toContain(active);
-		expect(out.text).toContain(second);
+		for (const kept of ["1. [/] goal: make the plot", "subtle failure mode: only the smoke-test cases", "completion criteria: corrected post-processing of all 6,149", "discriminator: every saved case", "verify: just postprocess-all", "1. [ ] load data", "2. [/] goal: write the note", "completion criteria: report the complete dataset"]) {
+			expect(out.text).toContain(kept);
+		}
+		expect(out.text).toMatch(/not shown here: references; 1 finished tasks; task details; Evidence/);
+		expect(out.text).toMatch(/not shown here: Findings/);
 		expect(out.text).toContain("[ ] goal: review the results");
 		expect(out.text).toContain("[✓] goal: prepare the data");
-		for (const omitted of [longNote, "pending-only detail", "completed-only detail", "Resource-only detail", "historical detail"]) {
+		for (const omitted of [longNote, "saved_cases.jsonl", "old step", "preserve case IDs", "41/6149 processed", "Case-level evidence", "results/counts.json", "pending-only detail", "completed-only detail", "Resource-only detail", "historical detail"]) {
 			expect(out.text).not.toContain(omitted);
 		}
 
-		writeFileSync(file, text.replace("41/6149 processed", "6149/6149 processed"));
+		writeFileSync(file, text.replace("1. [ ] load data", "1. [x] load data"));
 		const updated = await h.wake("t1", prompt);
-		expect(updated.text).toContain("6149/6149 processed");
-		expect(updated.text).not.toContain('"41/6149 processed"');
+		expect(updated.text).not.toContain("load data");
+		expect(updated.text).toMatch(/not shown here: references; 2 finished tasks; Evidence/);
 
 		writeFileSync(file, text.replace("[/] goal: make the plot", "[✓] goal: make the plot"));
 		const completed = await h.wake("t1", prompt);
 		expect(completed.text).toContain("[✓] goal: make the plot");
-		expect(completed.text).toContain(second);
-		expect(completed.text).not.toContain("saved_cases.jsonl");
+		expect(completed.text).toContain("completion criteria: report the complete dataset");
+		expect(completed.text).not.toContain("only the smoke-test cases");
 	});
 
 	it("keeps open goal status when no goal is marked active", async () => {

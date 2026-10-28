@@ -79,7 +79,7 @@ Add a short "What I checked" line: which data and replies were read and how sele
 
 Ask whether this is how the user wants to see and evaluate the result, and what is missing. Revise it with their answers and keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
 
-The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and complete active goal blocks on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
+The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and a summary of active goals on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
 
 Conventions:
 - ${intentGuidance}
@@ -90,7 +90,7 @@ Conventions:
 - ${taskGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
-- Loop wakes repeat the outcome, goal status and complete active goal blocks, including requirements, failure modes, completion criteria and evidence. Keep those blocks current; Log and Interview preserve history.
+- Loop wakes repeat the outcome, goal status and, for [/] goals, the subtle failure mode, discriminator, verify, completion criteria and unfinished task titles. Other fields, task details and evidence are named but not repeated, so put what defines done in those fields and keep them current. Log and Interview preserve history.
 
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
 

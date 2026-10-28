@@ -76,13 +76,55 @@ export function section(text: string, name: string): string | undefined {
 	return range && lines.slice(range[0] + 1, range[1]).join("\n").trim();
 }
 
+const indent = (line: string) => line.length - line.trimStart().length;
+const FIELD_NAME = /^\s*[-*]\s+([^:]{1,80}?):/;
+// What defines done; repeated on every wake. Other fields are only named.
+const WAKE_FIELDS = new Set(["subtle failure mode", "discriminator", "verify", "completion criteria"]);
+
+/** Nonblank lines grouped into items: each item is a least-indented line plus the deeper lines under it. */
+function listItems(lines: string[]): string[][] {
+	const nonblank = lines.filter((line) => line.trim());
+	const level = Math.min(...nonblank.map(indent));
+	const items: string[][] = [];
+	for (const line of nonblank) {
+		if (indent(line) <= level || !items.length) items.push([line]);
+		else items[items.length - 1].push(line);
+	}
+	return items;
+}
+
+/** PI/Claude: a [/] goal for the loop wake: what defines done and the unfinished task titles. Other fields are named so the agent rereads the file for them. */
+function wakeSummary(block: string[]): string[] {
+	const [goalLine, ...body] = block;
+	const heading = body.findIndex((line) => HEADING.test(line));
+	const fields = heading === -1 ? body : body.slice(0, heading);
+	const shown = [goalLine];
+	const hidden: string[] = [];
+	for (const item of listItems(fields)) {
+		const raw = FIELD_NAME.exec(item[0])?.[1].trim() ?? "notes";
+		const key = raw.replace(/\s*\(.*$/, "").toLowerCase();
+		const name = raw.includes("(") && !raw.includes(")") ? key : raw;
+		if (WAKE_FIELDS.has(key)) shown.push(...item);
+		else if (key === "tasks" && item.length > 1) {
+			const tasks = listItems(item.slice(1));
+			const open = tasks.filter((task) => " /".includes(TASK_LINE.exec(task[0])?.[1] ?? "x"));
+			if (open.length) shown.push(item[0], ...open.map((task) => task[0]));
+			if (tasks.length > open.length) hidden.push(`${tasks.length - open.length} finished tasks`);
+			if (open.some((task) => task.length > 1)) hidden.push("task details");
+		} else hidden.push(name);
+	}
+	if (heading !== -1) hidden.push(...body.slice(heading).filter((line) => HEADING.test(line)).map((line) => HEADING.exec(line)![2]));
+	if (hidden.length) shown.push(`${" ".repeat(indent(goalLine) + 3)}- not shown here: ${hidden.join("; ")}`);
+	return shown;
+}
+
 export function loopFocus(text: string): string {
 	const lines = foldGoals(text).split("\n");
 	const outcome = section(text, "User-visible result");
 	if (!outcome) throw new Error("The goals file needs a User-visible result.");
 	const items = goals(text);
-	const active = items.filter(goal => goal.status === "active").map(goal => goalBlock(lines, goal).join("\n").trimEnd());
-	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map(goal => lines[goal.line].trim()).join("\n")}${active.length ? `\n\nActive goals (complete blocks):\n${active.join("\n\n")}` : ""}`;
+	const active = items.filter(goal => goal.status === "active").map(goal => wakeSummary(goalBlock(lines, goal)).join("\n"));
+	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map(goal => lines[goal.line].trim()).join("\n")}${active.length ? `\n\nActive goals (summary; the goals file has the rest):\n${active.join("\n\n")}` : ""}`;
 }
 
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "☑", open: "◻", done: "✓", cancelled: "✗" };
