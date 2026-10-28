@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { widgetLines } from "../src/goals.js";
+import { goals, loopFocus, markGoal, widgetLines } from "../src/goals.js";
 
 describe("goal status glyphs", () => {
 	it("shows self-verified goals as checked, distinct from accepted and cancelled", () => {
@@ -12,5 +12,14 @@ describe("goal status glyphs", () => {
 	it("uses the same checked glyph in hidden-goal counts", () => {
 		const goals = "1. [/] goal: First\n2. [/] goal: Second\n3. [/] goal: Third\n4. [x] goal: Self-verified";
 		expect(widgetLines(goals, "goals.md").at(-1)).toBe("… 1 ☑; goals.md");
+	});
+
+	it("reads goals from the markdown tree, not from lines in code blocks", () => {
+		const text = "## User-visible result\n\nA plot.\n\n## Goals\n\n```md\n1. [/] goal: example in a fence\n```\n\n1. [/] goal: real\n   - notes: " + "long ".repeat(60) + "\n   - discriminator: kept in full\n\n## Log\n\n1. [ ] goal: below the fold\n";
+		expect(goals(text).map((goal) => goal.subject)).toEqual(["real"]);
+		const focus = loopFocus(text);
+		expect(focus).toContain("discriminator: kept in full");
+		expect(focus).toMatch(/notes: (long ){10}.*… \[cut, \d+ more chars in the goals file\]/);
+		expect(markGoal(text, "real", "x")).toBe(text.replace("1. [/] goal: real", "1. [x] goal: real"));
 	});
 });

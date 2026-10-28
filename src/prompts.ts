@@ -90,7 +90,7 @@ Conventions:
 - ${taskGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
-- Loop wakes repeat the outcome, goal status and, for [/] goals, the subtle failure mode, discriminator, verify, completion criteria and unfinished task titles. Other fields, task details and evidence are named but not repeated, so put what defines done in those fields and keep them current. Log and Interview preserve history.
+- Loop wakes repeat the outcome, goal status and, for [/] goals, the subtle failure mode, discriminator, verify and completion criteria in full, other fields cut to one line, and unfinished task titles. Evidence, finished tasks and task details are counted, not repeated. Put what defines done in those four fields and keep them current. Log and Interview preserve history.
 
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
 

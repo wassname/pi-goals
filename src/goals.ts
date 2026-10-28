@@ -1,13 +1,18 @@
-// PI/OpenAI: goals-file helpers. The file is prose for the user, agent and judge; code reads only
-// goal lines, named sections and the Log fold.
+// PI/OpenAI, PI/Claude: goals-file helpers. The file is prose for the user, agent and judge; code reads
+// only goal and task items, named sections and the Log fold, from a CommonMark syntax tree.
+// Edits splice the source at node offsets, so the rest of the file keeps its exact text.
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { Heading, ListItem, Nodes, Paragraph, Root } from "mdast";
+import { fromMarkdown } from "mdast-util-from-markdown";
 
-export const GOAL_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*goal:\s*(.*)$/i;
-const FOLD_LINE = /^#{1,6}[ \t]+Log[ \t]*\r?$/im;
-const HEADING = /^(#{1,6})[ \t]+(.+?)[ \t]*$/;
 const WIDGET_GOAL_LIMIT = 3;
 const WIDGET_TASK_LIMIT = 5;
-const TASK_LINE = /^\s*(?:\d+\.|[-*])\s*\[([ xX/✓-])\]\s*(.*)$/;
+// Other fields of a [/] goal are cut to this many chars on loop wakes, with a visible marker.
+const FIELD_PREVIEW = 160;
+// What defines done; repeated in full on every wake.
+const WAKE_FIELDS = new Set(["subtle failure mode", "discriminator", "verify", "completion criteria"]);
+// [x] is not a GFM task here: plain CommonMark keeps "[/] goal: …" as the item's first text.
+const CHECKBOX = /^\[([ xX/✓-])\][ \t]*/;
 
 // [x] means reported done without a judge accept; [✓] means the judge accepted it.
 export type GoalStatus = "open" | "active" | "reported" | "done" | "cancelled";
@@ -15,116 +20,156 @@ const STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "rep
 export interface Goal {
 	status: GoalStatus;
 	subject: string;
-	line: number;
+	/** "1. [/] goal: subject", as written. */
+	line: string;
+	item: ListItem;
+	/** Where this goal's block ends: the next goal, a heading of level 1-2, or the Log fold. */
+	end: number;
+}
+interface Checkbox { mark: string; label: string; item: ListItem }
+
+const from = (node: Nodes) => node.position!.start.offset!;
+const to = (node: Nodes) => node.position!.end.offset!;
+const parse = (text: string): Root => fromMarkdown(text);
+const headingName = (text: string, heading: Heading) => heading.children.length ? text.slice(from(heading.children[0]), to(heading.children[heading.children.length - 1])).trim() : "";
+const rootHeadings = (root: Root) => root.children.filter((node): node is Heading => node.type === "heading");
+const firstLine = (text: string, node: Nodes) => text.slice(from(node), to(node)).split("\n")[0];
+
+/** A list item whose first paragraph starts with [c]. */
+function checkbox(text: string, item: ListItem): Checkbox | undefined {
+	const head = item.children[0];
+	if (head?.type !== "paragraph") return undefined;
+	const match = CHECKBOX.exec(firstLine(text, head));
+	return match ? { mark: match[1], label: firstLine(text, head).slice(match[0].length).trim(), item } : undefined;
 }
 
-export function goals(text: string): Goal[] {
-	return foldGoals(text).split("\n").flatMap((line, index) => {
-		const match = GOAL_LINE.exec(line);
-		return match ? [{ status: STATUS[match[1].toLowerCase()] ?? "open", subject: match[2].trim(), line: index }] : [];
+/** Block nodes that start in [lo, hi), outermost only; lists are opened into their items. */
+function blocksIn(node: Nodes, lo: number, hi: number, out: Nodes[] = []): Nodes[] {
+	if (from(node) >= hi || to(node) <= lo) return out;
+	if (from(node) >= lo && node.type !== "list" && node.type !== "root") out.push(node);
+	else if ("children" in node && node.type !== "paragraph" && node.type !== "heading") for (const child of node.children) blocksIn(child as Nodes, lo, hi, out);
+	return out;
+}
+
+const allItems = (node: Nodes): ListItem[] => [
+	...(node.type === "listItem" ? [node] : []),
+	...("children" in node ? (node.children as Nodes[]).flatMap(allItems) : []),
+];
+
+/** Offset of the Log heading (any level): goals are read above it. */
+function foldAt(text: string, root: Root): number {
+	const log = rootHeadings(root).find((heading) => headingName(text, heading).toLowerCase() === "log");
+	return log ? from(log) : text.length;
+}
+
+function parseGoals(text: string, root = parse(text)): Goal[] {
+	const fold = foldAt(text, root);
+	const found = allItems(root).flatMap((item) => {
+		const box = checkbox(text, item);
+		const subject = box?.label.match(/^goal:\s*(.*)$/i)?.[1];
+		return box && subject !== undefined && from(item) < fold ? [{ box, subject }] : [];
 	});
+	const stops = [...found.map(({ box }) => from(box.item)), ...rootHeadings(root).filter((heading) => heading.depth <= 2).map(from), fold];
+	return found.map(({ box, subject }) => ({
+		status: STATUS[box.mark.toLowerCase()] ?? "open",
+		subject: subject.trim(),
+		line: text.slice(from(box.item), from(box.item.children[0])) + firstLine(text, box.item.children[0]),
+		item: box.item,
+		end: Math.min(...stops.filter((stop) => stop > from(box.item))),
+	}));
 }
 
-/** PI/OpenAI: keep nested headings inside a goal; stop at the next goal or top-level section. */
-function goalBlock(lines: string[], goal: Goal): string[] {
-	const end = lines.findIndex((line, index) => index > goal.line && (GOAL_LINE.test(line) || (HEADING.exec(line)?.[1].length ?? Infinity) <= 2));
-	return lines.slice(goal.line, end === -1 ? lines.length : end);
+export const goals = (text: string): Goal[] => parseGoals(text);
+
+/** The goal's own parts: named fields, tasks, nested headings and loose notes. */
+function goalParts(text: string, goal: Goal) {
+	const parts = blocksIn(parse(text), to(goal.item.children[0]), goal.end);
+	const fields: { name: string; key: string; item: ListItem }[] = [];
+	const tasks: Checkbox[] = [];
+	const headings: string[] = [];
+	let notes = 0;
+	for (const part of parts) {
+		if (part.type === "heading") headings.push(headingName(text, part));
+		else if (headings.length) continue; // content under a nested heading belongs to that heading
+		else if (part.type !== "listItem") notes++;
+		else if (checkbox(text, part)) tasks.push(checkbox(text, part)!);
+		else {
+			const head = part.children[0];
+			const name = head?.type === "paragraph" ? firstLine(text, head).match(/^([^:]{1,80}?):/)?.[1].trim() : undefined;
+			const key = name?.replace(/\s*\(.*$/, "").toLowerCase(); // "tasks (wassname: …)" is the tasks field
+			if (!name || !key) notes++;
+			else if (key === "tasks") tasks.push(...part.children.slice(1).flatMap((child) => blocksIn(child, from(child), to(child))).flatMap((node) => node.type === "listItem" && checkbox(text, node) ? [checkbox(text, node)!] : []));
+			else fields.push({ name, key, item: part });
+		}
+	}
+	return { fields, tasks, headings, notes };
 }
 
-/** Checkbox lines between this goal and the next goal; done = [x]/[✓]/[-]. */
-function goalTasks(text: string, goal: Goal): { mark: string; subject: string; done: boolean }[] {
-	return goalBlock(foldGoals(text).split("\n"), goal).slice(1).flatMap((line) => {
-		const match = TASK_LINE.exec(line);
-		return match ? [{ mark: match[1], subject: match[2].trim(), done: !" /".includes(match[1]) }] : [];
-	});
-}
+const isDone = (task: Checkbox) => !" /".includes(task.mark);
 
 /** Open and active tasks of [/] goals, indented under the goal line; finished ones are counted. */
 function activeTaskLines(text: string, goal: Goal, limit = Infinity): string[] {
 	if (goal.status !== "active") return [];
-	const tasks = goalTasks(text, goal);
-	const open = tasks.filter((task) => !task.done);
+	const tasks = goalParts(text, goal).tasks;
+	const open = tasks.filter((task) => !isDone(task));
 	const done = tasks.length - open.length;
 	const hidden = Math.max(0, open.length - limit);
 	const tail = [hidden ? `${hidden} more` : "", done ? `${done} done` : ""].filter(Boolean).join(", ");
-	return [...open.slice(0, limit).map((task) => `    [${task.mark}] ${task.subject}`), ...(tail ? [`    … ${tail}`] : [])];
+	return [...open.slice(0, limit).map((task) => `    [${task.mark}] ${task.label}`), ...(tail ? [`    … ${tail}`] : [])];
 }
 
 export const hasRemainingGoals = (text: string, judge = true) => goals(text).some((goal) => goal.status === "open" || goal.status === "active" || (judge && goal.status === "reported"));
 
-/** Everything above the Log heading: the current requirements and goals. */
-export function foldGoals(text: string): string {
-	const match = FOLD_LINE.exec(text);
-	return (match ? text.slice(0, match.index) : text).trimEnd();
-}
-
-function sectionRange(lines: string[], name: string): [number, number] | undefined {
-	const start = lines.findIndex((line) => HEADING.exec(line)?.[2].toLowerCase() === name.toLowerCase());
-	if (start === -1) return undefined;
-	const level = HEADING.exec(lines[start])![1].length;
-	const end = lines.findIndex((line, index) => index > start && (HEADING.exec(line)?.[1].length ?? Infinity) <= level);
-	return [start, end === -1 ? lines.length : end];
+function sectionRange(text: string, root: Root, name: string): [number, number] | undefined {
+	const all = rootHeadings(root);
+	const index = all.findIndex((heading) => headingName(text, heading).toLowerCase() === name.toLowerCase());
+	if (index === -1) return undefined;
+	const next = all.slice(index + 1).find((heading) => heading.depth <= all[index].depth);
+	return [to(all[index]), next ? from(next) : text.length];
 }
 
 /** Names of the ## headings, in order. */
-export const headings = (text: string) => [...text.matchAll(/^##[ \t]+(.+?)[ \t]*$/gm)].map((match) => match[1]);
+export const headings = (text: string) => { const root = parse(text); return rootHeadings(root).filter((heading) => heading.depth === 2).map((heading) => headingName(text, heading)); };
 
 /** Body of a named section, without its heading. */
 export function section(text: string, name: string): string | undefined {
-	const lines = text.split("\n");
-	const range = sectionRange(lines, name);
-	return range && lines.slice(range[0] + 1, range[1]).join("\n").trim();
+	const range = sectionRange(text, parse(text), name);
+	return range && text.slice(...range).trim();
 }
 
-const indent = (line: string) => line.length - line.trimStart().length;
-const FIELD_NAME = /^\s*[-*]\s+([^:]{1,80}?):/;
-// What defines done; repeated on every wake. Other fields are only named.
-const WAKE_FIELDS = new Set(["subtle failure mode", "discriminator", "verify", "completion criteria"]);
+/** Source of a node, re-indented to its column so nested lines keep their shape. */
+const block = (text: string, node: Nodes) => " ".repeat(node.position!.start.column - 1) + text.slice(from(node), to(node)).trimEnd();
 
-/** Nonblank lines grouped into items: each item is a least-indented line plus the deeper lines under it. */
-function listItems(lines: string[]): string[][] {
-	const nonblank = lines.filter((line) => line.trim());
-	const level = Math.min(...nonblank.map(indent));
-	const items: string[][] = [];
-	for (const line of nonblank) {
-		if (indent(line) <= level || !items.length) items.push([line]);
-		else items[items.length - 1].push(line);
-	}
-	return items;
-}
-
-/** PI/Claude: a [/] goal for the loop wake: what defines done and the unfinished task titles. Other fields are named so the agent rereads the file for them. */
-function wakeSummary(block: string[]): string[] {
-	const [goalLine, ...body] = block;
-	const heading = body.findIndex((line) => HEADING.test(line));
-	const fields = heading === -1 ? body : body.slice(0, heading);
-	const shown = [goalLine];
+/** PI/Claude: a [/] goal for the loop wake. Fields that define done in full, other fields cut to one
+ * marked line, unfinished task titles; evidence, finished tasks and task details are counted. */
+function wakeSummary(text: string, goal: Goal): string[] {
+	const { fields, tasks, headings: nested, notes } = goalParts(text, goal);
+	const pad = " ".repeat(goal.item.position!.start.column + 2);
+	const shown = [goal.line.trimStart()];
 	const hidden: string[] = [];
-	for (const item of listItems(fields)) {
-		const raw = FIELD_NAME.exec(item[0])?.[1].trim() ?? "notes";
-		const key = raw.replace(/\s*\(.*$/, "").toLowerCase();
-		const name = raw.includes("(") && !raw.includes(")") ? key : raw;
-		if (WAKE_FIELDS.has(key)) shown.push(...item);
-		else if (key === "tasks" && item.length > 1) {
-			const tasks = listItems(item.slice(1));
-			const open = tasks.filter((task) => " /".includes(TASK_LINE.exec(task[0])?.[1] ?? "x"));
-			if (open.length) shown.push(item[0], ...open.map((task) => task[0]));
-			if (tasks.length > open.length) hidden.push(`${tasks.length - open.length} finished tasks`);
-			if (open.some((task) => task.length > 1)) hidden.push("task details");
-		} else hidden.push(name);
+	for (const { key, item } of fields) {
+		if (WAKE_FIELDS.has(key)) shown.push(block(text, item));
+		else if (key === "evidence") hidden.push(allItems(item).length > 1 ? `evidence (${allItems(item).length - 1} items)` : "evidence");
+		else {
+			const flat = text.slice(from(item.children[0]), to(item)).replace(/\s+/g, " ").trim();
+			shown.push(flat.length <= FIELD_PREVIEW ? `${pad}- ${flat}` : `${pad}- ${flat.slice(0, FIELD_PREVIEW)}… [cut, ${flat.length - FIELD_PREVIEW} more chars in the goals file]`);
+		}
 	}
-	if (heading !== -1) hidden.push(...body.slice(heading).filter((line) => HEADING.test(line)).map((line) => HEADING.exec(line)![2]));
-	if (hidden.length) shown.push(`${" ".repeat(indent(goalLine) + 3)}- not shown here: ${hidden.join("; ")}`);
+	const open = tasks.filter((task) => !isDone(task));
+	if (open.length) shown.push(`${pad}- unfinished tasks:`, ...open.map((task) => `${pad}  ${firstLine(text, task.item)}`));
+	if (tasks.length > open.length) hidden.push(`${tasks.length - open.length} finished tasks`);
+	if (open.some((task) => task.item.children.length > 1)) hidden.push("task details");
+	hidden.push(...nested, ...(notes ? [`notes (${notes})`] : []));
+	if (hidden.length) shown.push(`${pad}- not shown here: ${hidden.join("; ")}`);
 	return shown;
 }
 
 export function loopFocus(text: string): string {
-	const lines = foldGoals(text).split("\n");
 	const outcome = section(text, "User-visible result");
 	if (!outcome) throw new Error("The goals file needs a User-visible result.");
 	const items = goals(text);
-	const active = items.filter(goal => goal.status === "active").map(goal => wakeSummary(goalBlock(lines, goal)).join("\n"));
-	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map(goal => lines[goal.line].trim()).join("\n")}${active.length ? `\n\nActive goals (summary; the goals file has the rest):\n${active.join("\n\n")}` : ""}`;
+	const active = items.filter((goal) => goal.status === "active").map((goal) => wakeSummary(text, goal).join("\n"));
+	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map((goal) => goal.line.trim()).join("\n")}${active.length ? `\n\nActive goals (summary; the goals file has the rest):\n${active.join("\n\n")}` : ""}`;
 }
 
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "☑", open: "◻", done: "✓", cancelled: "✗" };
@@ -144,28 +189,27 @@ export function widgetLines(text: string, path: string, width = 100): string[] {
 		return count ? `${count} ${MARK[status]}` : "";
 	}).filter(Boolean);
 	lines.push(`${counts.length ? `… ${counts.join(", ")}; ` : ""}${path}`);
-	return lines.map(line => truncateToWidth(line, width, "…"));
+	return lines.map((line) => truncateToWidth(line, width, "…"));
 }
 
 /** Set the checkbox of the one goal whose subject matches exactly (case-insensitive). */
 export function markGoal(text: string, goal: string, mark: "x" | "✓"): string | undefined {
-	const lines = text.split("\n");
 	const want = goal.trim().toLowerCase();
-	const hits = goals(text).filter(item => item.subject.toLowerCase() === want).map(item => item.line);
+	const hits = goals(text).filter((item) => item.subject.toLowerCase() === want);
 	if (hits.length !== 1) return undefined;
-	lines[hits[0]] = lines[hits[0]].replace(/\[[ xX/✓-]\]/, `[${mark}]`);
-	return lines.join("\n");
+	const at = from(hits[0].item.children[0] as Paragraph) + 1;
+	return text.slice(0, at) + mark + text.slice(at + 1);
 }
 
-/** Append one line under ## Log, creating the section at the end if needed. */
+/** Append one line to the list under ## Log, creating the section at the end if needed. */
 export function appendLog(text: string, entry: string): string {
-	const lines = text.split("\n");
-	const header = lines.findIndex((line) => /^##\s+Log\s*$/i.test(line));
-	if (header === -1) return `${text.replace(/\n+$/, "")}\n\n## Log\n- ${entry}\n`;
-	let insertAt = header + 1;
-	for (let i = header + 1; i < lines.length && !HEADING.test(lines[i]); i++) if (/^\s*-\s+/.test(lines[i])) insertAt = i + 1;
-	lines.splice(insertAt, 0, `- ${entry}`);
-	return lines.join("\n");
+	const root = parse(text);
+	const log = rootHeadings(root).find((heading) => heading.depth === 2 && headingName(text, heading).toLowerCase() === "log");
+	if (!log) return `${text.trimEnd()}\n\n## Log\n- ${entry}\n`;
+	const next = rootHeadings(root).find((heading) => from(heading) > from(log));
+	const lists = root.children.filter((node) => node.type === "list" && from(node) > from(log) && (!next || from(node) < from(next)));
+	const at = lists.length ? to(lists[lists.length - 1]) : to(log);
+	return `${text.slice(0, at)}\n- ${entry}${text.slice(at)}`;
 }
 
 /** Keep the user's messages verbatim below the fold. */
@@ -175,8 +219,11 @@ export function appendInterview(text: string, answer: string): string {
 
 /** Entries (### stamp + quoted message) in ## Interview. */
 export function interviewEntries(text: string): string[] {
-	const body = section(text, "Interview");
-	return body ? body.split(/^(?=### )/m).map((entry) => entry.trim()).filter(Boolean) : [];
+	const root = parse(text);
+	const range = sectionRange(text, root, "Interview");
+	if (!range) return [];
+	const cuts = [range[0], ...rootHeadings(root).filter((heading) => heading.depth >= 3 && from(heading) > range[0] && from(heading) < range[1]).map(from), range[1]];
+	return cuts.slice(1).map((cut, index) => text.slice(cuts[index], cut).trim()).filter(Boolean);
 }
 
 /** Put back entries an agent edit removed; the user's words are not the agent's to rewrite. */
@@ -186,14 +233,12 @@ export function restoreInterview(text: string, entries: string[]): { text: strin
 	return { text: missing.reduce((out, entry) => insertInterview(out, `${entry}\n`), text), restored: missing.length };
 }
 
+/** Add an entry at the end of ## Interview, creating the section at the end if needed. */
 function insertInterview(text: string, entry: string): string {
-	const lines = text.split("\n");
-	const header = lines.findIndex((line) => /^##\s+Interview\s*$/i.test(line));
-	if (header === -1) return `${text.replace(/\n+$/, "")}\n\n## Interview\n\n${entry}`;
-	let insertAt = header + 1;
-	while (insertAt < lines.length && !/^##\s+/.test(lines[insertAt])) insertAt++;
-	lines.splice(insertAt, 0, entry);
-	return lines.join("\n");
+	const range = sectionRange(text, parse(text), "Interview");
+	if (!range) return `${text.trimEnd()}\n\n## Interview\n\n${entry}`;
+	const rest = text.slice(range[1]);
+	return `${text.slice(0, range[1]).trimEnd()}\n\n${entry}${rest ? `\n${rest}` : ""}`;
 }
 
 /** Local time: agents write manual Log lines from the local clock they see. */
