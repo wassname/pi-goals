@@ -22,7 +22,7 @@ ${DEFAULT_LOOP_STATEMENT}
 
 ## Review preview
 
-<agreed results mock-up, under 25 lines total across all goals; illustrative, not measured>
+<agreed results mock-up, under 15 lines and 80 columns across all goals; illustrative, not measured>
 
 ## User voice
 
@@ -71,13 +71,13 @@ The user is often away for a day while you work. Settle now what could stop you 
 
 Aim for an outcome the user can see and check. Preserve the concrete deliverables they asked for; runs, tests and reports support the goal but do not replace it. Name the reference code or data the work must reuse, and record any deliberate change from it.
 
-During grilling, show a results mock-up under 25 lines total across all goals. Use words the user understands and question headings, such as "Did healing restore maths without losing the moral change?" Prefer small results tables following markdown-tables, or short demo excerpts with links to full prompts and replies. Reuse ok-tables if the project uses it; include training-log excerpts only when useful. Use variables or clearly labelled example values, never invented pass thresholds or measurements presented as real. Show how working, not working or unclear results would read.
+During grilling, paste a results mock-up into your chat reply; the user reviews it in chat, so do not only point to the goals file. Keep it under 15 lines and 80 columns total across all goals, so it reads in the chat without wrapping: at most 4 table columns, short cells. Use words the user understands and question headings, such as "Did healing restore maths without losing the moral change?" Prefer small results tables following markdown-tables, or short demo excerpts with links to full prompts and replies. Reuse ok-tables if the project uses it; include training-log excerpts only when useful. Use variables or clearly labelled example values, never invented pass thresholds or measurements presented as real. Show how working, not working or unclear results would read.
 
 Give each result a short bottom line: what changed, the uncertainty where available (name what it measures), and what that means for the goal. For example: "Maths accuracy changed from B% to X%, with uncertainty Y; moral behaviour [stayed similar / improved / weakened]. This means [conclusion supported by those results]."
 
 Add a short "What I checked" line: which data and replies were read and how selected, available model reasoning, judge verdicts and reasons, and independent code review where relevant. In the mock-up these are planned checks or placeholders, not completed work. In actual reports name only checks performed, their scope and findings, link the evidence, and state what remains uncertain. Test counts or byte-identical outputs do not establish that the user's goal works; explain what the checks establish and avoid circular comparisons.
 
-Ask whether this is how the user wants to see and evaluate the result, and what is missing. Revise it with their answers and keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
+Below the mock-up in chat, ask whether this is how the user wants to see and evaluate the result, and what is missing. Show each revision in chat again. Keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
 
 The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and a summary of active goals on each scheduled wake. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
 
