@@ -1,0 +1,25 @@
+/goals new how asbout I gues you this task
+
+1) upload updated dataset
+2) you job is to do an eval that uses cheap openrouter models and differentiates them
+deepseek/deepseek-v4.1-flash-1017
+openai/gpt-6-luna
+anthropic/claude-haiku-5.5
+with them being differntiated by more than N bits of information and making sense for a hcinese vs western model
+we expect
+chinese model better at chinese things
+anthropic claude more moral, more rationalist
+openai more rules following
+
+or somethiong. if it's the opposite thats probobly noise
+
+now you can brainstorm evals it could be
+a) the same as MFV or WVS (have subaent summarise eval and prompt for each in https://github.com/wassname/moral-maps/tree/main)
+b) as here I'm trying to show ability to distignuis with and without primer but it's failing for a week
+c) ability to distinguish traiditons also failing
+d) somehting else?
+e) dueling virtues that are correlated?
+diff virtues in diff languages?
+long form answers judges (although expensive to generate?) ideally <$20 dev set final <$200
+
+most important part is search and brainstorm.

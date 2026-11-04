@@ -1,0 +1,21 @@
+1 which moral traditions each model understands, prefers or distinguishes, compared across models. distinguish is harder as it's the outline, the subtlety, the divergence. easy and boring vs hard
+
+2 yes our dataset, mfv is a reference
+
+3 like if all the models are ranked we have
+N bits to seperate the models
+and N bits for the position
+but that's not as many bits of each model has unique ranking in each virtue! 
+so you can klook at how many bits of information your eval provides
+if all models were 0% on all, that's 0bits? or 1 bit/
+ml-debug talks abotu ths info PoV
+likewise you would consider kl and distribution overlap within uncertainty
+I expect a good finding to make sense
+
+4 5.1 yes
+don't worry about privacy check we don't have full books just snipepts
+
+5 yes new $20
+
+preview: idk whatever, just get to goal
+6 loop sure
