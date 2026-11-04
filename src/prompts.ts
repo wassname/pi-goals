@@ -86,13 +86,14 @@ Conventions:
 - ## Interview is written by the extension with the user's exact messages. Keep its entries unchanged; do not add your own.
 - The Loop statement and User voice belong to the user. Propose changes; edit them only after the user agrees, and quote their agreement in User voice.
 - User voice quotes the user faithfully but cleaned up: fix spelling and typos without a mark, keep their words in order and their meaning, mark cuts with ... and added words with [brackets]. Only ## Interview needs the exact text. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
-- One goal per distinct outcome. Steps go under a goal as tasks.
+- One goal per distinct outcome. Steps go under a goal as tasks; stages of one piece of work (brainstorm, pilot, final run) are tasks, not goals.
+- Some goals are searches: find a design, cause or setting that is good by the user's description. Keep one goal whose outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Make each candidate idea a task, and make the last task "brainstorm new ideas and keep going". Do not plan to try every idea in order, and do not add a budget or stop rule that turns "nothing found" into done unless the user set one.
 - ${taskGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
 - Loop wakes repeat the outcome, goal status and, for [/] goals, the subtle failure mode, discriminator, verify and completion criteria in full, other fields cut to one line, and unfinished task titles. Evidence, finished tasks and task details are counted, not repeated. Put what defines done in those four fields and keep them current. Log and Interview preserve history.
 
-Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not.`;
+Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not. If the user approves in chat (for example "ready" or "go"), call RequestPlanReview in that turn and do not start work; never say the menu will appear unless you called it.`;
 
 export function planningState(path: string): string {
 	return `[pi-goals: planning] Only ${path} and notes under slop/ (for example oracle briefs) may be written. Explore read-only, ask the user about consequential choices, and do not start work. The plan is not approved until the user chooses Ready.`;
