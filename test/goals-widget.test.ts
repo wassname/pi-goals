@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { goals, loopFocus, markGoal, widgetLines } from "../src/goals.js";
+import { ageTasks, goals, loopFocus, markGoal, widgetLines } from "../src/goals.js";
 
 describe("goal status glyphs", () => {
 	it("shows self-verified goals as checked, distinct from accepted and cancelled", () => {
@@ -21,3 +21,26 @@ describe("goal status glyphs", () => {
 		expect(markGoal(text, "real", "x")).toBe(text.replace("```\n\n1. [/] goal: real", "```\n\n1. [x] goal: real"));
 	});
 });
+
+describe("task ages", () => {
+	const H = 3_600_000;
+	const file = (first: string, tasks: string) => `## User-visible result\n\nA plot.\n\n## Goals\n\n1. [${first}] goal: plot\n   - tasks:\n${tasks}\n2. [/] goal: note\n   - tasks:\n     1. [ ] write it\n`;
+	const two = "     1. [ ] check\n     2. [ ] check\n";
+
+	it("ages duplicate labels separately", () => {
+		const first = ageTasks(file("/", two), {}, 0);
+		const later = ageTasks(file("/", two), first.since, 6 * H);
+		expect(later.lines.filter((line) => line.includes("check · unchanged 6 h"))).toHaveLength(2);
+	});
+
+	it("keeps ages when goals or tasks are renumbered, or a goal is paused for a wake", () => {
+		const first = ageTasks(file("/", "     1. [ ] load\n     2. [ ] plot\n"), {}, 0);
+		const reordered = ageTasks(file("/", "     1. [ ] plot\n     2. [ ] load\n"), first.since, 2 * H);
+		expect(reordered.lines.join("\n")).toContain("load · unchanged 2 h");
+		const paused = ageTasks(file(" ", "     1. [ ] plot\n     2. [ ] load\n"), reordered.since, 3 * H);
+		expect(paused.lines.join("\n")).not.toContain("load");
+		const resumed = ageTasks(file("/", "     1. [ ] plot\n     2. [ ] load\n"), paused.since, 4 * H);
+		expect(resumed.lines.join("\n")).toContain("load · unchanged 4 h");
+	});
+});
+

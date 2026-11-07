@@ -196,6 +196,15 @@ describe("scheduled loop wake", () => {
 		expect(readFileSync(file, "utf8")).not.toContain("secret typo");
 	});
 
+	it("does not warn about numbered citations in goal text", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		writeFileSync(file, GOALS.replace("1. [/] goal: make the plot", "1. [/] goal: make the plot\n   as in\n   2024. [1] describes the baseline"));
+		const count = h.shown.length;
+		await h.hook("turn_end");
+		expect(h.shown.length).toBe(count);
+	});
+
 	it("reports tasks that Markdown reads as text, once per distinct set", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
@@ -248,10 +257,10 @@ describe("scheduled loop wake", () => {
 
 describe("pi-subagents completion notices in goal mode", () => {
 	it("removes the report-or-continue text while working, and leaves other notices and other phases alone", async () => {
-		const notice = (content: string) => ({ role: "custom", customType: "subagent-notify", content, display: false, timestamp: 1 });
+		const notice = (content: string, status = "completed") => ({ role: "custom", customType: "subagent-notify", content, display: false, timestamp: 1, details: { runs: [{ agent: "scout", status }] } });
 		const done = notice(`Background task completed: **scout**\n\nfound 3 files\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`);
-		const failed = notice("Background task failed: **scout**\n\nParent action: Check the run status and details above.");
-		const silent = { ...notice(`Completion wake ended silently. See the subagent completion notices above. ${SUBAGENT_COMPLETION_ACTION}`), customType: "subagent-completion-unanswered" };
+		const failed = notice(`Background task failed: **scout**\n\npermission denied\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`, "failed");
+		const silent = { role: "custom", customType: "subagent-completion-unanswered", content: `Completion wake ended silently. See the subagent completion notices above. ${SUBAGENT_COMPLETION_ACTION}`, display: true, timestamp: 1 };
 		const h = setup({ choices: ["Ready"] });
 		await h.commands.get("goals").handler("new plot the data", h.ctx);
 		expect(await h.hook("context", { messages: [done] })).toBeUndefined();

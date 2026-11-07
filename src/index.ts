@@ -33,6 +33,10 @@ function quietSubagentNotices(messages: Messages): Messages {
 	let changed = false;
 	const out = messages.map((message) => {
 		if (message.role !== "custom" || typeof message.content !== "string" || !message.content.includes(SUBAGENT_COMPLETION_ACTION)) return message;
+		// Failed, stopped or paused runs keep the push; the silent-wake reminder carries no runs and points at the notices.
+		const runs = (message.details as { runs?: { status?: string }[] } | undefined)?.runs;
+		if (message.customType === "subagent-notify" && !(runs?.length && runs.every((run) => run.status === "completed"))) return message;
+		if (message.customType !== "subagent-notify" && message.customType !== "subagent-completion-unanswered") return message;
 		changed = true;
 		return { ...message, content: message.content.replaceAll(`\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`, "").replaceAll(` ${SUBAGENT_COMPLETION_ACTION}`, "") };
 	});

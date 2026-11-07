@@ -84,7 +84,7 @@ export function hiddenTasks(text: string): string[] {
 	return heads.flatMap((item) => {
 		const head = item.children[0];
 		const lines = head?.type === "paragraph" ? text.slice(from(head), to(head)).split("\n").slice(1) : [];
-		return lines.filter((line) => /^\s*\d+[.)]\s+\[.\]/.test(line)).map((line) => line.trim());
+		return lines.filter((line) => /^\s*\d+[.)]\s+\[[ /xX✓-]\]\s/.test(line)).map((line) => line.trim());
 	});
 }
 
@@ -110,18 +110,21 @@ export function section(text: string, name: string): string | undefined {
 /** When each task's text (mark, label, notes) last changed, as [text hash, ms]; keyed by goal number and label. */
 export type TaskSince = Record<string, [string, number]>;
 
-/** PI/Claude: open tasks of [/] goals with the time their text last changed. Ages are sampled at each wake. */
+/** PI/Claude: open tasks of [/] goals with the time their text last changed. Ages are sampled at each wake and
+ * kept for open tasks of every goal, so pausing a goal does not reset them. Keys use goal and task text, not
+ * list position, and the hash ignores list numbers, so reordering is not a change. */
 export function ageTasks(text: string, before: TaskSince, now: number): { since: TaskSince; lines: string[] } {
 	const since: TaskSince = {};
 	const rows: { line: string; at: number }[] = [];
 	for (const [index, goal] of goals(text).entries()) {
-		if (goal.status !== "active") continue;
 		for (const task of goalTasks(text, goal).filter((task) => !isDone(task))) {
-			const key = `${index + 1} ${task.label}`;
-			const source = createHash("sha1").update(text.slice(from(task.item), to(task.item))).digest("hex").slice(0, 12);
-			const at = before[key]?.[0] === source ? before[key][1] : now;
-			since[key] = [source, at];
-			rows.push({ line: `G${index + 1} ${firstLine(text, task.item).trim()}`, at });
+			let key = `${goal.subject} :: ${task.label}`;
+			for (let n = 2; key in since; n++) key = `${goal.subject} :: ${task.label} #${n}`;
+			const body = text.slice(from(task.item), to(task.item)).replace(/^\d+[.)]\s*/, "");
+			const hash = createHash("sha1").update(body).digest("hex").slice(0, 12);
+			const at = before[key]?.[0] === hash ? before[key][1] : now;
+			since[key] = [hash, at];
+			if (goal.status === "active") rows.push({ line: `G${index + 1} ${firstLine(text, task.item).trim()}`, at });
 		}
 	}
 	rows.sort((a, b) => a.at - b.at);
