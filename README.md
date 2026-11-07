@@ -7,7 +7,7 @@ A Pi extension for work that takes more than one conversation. You agree on goal
 1. Run `/goals new <idea>`. The agent explores and asks clarifying questions before drafting a plan.
 2. Agree on the goals and a short mock-up of how you'll review the results. The mock-up shows possible outcomes, not results already measured.
 3. Review the plan and choose **Ready** to start work. During planning, the agent can only read, search, consult helpers, and write the goals file or notes under `slop/`.
-4. Follow goals and tasks in a widget. Hourly reminders repeat your instructions, the outcome, goal status and a summary of active goals: failure modes and completion criteria in full, other fields cut to one line, and unfinished tasks. Evidence and task details stay in the goals file; after compaction or resume the agent gets the whole file. They ask what observations change the agent's understanding and which next action is most useful toward the goal, considering its cost.
+4. Follow goals and tasks in a widget. Hourly reminders are kept short so they get read: your loop statement, the outcome, one status line per goal, and the open tasks of active goals, longest unchanged first, with their age. They also say how often they fire and that the agent can change it. Failure modes, evidence and task details stay in the goals file; after Ready, compaction or resume the agent gets the whole file, with advice to step back to the goal and to look for answers before waiting for you.
 5. Before a goal is ticked off, a fresh, read-only subagent checks the evidence. This judge can reject completion if the work misses what you asked for.
 
 The judge is optional. With it off, the agent marks goals as self-verified. A judge's acceptance is another reading of the evidence, not a guarantee that the result is correct.
@@ -45,9 +45,9 @@ The judge reads the goals file and cited files; it cannot run tests. The working
 
 ## Design intent
 
-One working agent, one goals file, scheduled reminders, and an optional judge. The extension uses [pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) and [pi-subagents](https://github.com/nicobailon/pi-subagents). Change the reminder interval through the scheduler's commands.
+One working agent, one goals file, scheduled reminders, and an optional judge. The extension uses [pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) and [pi-subagents](https://github.com/nicobailon/pi-subagents). The agent can change the reminder interval with the scheduler's `manage_scheduled_task` tool.
 
-The default instructions tell the agent to look for answers before waiting for you, record assumptions, and continue. While jobs run normally, it should avoid repeated polling and status reports. Existing goals files keep their saved instructions.
+The default loop statement tells the agent to start with the task untouched longest, not to poll running jobs, and to message you only for decisions or results that change a goal. Other sessions take decisions from you, not from this agent. Existing goals files keep their saved instructions.
 
 Reminders stop when you pause, clear, or finish all goals. They can remind an agent of its goals; they cannot prevent drift between reminders. Tests cover data flow with a fake Pi and real dependency parsers. A multi-hour unattended run has not been tested.
 

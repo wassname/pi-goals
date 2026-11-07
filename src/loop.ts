@@ -9,6 +9,12 @@ const SOURCE = realpath(fileURLToPath(import.meta.resolve("@jl1990/pi-scheduler/
 export const marker = (token: string) => `pi-goals-loop:${token}`;
 // Scheduler wakes are "[Scheduled task <id> fired]", header lines, a blank line, then the stored prompt.
 export const wakeToken = (text: string) => /^\[Scheduled task [^\]\n]+ fired\][\s\S]*\npi-goals-loop:([\w-]+)\s*$/.exec(text)?.[1];
+/** Task id and interval from the wake header, so the reminder can say how often it fires. */
+export function wakeSchedule(text: string): { id: string; schedule: string } {
+	const match = /^\[Scheduled task ([^\]\n]+) fired\][\s\S]*?\nSchedule: ([^\n]+)\n/.exec(text);
+	if (!match) throw new Error("Scheduler wake has no Schedule line; the pi-scheduler header format changed.");
+	return { id: match[1], schedule: match[2] };
+}
 
 export function schedulerCommand(pi: ExtensionAPI, name: string): string {
 	const command = pi.getCommands().find(c => c.source === "extension" && !!c.sourceInfo?.path && realpath(c.sourceInfo.path) === SOURCE && (c.name === name || c.name.startsWith(`${name}:`)));

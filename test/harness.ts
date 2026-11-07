@@ -107,7 +107,8 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		branch.push({ type: "custom_message", customType: "scheduled-task", details: { task: { id, prompt, action: "prompt", scope: "session", sessionFile: ctx.sessionManager.getSessionFile() } } });
 		return prompt;
 	}
-	const wake = (id: string, prompt: string) => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\n\n${prompt}` });
+	/** The stock scheduler's wake: its header lines, a blank line, then the stored prompt. */
+	const wake = (id: string, prompt: string, schedule = "1h") => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\nType: interval\nSchedule: ${schedule}\nScheduled for: 2026-01-01T00:00:00.000Z\n\n${prompt}` });
 	const complete = (goal: string) => tools.get("CompleteGoal").execute("call", { goal }, undefined, undefined, ctx);
 	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake };
 }

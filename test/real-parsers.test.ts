@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.js";
 import { parseSubagentDelegationRequest } from "../node_modules/pi-subagents/src/slash/delegation-request.js";
 import { runJudge } from "../src/judge.js";
-import { marker, wakeToken } from "../src/loop.js";
+import { marker, wakeSchedule, wakeToken } from "../src/loop.js";
 
 const core = createRequire(import.meta.url)("@jl1990/pi-scheduler/extensions/scheduler/scheduler-core.cjs");
 
@@ -19,6 +19,7 @@ describe("real pi-scheduler core", () => {
 		const header = "[Scheduled task t1 fired]\nName: (unnamed)\nAction: prompt\nType: interval\nSchedule: 1h\nScheduled for: 2026\n\n";
 		expect(wakeToken(`${header}${marker("abc-1")}`)).toBe("abc-1");
 		expect(wakeToken(`${header}do something else\n${marker("abc-1")} please`)).toBeUndefined();
+		expect(wakeSchedule(`${header}${marker("abc-1")}`)).toEqual({ id: "t1", schedule: "1h" });
 	});
 });
 

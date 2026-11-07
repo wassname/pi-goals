@@ -17,11 +17,7 @@ describe("goal status glyphs", () => {
 	it("reads goals from the markdown tree, not from lines in code blocks", () => {
 		const text = "## User-visible result\n\nA plot.\n\n> 1. [/] goal: real\n\n## Goals\n\n```md\n1. [/] goal: example in a fence\n```\n\n1. [/] goal: real\n   - notes: " + "long ".repeat(60) + "\n   - discriminator: kept in full\n\n   ### Completion criteria\n\n   all 6,149 cases\n\n## Log\n\n1. [ ] goal: below the fold\n";
 		expect(goals(text).map((goal) => goal.subject)).toEqual(["real"]);
-		const focus = loopFocus(text);
-		expect(focus).toContain("discriminator: kept in full");
-		expect(focus).toContain("all 6,149 cases");
-		expect(focus).toContain(`notes: ${"long ".repeat(20)}`);
-		expect(focus).not.toContain("long ".repeat(40));
+		expect(loopFocus(text).endsWith("\n\nGoals:\n1. [/] goal: real")).toBe(true);
 		expect(markGoal(text, "real", "x")).toBe(text.replace("```\n\n1. [/] goal: real", "```\n\n1. [x] goal: real"));
 	});
 });

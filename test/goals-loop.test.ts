@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { section } from "../src/goals.js";
 import { DEFAULT_LOOP_STATEMENT } from "../src/prompts.js";
 import { GOALS, LOOP, setup } from "./harness.js";
@@ -97,43 +97,52 @@ describe("scheduled loop wake", () => {
 		expect(resumed.text).not.toContain(DEFAULT_LOOP_STATEMENT);
 	});
 
-	it("summarises active goals: done criteria in full, other fields cut, open tasks only", async () => {
+	it("shows the interval, goal and status, and only open tasks of active goals; field details stay in the file", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
 		const prompt = h.schedulerReceipt("t1");
-		const longNote = "Long note for the full plan. ".repeat(1_000);
 		const active = `1. [/] goal: make the plot
    - references: saved_cases.jsonl and postprocess.py
    - subtle failure mode: only the smoke-test cases are corrected
-   - completion criteria: corrected post-processing of all 6,149 saved cases
-   - discriminator: every saved case has a corrected result
-   - verify: just postprocess-all
    - tasks:
      1. [ ] load data
         - details: preserve case IDs
      2. [x] old step
    - evidence:
-     - results/run.md: "41/6149 processed"; ${"Case-level evidence. ".repeat(150).trimEnd()}`;
+     - results/run.md: "41/6149 processed"`;
 		const text = GOALS.replace("A plot.", "A plot with error bars.")
-			.replace("## Goals", `## User voice\n\n${longNote}\n\n## Goals`)
-			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n## Log)/, `${active}\n2. [/] goal: write the note\n   - completion criteria: report the complete dataset\n3. [ ] goal: review the results\n   - details: pending-only detail\n4. [✓] goal: prepare the data\n   - evidence: completed-only detail\n\n## Resources\n\nResource-only detail\n`);
+			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n## Log)/, `${active}\n2. [ ] goal: write the note\n   - tasks:\n     1. [ ] draft it\n3. [✓] goal: prepare the data\n`);
 		writeFileSync(file, text);
-		const out = await h.wake("t1", prompt);
+		const out = await h.wake("t1", prompt, "3h");
 		expect(out.action).toBe("transform");
-		for (const kept of [LOOP, "not a message from the user", "A plot with error bars.", "references: saved_cases.jsonl", "only the smoke-test cases", "all 6,149 saved cases", "every saved case has a corrected result", "just postprocess-all", "1. [ ] load data", "report the complete dataset", "[ ] goal: review the results", "[✓] goal: prepare the data", "41/6149 processed"]) {
+		for (const kept of [LOOP, "not a message from the user", "every 3h", "t1", "manage_scheduled_task", "A plot with error bars.", "[/] goal: make the plot", "[ ] goal: write the note", "[✓] goal: prepare the data", "G1 1. [ ] load data"]) {
 			expect(out.text).toContain(kept);
 		}
-		for (const omitted of [longNote, "old step", "preserve case IDs", "Case-level evidence. ".repeat(20), "pending-only detail", "completed-only detail", "Resource-only detail"]) {
+		for (const omitted of ["saved_cases.jsonl", "only the smoke-test cases", "preserve case IDs", "old step", "41/6149", "draft it", "historical detail"]) {
 			expect(out.text).not.toContain(omitted);
 		}
+	});
 
-		writeFileSync(file, text.replace("1. [ ] load data", "1. [x] load data"));
-		expect((await h.wake("t1", prompt)).text).not.toContain("load data");
+	it("orders open tasks by time since their text changed, and keeps ages across a restart", async () => {
+		vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+		try {
+			const h = setup({ choices: ["Ready"] });
+			const file = await ready(h);
+			const prompt = h.schedulerReceipt("t1");
+			const text = GOALS.replace("     2. [x] old step", "     2. [ ] plot it\n     3. [x] old step");
+			writeFileSync(file, text);
+			await h.wake("t1", prompt);
+			vi.advanceTimersByTime(3 * 3_600_000);
+			writeFileSync(file, text.replace("2. [ ] plot it", "2. [/] plot it"));
+			const out = (await h.wake("t1", prompt)).text as string;
+			expect(out).toContain("load data · unchanged 3 h");
+			expect(out).toContain("plot it · unchanged under 1 h");
+			expect(out.indexOf("load data")).toBeLessThan(out.indexOf("plot it"));
 
-		writeFileSync(file, text.replace("[/] goal: make the plot", "[✓] goal: make the plot"));
-		const completed = await h.wake("t1", prompt);
-		expect(completed.text).toContain("report the complete dataset");
-		expect(completed.text).not.toContain("only the smoke-test cases");
+			await h.hook("session_start");
+			vi.advanceTimersByTime(2 * 3_600_000);
+			expect((await h.wake("t1", prompt)).text).toContain("load data · unchanged 5 h");
+		} finally { vi.useRealTimers(); }
 	});
 
 	it("keeps open goal status when no goal is marked active", async () => {

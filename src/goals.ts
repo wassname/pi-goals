@@ -1,16 +1,15 @@
 // PI/OpenAI, PI/Claude: goals-file helpers. The file is prose for the user, agent and judge; code reads
 // only goal and task items, named sections and the Log fold, from a CommonMark syntax tree.
 // Edits splice the source at node offsets, so the rest of the file keeps its exact text.
+import { createHash } from "node:crypto";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Heading, ListItem, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 const WIDGET_GOAL_LIMIT = 3;
 const WIDGET_TASK_LIMIT = 5;
-// Other fields of a [/] goal are cut to this many chars on loop wakes, with a visible marker.
-const FIELD_PREVIEW = 160;
-// What defines done; repeated in full on every wake.
-const WAKE_FIELDS = new Set(["subtle failure mode", "discriminator", "verify", "completion criteria"]);
+const WAKE_TASK_LIMIT = 8;
+const HOUR = 3_600_000;
 
 // [x] means reported done without a judge accept; [✓] means the judge accepted it.
 export type GoalStatus = "open" | "active" | "reported" | "done" | "cancelled";
@@ -98,34 +97,34 @@ export function section(text: string, name: string): string | undefined {
 	return range && text.slice(...range).trim();
 }
 
-/** PI/Claude: a [/] goal for the loop wake: fields that define done in full, other fields cut to one marked
- * line, unfinished task titles. The whole file is sent after compaction and resume. */
-function wakeSummary(text: string, goal: Goal): string[] {
-	const pad = " ".repeat(goal.item.position!.start.column + 2);
-	const lines = [goal.line.trimStart()];
-	// Fields, plus any indented headings or paragraphs in the goal item, so nothing is silently dropped.
-	for (const item of goal.item.children.slice(1).flatMap((child): Nodes[] => child.type === "list" ? child.children : [child])) {
-		const key = item.type === "listItem" ? fieldKey(item) : undefined;
-		const source = text.slice(from(item), to(item));
-		if (key === "tasks" || (item.type === "listItem" && checkbox(text, item))) continue;
-		if (key && WAKE_FIELDS.has(key)) lines.push(pad + source.trimEnd());
-		else {
-			const flat = source.split("\n").map((line) => line.trim()).join(" ");
-			lines.push(pad + (flat.length <= FIELD_PREVIEW ? flat : `${flat.slice(0, FIELD_PREVIEW)}… [cut, ${flat.length - FIELD_PREVIEW} more chars in the goals file]`));
+/** When each task's text (mark, label, notes) last changed, as [text hash, ms]; keyed by goal number and label. */
+export type TaskSince = Record<string, [string, number]>;
+
+/** PI/Claude: open tasks of [/] goals with the time their text last changed. Ages are sampled at each wake. */
+export function ageTasks(text: string, before: TaskSince, now: number): { since: TaskSince; lines: string[] } {
+	const since: TaskSince = {};
+	const rows: { line: string; at: number }[] = [];
+	for (const [index, goal] of goals(text).entries()) {
+		if (goal.status !== "active") continue;
+		for (const task of goalTasks(text, goal).filter((task) => !isDone(task))) {
+			const key = `${index + 1} ${task.label}`;
+			const source = createHash("sha1").update(text.slice(from(task.item), to(task.item))).digest("hex").slice(0, 12);
+			const at = before[key]?.[0] === source ? before[key][1] : now;
+			since[key] = [source, at];
+			rows.push({ line: `G${index + 1} ${firstLine(text, task.item).trim()}`, at });
 		}
 	}
-	const tasks = goalTasks(text, goal);
-	const open = tasks.filter((task) => !isDone(task));
-	lines.push(`${pad}- unfinished tasks (${tasks.length - open.length} finished not shown):`, ...open.map((task) => `${pad}  ${firstLine(text, task.item)}`));
-	return lines;
+	rows.sort((a, b) => a.at - b.at);
+	const hours = (at: number) => { const h = Math.floor((now - at) / HOUR); return h < 1 ? "under 1 h" : `${h} h`; };
+	const hidden = rows.length - WAKE_TASK_LIMIT;
+	return { since, lines: [...rows.slice(0, WAKE_TASK_LIMIT).map((row) => `- ${row.line} · unchanged ${hours(row.at)}`), ...(hidden > 0 ? [`- … ${hidden} more in the goals file`] : [])] };
 }
 
+/** Outcome and one status line per goal; the whole file is sent after Ready, compaction and resume. */
 export function loopFocus(text: string): string {
 	const outcome = section(text, "User-visible result");
 	if (!outcome) throw new Error("The goals file needs a User-visible result.");
-	const items = goals(text);
-	const active = items.filter((goal) => goal.status === "active").map((goal) => wakeSummary(text, goal).join("\n"));
-	return `User-visible result:\n${outcome}\n\nGoal status:\n${items.map((goal) => goal.line.trim()).join("\n")}${active.length ? `\n\nActive goals (summary; the goals file has the rest):\n${active.join("\n\n")}` : ""}`;
+	return `User-visible result:\n${outcome}\n\nGoals:\n${goals(text).map((goal) => goal.line.trim()).join("\n")}`;
 }
 
 const MARK: Record<GoalStatus, string> = { active: "◼", reported: "☑", open: "◻", done: "✓", cancelled: "✗" };

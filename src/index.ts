@@ -4,9 +4,9 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendInterview, appendLog, goals, hasRemainingGoals, headings, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, widgetLines } from "./goals.js";
+import { ageTasks, appendInterview, appendLog, goals, hasRemainingGoals, headings, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
-import { startLoop, stopLoop, wakeToken } from "./loop.js";
+import { startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
 
 const STATE = "pi-goals-single-agent";
@@ -20,6 +20,8 @@ interface State {
 	model?: string;
 	/** ## headings at Ready: the structure the user approved. */
 	headings?: string[];
+	/** When each open task's text last changed, sampled at wakes. */
+	taskSince?: TaskSince;
 }
 const initial = (owner: string): State => ({ owner, phase: null, judge: true });
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -194,7 +196,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 			if (!hasRemainingGoals(text, state.judge)) { pause(ctx); return handled; }
 			const statement = section(text, "Loop statement");
 			if (!statement) throw new Error(`${state.file} has no Loop statement.`);
-			return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), state.file!) };
+			const tasks = ageTasks(text, state.taskSince ?? {}, Date.now());
+			state = { ...state, taskSince: tasks.since };
+			persist();
+			return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), tasks.lines, state.file!, wakeSchedule(event.text)) };
 		}
 		// Every user message is kept verbatim below the Log, so answers survive compaction.
 		if (state.file && event.source !== "extension" && event.text.trim()) {
