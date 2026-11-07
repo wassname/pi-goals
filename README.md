@@ -17,10 +17,10 @@ The judge is optional. With it off, the agent marks goals as self-verified. A ju
 Add to your Pi settings:
 
 ```json
-"packages": ["npm:pi-subagents@0.76.0", "~/path/to/pi-goals"]
+"packages": ["npm:pi-subagents@0.84.0", "~/path/to/pi-goals"]
 ```
 
-Requires Pi 1.0 (tested with 1.0.2). The scheduler is bundled; install pi-subagents 0.76.0 separately for the judge.
+Requires Pi 1.2 or newer (pi-subagents 0.84 needs it; loads in Pi 1.4.0). The scheduler is bundled; install pi-subagents 0.84.0 separately for the judge.
 
 ## Commands
 

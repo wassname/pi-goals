@@ -39,9 +39,10 @@ Evidence and commands are in the Appendix.
 - [ ] goal D: fewer wakes from other extensions (machine config and upstream; none of it in pi-goals)
   - [ ] D4: `~/.pi/agent/intercom/config.json` `{"inboundTrigger": "replies"}`. Unsolicited messages arrive as steer
         and do not start a turn (pi-intercom README:425; not yet tested here). Global for all sessions, so workers also stop waking on plain sends
-  - [ ] D5: pi-subagents `PARENT_WAKE_TEXT` (src/shared/parent-wake.js:1) says "or report completion ... Do not silently
-        yield". Proposed: "Inspect subagent updates above. Answer pending supervisor requests within your authority. Use
-        completed results in the current task." Upstream issue/PR only after wassname's sign-off
+  - [x] pi-subagents 0.79.0 -> 0.84.0 (wassname: "maybe we just update version"). Removes the user-role wake line (v0.80)
+        and tags notices `<pi_subagents_notice ... not typed by the user>` (v0.81, upstream #2994/#3002). 0.85+ is held by the npm age rule
+  - [ ] D5: still in 0.84 and on main: "or report completion ... Do not silently yield" plus a forced re-prompt after a
+        silent turn. Issue draft: slop/drafts/20261107_pi_subagents_issue_completion_action.md. Post only after wassname's sign-off
   - [ ] process notices: no change. The agent chose `onSuccess: "turn"` per call; pi-processes has no global default
   - failure mode: a worker that needs the user's decision waits silently. Workers ask the user, not this agent (Addendum)
 - [ ] update README step 4, Design intent, and the planning prompt line that describes wake contents

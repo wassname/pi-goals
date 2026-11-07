@@ -26,14 +26,20 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true },
-    "typebox": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@jl1990/pi-scheduler": "0.5.1",
     "mdast-util-from-markdown": "^2.1.0",
-    "pi-subagents": "0.76.0"
+    "pi-subagents": "0.84.0"
   },
   "bundleDependencies": [
     "@jl1990/pi-scheduler"
