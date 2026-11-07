@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { section } from "../src/goals.js";
+import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
 import { DEFAULT_LOOP_STATEMENT } from "../src/prompts.js";
 import { GOALS, LOOP, setup } from "./harness.js";
 
@@ -195,6 +196,17 @@ describe("scheduled loop wake", () => {
 		expect(readFileSync(file, "utf8")).not.toContain("secret typo");
 	});
 
+	it("reports tasks that Markdown reads as text, once per distinct set", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		writeFileSync(file, GOALS.replace("   - tasks:\n     1. [ ] load data", "   - tasks:\n     0. [/] check providers\n     1. [ ] load data"));
+		await h.hook("turn_end");
+		expect(h.shown.at(-1)?.content).toContain('"0. [/] check providers"');
+		const count = h.shown.length;
+		await h.hook("turn_end");
+		expect(h.shown.length).toBe(count);
+	});
+
 	it("keeps user answers given during work verbatim below the Log", async () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
@@ -231,6 +243,30 @@ describe("scheduled loop wake", () => {
 		writeFileSync(file, GOALS.replace("[/] goal: make", "[✓] goal: make").replace("[ ] goal: write", "[-] goal: write"));
 		expect(await h.wake("t1", prompt)).toEqual({ action: "handled" });
 		expect(h.sent.at(-1)?.text).toBe("/schedule-remove t1");
+	});
+});
+
+describe("pi-subagents completion notices in goal mode", () => {
+	it("removes the report-or-continue text while working, and leaves other notices and other phases alone", async () => {
+		const notice = (content: string) => ({ role: "custom", customType: "subagent-notify", content, display: false, timestamp: 1 });
+		const done = notice(`Background task completed: **scout**\n\nfound 3 files\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`);
+		const failed = notice("Background task failed: **scout**\n\nParent action: Check the run status and details above.");
+		const silent = { ...notice(`Completion wake ended silently. See the subagent completion notices above. ${SUBAGENT_COMPLETION_ACTION}`), customType: "subagent-completion-unanswered" };
+		const h = setup({ choices: ["Ready"] });
+		await h.commands.get("goals").handler("new plot the data", h.ctx);
+		expect(await h.hook("context", { messages: [done] })).toBeUndefined();
+
+		const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file;
+		writeFileSync(file, GOALS);
+		await h.tools.get("RequestPlanReview").execute();
+		await h.hook("agent_settled");
+		const out = await h.hook("context", { messages: [done, failed, silent] });
+		expect(out.messages.map((m: any) => m.content)).toEqual([
+			"Background task completed: **scout**\n\nfound 3 files",
+			failed.content,
+			"Completion wake ended silently. See the subagent completion notices above.",
+		]);
+		expect(await h.hook("context", { messages: [failed] })).toBeUndefined();
 	});
 });
 

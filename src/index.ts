@@ -2,9 +2,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ageTasks, appendInterview, appendLog, goals, hasRemainingGoals, headings, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, widgetLines } from "./goals.js";
+import { ageTasks, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -23,6 +23,22 @@ interface State {
 	/** When each open task's text last changed, sampled at wakes. */
 	taskSince?: TaskSince;
 }
+// wassname 2026-11-07: pi-subagents ends each successful completion notice with this text, which asks the
+// agent to report and forbids a quiet stop; while goals run it pulls the agent into reporting. Matched exactly
+// (test/real-parsers.test.ts checks it against the installed pi-subagents); failed or stopped runs keep their text.
+export const SUBAGENT_COMPLETION_ACTION = "Read the saved results above and resume the already-authorized parent task, or report completion. If approval is required, explicitly ask the user. Do not silently yield, rerun completed work, or infer new authorization.";
+type Messages = ContextEvent["messages"];
+/** The same array when nothing changed, so unchanged history keeps its prompt cache. */
+function quietSubagentNotices(messages: Messages): Messages {
+	let changed = false;
+	const out = messages.map((message) => {
+		if (message.role !== "custom" || typeof message.content !== "string" || !message.content.includes(SUBAGENT_COMPLETION_ACTION)) return message;
+		changed = true;
+		return { ...message, content: message.content.replaceAll(`\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`, "").replaceAll(` ${SUBAGENT_COMPLETION_ACTION}`, "") };
+	});
+	return changed ? out : messages;
+}
+
 const initial = (owner: string): State => ({ owner, phase: null, judge: true });
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 const handled = { action: "handled" as const };
@@ -217,9 +233,12 @@ export default function piGoals(pi: ExtensionAPI): void {
 		return { message: { customType: "goals-context", content: resyncText(), display: false } };
 	});
 	pi.on("context", async (event) => {
-		if (!state.file || !resyncDue) return;
-		resyncDue = false;
-		return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text: resyncText() }], timestamp: Date.now() }] };
+		const messages = state.phase === "working" ? quietSubagentNotices(event.messages) : event.messages;
+		if (state.file && resyncDue) {
+			resyncDue = false;
+			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: resyncText() }], timestamp: Date.now() }] };
+		}
+		if (messages !== event.messages) return { messages };
 	});
 	pi.on("session_compact", async () => { resyncDue = true; });
 	pi.on("turn_end", async (_event, ctx) => {
@@ -228,6 +247,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 	});
 	// The user's words and the approved headings survive agent edits, including shell edits.
 	const textBefore = new Map<string, string>();
+	let reportedHidden = "";
 	function checkGoalsFile(before?: string): string[] {
 		const current = read();
 		const lost = (state.headings ?? []).filter((heading) => !headings(current).includes(heading));
@@ -238,7 +258,11 @@ export default function piGoals(pi: ExtensionAPI): void {
 		if (revert) return [prompts.headingsReverted(lost)];
 		// Report a shell-made loss once, then accept the current structure; the loop wake fails loudly without a Loop statement.
 		if (lost.length) { state = { ...state, headings: headings(text) }; persist(); }
-		return [...(restored ? [prompts.interviewRestored(restored)] : []), ...(lost.length ? [prompts.headingsLost(lost)] : [])];
+		// Reported once per distinct set, not every turn.
+		const hidden = hiddenTasks(text);
+		const hiddenNote = hidden.length && hidden.join("\n") !== reportedHidden ? [prompts.tasksHidden(hidden)] : [];
+		reportedHidden = hidden.join("\n");
+		return [...(restored ? [prompts.interviewRestored(restored)] : []), ...(lost.length ? [prompts.headingsLost(lost)] : []), ...hiddenNote];
 	}
 	// Snapshot at turn start, so the user's own edits between turns are respected.
 	pi.on("turn_start", async () => { if (state.file) knownInterview = interviewEntries(read()); });

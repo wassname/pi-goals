@@ -1,4 +1,6 @@
-# Plan: a quieter goals loop -- PI/Claude, 2026-11-07 (draft, not approved)
+# Plan: a quieter goals loop -- PI/Claude, 2026-11-07
+
+Status 2026-11-07 evening: goals A, B, C built (commits 8f4bac5 and next); D partly. Open: D4 (intercom inboundTrigger, explained, not approved), D5 (post upstream issue). D1 withdrawn (wassname: the reminder is the step back; keep 1h).
 
 Source: /workspace/2026/character-constitutions/slop/reviews/20261107_pi_goals_feedback.md (cg2_main, incl. Addendum).
 wassname: "Instead of accreting instructions I'd rather make a less distracting environment."

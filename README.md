@@ -47,7 +47,7 @@ The judge reads the goals file and cited files; it cannot run tests. The working
 
 One working agent, one goals file, scheduled reminders, and an optional judge. The extension uses [pi-scheduler](https://www.npmjs.com/package/@jl1990/pi-scheduler) and [pi-subagents](https://github.com/nicobailon/pi-subagents). The agent can change the reminder interval with the scheduler's `manage_scheduled_task` tool.
 
-The default loop statement tells the agent to start with the task untouched longest, not to poll running jobs, and to message you only for decisions or results that change a goal. Other sessions take decisions from you, not from this agent. Existing goals files keep their saved instructions.
+The default loop statement tells the agent to start with the task untouched longest, not to poll running jobs, and to message you only for decisions or results that change a goal. It coordinates other sessions only if you asked, and then minimally. While goals run, pi-goals removes pi-subagents' "or report completion ... Do not silently yield" line from successful completion notices, so a finished subagent does not prompt a status report. Existing goals files keep their saved instructions.
 
 Reminders stop when you pause, clear, or finish all goals. They can remind an agent of its goals; they cannot prevent drift between reminders. Tests cover data flow with a fake Pi and real dependency parsers. A multi-hour unattended run has not been tested.
 

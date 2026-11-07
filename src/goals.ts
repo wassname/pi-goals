@@ -78,6 +78,16 @@ function activeTaskLines(text: string, goal: Goal, limit = Infinity): string[] {
 	return [...open.slice(0, limit).map((task) => `    [${task.mark}] ${task.label}`), ...(tail ? [`    … ${tail}`] : [])];
 }
 
+/** Task-looking lines that CommonMark reads as text: a numbered list right after a text line must start at 1. */
+export function hiddenTasks(text: string): string[] {
+	const heads = goals(text).flatMap((goal) => [goal.item, ...subItems(goal.item).filter((item) => fieldKey(item) === "tasks")]);
+	return heads.flatMap((item) => {
+		const head = item.children[0];
+		const lines = head?.type === "paragraph" ? text.slice(from(head), to(head)).split("\n").slice(1) : [];
+		return lines.filter((line) => /^\s*\d+[.)]\s+\[.\]/.test(line)).map((line) => line.trim());
+	});
+}
+
 export const hasRemainingGoals = (text: string, judge = true) => goals(text).some((goal) => goal.status === "open" || goal.status === "active" || (judge && goal.status === "reported"));
 
 function sectionRange(text: string, root: Root, name: string): [number, number] | undefined {

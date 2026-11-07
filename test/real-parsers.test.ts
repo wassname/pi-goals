@@ -1,8 +1,11 @@
 // Checks the fakes in harness.ts against the real scheduler core and pi-subagents parsers.
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.js";
+import { COMPLETION_ACTION } from "../node_modules/pi-subagents/src/shared/parent-wake.js";
 import { parseSubagentDelegationRequest } from "../node_modules/pi-subagents/src/slash/delegation-request.js";
+import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
 import { runJudge } from "../src/judge.js";
 import { marker, wakeSchedule, wakeToken } from "../src/loop.js";
 
@@ -36,5 +39,15 @@ describe("real pi-subagents parsers", () => {
 		const out = await runJudge(events, { goal: "g", text: "t", path: "p", cwd: "/tmp", model: "p/m" }, undefined, { startMs: 5, totalMs: 50 });
 		expect(out).toMatchObject({ ok: false, error: expect.stringMatching(/did not start/) });
 		expect(parsed[0]).toMatchObject({ ok: true, request: { agent: "pi-goals-judge", context: "fresh" } });
+	});
+});
+
+describe("pi-subagents completion text that goals mode removes", () => {
+	it("matches the installed pi-subagents wording and message layout", () => {
+		expect(SUBAGENT_COMPLETION_ACTION).toBe(COMPLETION_ACTION);
+		const notify = readFileSync(new URL("../node_modules/pi-subagents/src/runs/background/notify.js", import.meta.url), "utf8");
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: matches pi-subagents source text
+		expect(notify).toContain("\\n\\nParent action: ${held ? HELD_COMPLETION_ACTION : COMPLETION_ACTION}");
+		expect(notify).toContain('"Completion wake ended silently. See the subagent completion notices above. " + COMPLETION_ACTION');
 	});
 });
