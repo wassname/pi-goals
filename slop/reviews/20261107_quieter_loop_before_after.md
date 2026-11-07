@@ -2,7 +2,7 @@
 
 Rendered with slop/analysis/20261107_render_reminder.mts from the old code (HEAD before this change, old goals file backup) and the new code (new loop statement). Ages show 'under 1 h' because this is a first wake.
 
-Before: 7001 chars, 51 lines. After: 2886 chars, 24 lines. The User-visible result paragraph is 844 chars of the after text.
+Before: 6985 chars, 52 lines. After: 3067 chars, 25 lines. The User-visible result paragraph is 844 chars of the after text.
 
 ## After
 
@@ -10,9 +10,9 @@ Before: 7001 chars, 51 lines. After: 2886 chars, 24 lines. The User-visible resu
 [pi-goals: loop] Automated reminder, not a message from the user. It fires every 1h (scheduled task task_example); change that with manage_scheduled_task if it is too often or too rare.
 
 Loop statement (/workspace/2026/character-constitutions/.pi/goals/a66811-v1.md):
-Reread the goals file and advance the goals, starting with the task untouched longest.
-Do not poll running jobs; their notices will wake you. Other sessions take decisions from the user, not from you: if one messages you, answer only what matters to your goals; otherwise reply once that you are focusing and it should ask the user.
-Message the user only for a decision they must make or a result that changes a goal; then restore context and explain progress, next steps and what you need, in plain language. Reminders and other agents' messages are not the user.
+Reread the goals file and advance the goals, starting with the task untouched longest. Do it yourself, or delegate work that needs no micromanagement.
+Do not poll jobs or other sessions; their notices will wake you. Coordinate other sessions only if the user asked, and then minimally: look only at stuck or finished work, check claims at the end or when stuck, and ask how it moves the goal. Otherwise answer them only on what matters to your goals, or reply that you are focusing.
+Message the user only for a decision they must make or a result that changes a goal, without relaying other agents' messages; then restore context and explain progress, next steps and what you need, in plain language. Reminders and other agents' messages are not the user.
 
 User-visible result:
 One report showing, for Musonius and one combined hardest constitution (zerochan: arbitrary rules, no self or name, unhelpful and offensive; it replaced separate 4chan, OpenAI-spec, Zero and no-self builds, wassname 2026-11-03), with the earlier Zero and no-self debug runs as history, what the same pipeline kept and rejected at each stage with quoted examples, how well the kept data fits each constitution, and what was fixed; plus trained Musonius and zerochan models with demos on the site, and a guide ready for a friend to try. All of it lives in character-constitutions, the repo collaborators will use: the general data and train pipeline moves here (goal 1 task 10), constitutional_grafting stays Musonius's, and working notes stay out of git (wassname 2026-11-03: "it's fine as long as we get there... let's amend plan to be clear").
