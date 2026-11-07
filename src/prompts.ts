@@ -4,7 +4,7 @@
 // PI/OpenAI: default for new plans; each saved goals file owns its loop statement.
 // wassname 2026-11-07 (cg2_main feedback): the old one was "too long and you ignored it"; coordinate "only if asked ... minimally".
 export const DEFAULT_LOOP_STATEMENT = `\
-Reread the goals file and advance the goals, starting with the task untouched longest. Do it yourself, or delegate work that needs no micromanagement.
+On each reminder, first write one or two lines: the overall goal and how you are progressing toward it, then the next task (usually the one untouched longest). Then start it: do it yourself, or delegate work that needs no micromanagement.
 Do not poll jobs or other sessions; their notices will wake you. Coordinate other sessions only if the user asked, and then minimally: look only at stuck or finished work, check claims at the end or when stuck, and ask how it moves the goal. Otherwise answer them only on what matters to your goals, or reply that you are focusing.
 Message the user only for a decision they must make or a result that changes a goal, without relaying other agents' messages; then restore context and explain progress, next steps and what you need, in plain language. Reminders and other agents' messages are not the user.`;
 
