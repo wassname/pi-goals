@@ -49,5 +49,9 @@ describe("pi-subagents completion text that goals mode removes", () => {
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: matches pi-subagents source text
 		expect(notify).toContain("\\n\\nParent action: ${held ? HELD_COMPLETION_ACTION : COMPLETION_ACTION}");
 		expect(notify).toContain('"Completion wake ended silently. See the subagent completion notices above. " + COMPLETION_ACTION');
+		const executor = readFileSync(new URL("../node_modules/pi-subagents/src/runs/foreground/subagent-executor.js", import.meta.url), "utf8");
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: matches pi-subagents source text
+		expect(executor).toContain('customType: "subagent-incremental-child-notify",\n                                        content: triggerTurn ? `${content}\\n\\nParent action: ${COMPLETION_ACTION}` : content,');
+		expect(executor).toContain("details: { childKey: notification.childKey, outcome: notification.outcome }");
 	});
 });

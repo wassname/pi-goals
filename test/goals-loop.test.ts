@@ -269,11 +269,14 @@ describe("pi-subagents completion notices in goal mode", () => {
 		writeFileSync(file, GOALS);
 		await h.tools.get("RequestPlanReview").execute();
 		await h.hook("agent_settled");
-		const out = await h.hook("context", { messages: [done, failed, silent] });
+		const child = (outcome: string) => ({ role: "custom", customType: "subagent-incremental-child-notify", content: `Child reader-1 ${outcome}.\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`, display: false, timestamp: 1, details: { childKey: "reader-1", outcome } });
+		const out = await h.hook("context", { messages: [done, failed, silent, child("completed"), child("failed")] });
 		expect(out.messages.map((m: any) => m.content)).toEqual([
 			"Background task completed: **scout**\n\nfound 3 files",
 			failed.content,
 			"Completion wake ended silently. See the subagent completion notices above.",
+			"Child reader-1 completed.",
+			child("failed").content,
 		]);
 		expect(await h.hook("context", { messages: [failed] })).toBeUndefined();
 	});

@@ -59,7 +59,7 @@ Quotes are <user>'s words with spelling corrected; ## Interview has the exact te
 // PI/OpenAI: share the intent rule between planning and completion.
 const intentGuidance = "User voice outranks the agent's goal summary. A method switch must still deliver what the user asked for; otherwise record it as a finding, not goal completion.";
 // PI/OpenAI: keep widget labels separate from requirements and run history.
-const taskGuidance = "Write each task label as one action in plain English, using the user's terms. It should make sense a week later without remembering this conversation. Aim for 5–10 words; keep more when needed for clarity. Put constraints in indented notes, observations in evidence, and run history in Log. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels.";
+const taskGuidance = "Write each task label as the outcome that marks it done, in plain English and the user's terms (\"Find and fix why X survives the filters\", not \"Read X\"); reminders show labels without their notes. It should make sense a week later without remembering this conversation. Aim for 5–10 words; keep more when needed for clarity. Put constraints in indented notes, observations in evidence, and run history in Log. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels.";
 
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. Reduce that uncertainty: explore, then ask, then write a short goals file that captures what they actually want.
