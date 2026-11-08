@@ -4,11 +4,55 @@ Research by PI/OpenAI, 2026-11-08. Intended reader: wassname, comparing harness 
 
 ## Finding
 
-The strongest proof-related lead is **Volland/agent.lean**: proofs concern the same pure `step` function called by the runtime's C ABI layer. This is stronger than keeping a separately proved model beside an implementation. Host I/O, bindings and tool behavior remain outside those proofs, and I have not rerun the build.
+The strongest source-level proof-related lead is **Volland/agent.lean**, but it is an early research prototype, not an established harness recommendation: created 2026-11-06, one attributed contributor, five commits and no issues, PRs or releases at the 2026-11-08 audit. Its proofs concern the same pure `step` function called by the runtime's C ABI layer. Host I/O, bindings and tool behavior remain outside those proofs. GitHub reports successful build/proof-check jobs; I have not rerun the build.
 
 There are also runnable functional-language harnesses with substantial contributor histories: Autolith (Common Lisp), ECA/Psi (Clojure), Jido/Jido.AI and Alloy (Elixir), BeamAI/Hayata (Erlang), and haskell-agent (Haskell). Functional language, pure control flow, native compilation, and formal verification are independent properties.
 
 For a small pure loop, inspect **comonadic-harness**. For checked plans, inspect **Guardians**; for multi-agent coordination with formal semantics, inspect **ZipperGen**. The initial search omitted Lisp/Clojure/BEAM implementations and executable Lean cores; the language-specific follow-up corrects that coverage gap.
+
+## GitHub maturity and adoption
+
+Snapshot: **2026-11-08 01:37 UTC**. Sorted by attributed non-bot contributor accounts descending, then stars descending. These account counts do not establish how much code humans wrote, whether AI assistance was used, or whether independent review occurred. “Last push (days)” is elapsed whole days, not project age. Issues exclude PRs; PR totals include author-created PRs.
+
+| Repository | Humans | Stars | Created (UTC) | Last push (days) | Issues open/closed | PRs open/merged | Releases |
+|:---|---:|---:|:---|:---|---:|---:|---:|
+| [editor-code-assistant/eca](https://github.com/editor-code-assistant/eca) | 47 | 1050 | 2025-06-16 | 2026-11-07 (0) | 75/345 | 0/220 | 417 |
+| [agentjido/jido_ai](https://github.com/agentjido/jido_ai) | 31 | 211 | 2024-12-17 | 2026-10-31 (7) | 1/92 | 1/191 | 5 |
+| [agentjido/jido](https://github.com/agentjido/jido) | 24 | 1906 | 2024-12-16 | 2026-11-02 (5) | 1/111 | 3/241 | 8 |
+| [lambda-symbolics/autolith](https://github.com/lambda-symbolics/autolith) | 22 | 539 | 2026-07-11 | 2026-11-08 (0) | 5/59 | 7/109 | 140 |
+| [replikativ/dvergr](https://github.com/replikativ/dvergr) | 4 | 40 | 2026-05-02 | 2026-11-05 (2) | 21/7 | 0/404 | 375 |
+| [alloy-ex/alloy](https://github.com/alloy-ex/alloy) | 2 | 92 | 2026-02-26 | 2026-10-13 (25) | 4/4 | 0/32 | 15 |
+| [metareflection/guardians](https://github.com/metareflection/guardians) | 1 | 158 | 2026-04-09 | 2026-07-16 (114) | 1/0 | 0/0 | 0 |
+| [digitallyinduced/haskell-agent](https://github.com/digitallyinduced/haskell-agent) | 1 | 42 | 2026-08-19 | 2026-10-31 (7) | 0/1 | 40/1371 | 0 |
+| [zippergen-io/zippergen](https://github.com/zippergen-io/zippergen) | 1 | 6 | 2026-03-14 | 2026-10-21 (17) | 0/0 | 0/1 | 5 |
+| [getmissionctrl/comonadic-harness](https://github.com/getmissionctrl/comonadic-harness) | 1 | 5 | 2026-09-23 | 2026-11-03 (4) | 0/0 | 0/2 | 0 |
+| [raymyers/verified-coding-agent-lean](https://github.com/raymyers/verified-coding-agent-lean) | 1 | 2 | 2026-01-21 | 2026-04-28 (193) | 0/0 | 1/0 | 1 |
+| [yezhuoyang/CertiClaw](https://github.com/yezhuoyang/CertiClaw) | 1 | 1 | 2026-03-18 | 2026-03-19 (233) | 0/0 | 0/0 | 0 |
+| [Volland/agent.lean](https://github.com/Volland/agent.lean) | 1 | 1 | 2026-11-06 | 2026-11-06 (1) | 0/0 | 0/0 | 0 |
+
+Top attributed accounts, with contributor-API commit counts:
+
+- ECA: `ericdallo` (2451), `zikajk` (157), `bombaywalla` (47).
+- Jido.AI: `mikehostetler` (496), `pcharbon70` (165), `dannote` (5). Jido: `mikehostetler` (461).
+- Autolith: `luciusmagn` (2884), `chakany` (39), `htayj` (33).
+- dvergr: `whilo` (391); three other attributed accounts. Alloy: `chrisohalloran` (113), `johns10` (2).
+- Guardians: `namin` (15). haskell-agent: `mpscholten` (4057). ZipperGen: `bemibo` (674).
+- comonadic-harness: `commandodev` (132). verified-coding-agent-lean: `raymyers` (45). CertiClaw: `yezhuoyang` (28).
+- agent.lean: `Volland` (5), whose public profile names Volodymyr Pavlyshyn.
+
+### agent.lean: exact age and validation evidence
+
+Created **2026-11-06 10:31:08 UTC**, about **39 hours** before this audit. All five default-branch commits have author timestamps on November 6, spanning about three hours. There are zero forks, zero open/closed issues, zero PRs and zero GitHub releases. This is little adoption history, not evidence that the proofs are false.
+
+GitHub's [latest CI run](https://github.com/Volland/agent.lean/actions/runs/42227441198), at inspected revision `0cb5752d6e72464d278763945243a618720bc1c6`, reports success. Its job/step API records successful `lake build`, scenario tests, “No sorry, standard axioms only”, golden traces, source-bundle tests and host/binding tests. Two of the three recorded workflow runs succeeded; the earlier one failed. I read these API results, not the full logs, and did not reproduce them locally. Automated CI is useful build evidence, not independent peer review.
+
+### Why PR/release counts need context
+
+The latest 15 merged PRs inspected for haskell-agent were all authored by `mpscholten`, with no recorded non-bot reviews; some had Codex reviews. The latest 15 for dvergr were all authored by `whilo`, with empty review lists. These samples do not establish the review history of every PR, but they show why 1371 or 404 merged PRs must not be counted as that many independent reviews. Release totals can likewise reflect automated publishing frequency.
+
+For practical functional harnesses, ECA, Jido/Jido.AI and Autolith have stronger contributor and issue histories than the proof-oriented prototypes. For proof architecture, agent.lean remains a lead to audit rather than a mature default choice.
+
+The snapshot was collected with `gh api graphql` for issue/PR counts and paginated REST contributor lists, filtering `type == User` and known bot/agent login markers. The skill's referenced `repo_table.py` is absent from this installation, so the equivalent collector and raw snapshot are machine-local under `.local/research/20261108_github_maturity/`.
 
 ## Classification
 
@@ -20,7 +64,7 @@ H = attributed non-bot contributor logins, not independently verified humans. St
 
 | Repository | What exists | H | Stars | Days | Limit |
 |:---|:---|---:|---:|---:|:---|
-| [Volland/agent.lean](https://github.com/Volland/agent.lean) | Lean pure state/event/effect core, with budget/termination and temporal-monitor proofs; native C output and host bindings | 1 | 0 | 1 | v0.1 preview. The ABI calls the proved core function, but host effects, FFI, bindings and compiler correctness are trusted. No proof build rerun. |
+| [Volland/agent.lean](https://github.com/Volland/agent.lean) | Lean pure state/event/effect core, with budget/termination and temporal-monitor proofs; native C output and host bindings | 1 | 1 | 1 | v0.1 preview. The ABI calls the proved core function, but host effects, FFI, bindings and compiler correctness are trusted. No proof build rerun. |
 
 This is a library/runtime core, not a complete terminal coding product like Autolith. “Proved core” is the source-level classification pending a fresh proof build; it is not a claim that every README guarantee was independently established.
 
@@ -201,7 +245,7 @@ Used authenticated `gh search repos --match name,description,readme`, with short
 
 The follow-up explicitly searched Erlang, Elixir, Clojure, Common Lisp, Haskell and Lean implementations, combining language filters with README/name searches. It found major omissions, including a proved executable Lean core. The initial scan should not be treated as a representative census. Language qualifiers alone also missed relevant mixed/keyword-poor results.
 
-No third-party code was installed or executed, no proof build was rerun, and CI success was not independently audited. “Proofs present” describes inspected artifacts, not a fresh kernel-check result. `agent.lean` provides a direct source-level core/proof link; no inspected candidate established correctness of the entire host/tool/FFI product. That is a scoped search finding, not a claim that none exists anywhere.
+No third-party code was installed or executed, and no proof build was rerun. For agent.lean, the later maturity audit read GitHub CI run/job status records, but not full logs; other projects' CI was not audited. “Proofs present” describes inspected artifacts, not a fresh local kernel-check result. `agent.lean` provides a direct source-level core/proof link; no inspected candidate established correctness of the entire host/tool/FFI product. That is a scoped search finding, not a claim that none exists anywhere.
 
 Raw fetched files, revision IDs and working notes are machine-local under `.local/research/20261108_agent_harness_sources/`, `.local/research/20261108_language_followup/` and the corresponding scout notes. The canonical classification above supersedes scout prose: contributor counts and elapsed days were recomputed, stale-document interpretations corrected, and a monadic interpreter was not labeled pure merely because it has an explicit effect parameter.
 
