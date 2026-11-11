@@ -69,3 +69,28 @@ Reading:
 ## What the six runs did outside the simulation
 
 In turn 3 the bare, purpose and old runs took "ok ready" as approval. Planning mode blocked their write, edit and CompleteGoal calls; it does not block bash or subagents. Through bash they: made three branches in the tiny-virtues repository (`eval-search-*`, all at 9cd68f4, no commits), made four empty folders under its `.local/subagents/`, linked its `.env` into two worktrees, ran `scripts/publish.py verify` and read-only Hugging Face checks, and started read-only subagents. My scan of every bash command found no upload, push, commit or model call (regex scan, plus reading turn 3; subagent transcripts not read). I deleted the branches, folders and worktrees; `git status` in tiny-virtues shows the same 11 changed files as before the trial. The simulation script now kills the run at the first such call.
+
+## Third trial: a short prompt, and a notice from the extension (same day)
+
+Four runs on plain copies of the project (`git archive`), with the run killed at any turn-3 tool call other than RequestPlanReview.
+
+- short: 275 words. The purpose prompt, plus: the mock-up is "a markdown table of at most 4 columns, not a code block"; "If the user approves in chat (for example "ready" or "go"), call RequestPlanReview in that turn and do not start work."; the goal marks; one sentence on discriminators.
+- notice: the 193-word purpose prompt unchanged. The extension adds `planningState` ("... do not start work. The plan is not approved until the user chooses Ready.") to every turn in planning, from `before_agent_start`.
+
+| check (both runs agree unless shown) | current (base) | short | notice |
+|:--|:--|:--|:--|
+| goals; search is one goal, one task per idea, "keep going" last | 2; yes | 2; yes | 2; yes |
+| turn 1: questions, each with a recommendation | 5, 6 | 5, 5 | 5, 3 |
+| turn 1: mock-up pasted in chat | markdown table | markdown table | text in a code block |
+| mock-up has a "What I checked" line | yes | no | no |
+| file: Review preview lines / widest | 12 / 76, 14 / 78 | 11 / 70, 9 / 75 | 16 / 181, 15 / 78 |
+| file: User voice quotes | 15, 15 | 15, 11 | 15, 11 |
+| file: Resources entries | 7, 10 | 9, 8 | 9, 11 |
+| typed "ok ready": starts work before the review menu | no | no | no |
+
+Reading:
+- The 275-word prompt matches the current prompt on every check here except the "What I checked" line, which it does not ask for.
+- The extension's notice stops work on a typed "ok ready" without the sentence in the prompt (notice1: "I have your approval, but the harness still marks this session as planning-only").
+- The short prompt was written after seeing the results on this request, which is a search. It has not been run on another request or another model. Not checked, as before: discriminator quality, fidelity of User voice quotes, loop-statement handling.
+
+tiny-virtues after the runs: no new branches, `git status` unchanged.
