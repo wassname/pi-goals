@@ -11,6 +11,7 @@ const WIDGET_TASK_LIMIT = 5;
 const WIDGET_WAITING_LIMIT = 3;
 const WAKE_TASK_LIMIT = 8;
 const HOUR = 3_600_000;
+const RESYNC_INTERVIEW_LIMIT = 10;
 
 // [x] means reported done without a judge accept; [✓] means the judge accepted it.
 export type GoalStatus = "open" | "active" | "reported" | "done" | "cancelled";
@@ -152,7 +153,7 @@ export function ageTasks(text: string, before: TaskSince, now: number): { since:
 	return { since, lines: list(rows), waiting: list(waiting), idle };
 }
 
-/** Outcome and one status line per goal; the whole file is sent after Ready, compaction and resume. */
+/** Outcome and one status line per goal; resync sends the file above the Log. */
 export function loopFocus(text: string): string {
 	const outcome = section(text, "User-visible result");
 	if (!outcome) throw new Error("The goals file needs a User-visible result.");
@@ -217,6 +218,13 @@ export function interviewEntries(text: string): string[] {
 	if (!range) return [];
 	const cuts = [range[0], ...rootHeadings(root).filter((heading) => heading.depth >= 3 && from(heading) > range[0] && from(heading) < range[1]).map(from), range[1]];
 	return cuts.slice(1).map((cut, index) => text.slice(cuts[index], cut).trim()).filter(Boolean);
+}
+
+/** What a resync sends: the file above ## Log and the newest Interview entries. The Log and older entries stay in the file. */
+export function fold(text: string): { top: string; recent: string[]; older: number; cut: boolean } {
+	const cut = rootHeadings(parse(text)).find((heading) => ["log", "interview"].includes(headingName(text, heading).toLowerCase()));
+	const entries = interviewEntries(text);
+	return { top: (cut ? text.slice(0, from(cut)) : text).trimEnd(), recent: entries.slice(-RESYNC_INTERVIEW_LIMIT), older: Math.max(0, entries.length - RESYNC_INTERVIEW_LIMIT), cut: Boolean(cut) };
 }
 
 /** Put back entries an agent edit removed; the user's words are not the agent's to rewrite. */

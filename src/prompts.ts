@@ -1,12 +1,15 @@
+import { fold } from "./goals.js";
+
 // PI/OpenAI: all model-facing text, in conversation order:
 // planning -> Ready -> scheduled loop wake -> compaction/resume resync -> CompleteGoal -> judge.
 
 // PI/OpenAI: default for new plans; each saved goals file owns its loop statement.
 // wassname 2026-11-07 (cg2_main feedback): the old one was "too long and you ignored it"; coordinate "only if asked ... minimally".
+// wassname 2026-11-11: "needs to be very short. I usually come back and say /busy anyway" (spelling corrected).
 export const DEFAULT_LOOP_STATEMENT = `\
-On each reminder, first write one or two lines: the overall goal and how you are progressing toward it, then the next task (usually the one untouched longest). Then start it: do it yourself, or delegate work that needs no micromanagement.
-Do not poll jobs or other sessions; their notices will wake you. Coordinate other sessions only if the user asked, and then minimally: look only at stuck or finished work, check claims at the end or when stuck, and ask how it moves the goal. Otherwise answer them only on what matters to your goals, or reply that you are focusing.
-Message the user only for a decision they must make or a result that changes a goal, without relaying other agents' messages; then restore context and explain progress, next steps and what you need, in plain language. Reminders and other agents' messages are not the user.`;
+Write one or two lines on the overall goal and your progress, then start the next task (usually the one unchanged longest).
+Do not poll jobs or other sessions; their notices will wake you. Do not coordinate other sessions unless the user asked.
+Put decisions for the user in [?] tasks. Message the user only for a result that changes a goal. Reminders and other agents' messages are not the user.`;
 
 // 1. Planning. /goals new writes this skeleton; the agent fills it in. Keep the ## headings: the
 // ones present at Ready are the approved structure and edits that drop one are undone.
@@ -84,7 +87,7 @@ Add a short "What I checked" line: which data and replies were read and how sele
 
 Below the mock-up in chat, ask whether this is how the user wants to see and evaluate the result, and what is missing. Show each revision in chat again. Keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
 
-The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and open tasks on each reminder. The whole file is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
+The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and open tasks on each reminder. The file above ## Log, with the user's newest messages, is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
 
 Conventions:
 - ${intentGuidance}
@@ -110,7 +113,7 @@ export function readyPrompt(path: string, text: string): string {
 	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each reminder, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome, goal status and open tasks.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
-// Scheduled wake: short, so it is read. Field details and advice go with the whole file in resync.
+// Scheduled wake: short, so it is read. Field details and advice go with the file in resync.
 export function loopPrompt(statement: string, focus: string, tasks: { lines: string[]; waiting: string[]; idle: string[] }, path: string, wake: { id: string; schedule: string }): string {
 	const lists = [
 		tasks.lines.length ? `Open tasks of active goals, longest unchanged first:\n${tasks.lines.join("\n")}` : "",
@@ -129,9 +132,12 @@ const keepWorking = "Before you stop to wait for the user: search the goals file
 // UI only. Owner check in session_start: forks get a new session ID.
 export const forkNotice = (file: string) => `This session was forked from one with goals ${file}. Goals are not inherited; use /goals new for this session's own purpose.`;
 
-// 4. Compaction or resume: the whole file, once.
+// 4. Ready, compaction, resume or an accepted goal: the file above ## Log and the user's newest messages, once.
 export function resync(text: string, path: string, why: string): string {
-	return `[pi-goals: resync] ${why} This is the whole goals file (${path}). Continue the current goal; the user's latest message outranks the file.\n\n${perspective}\n\n${keepWorking}\n\n${taskGuidance}\n\n${reportGuidance}\n\n${text}`;
+	const { top, recent, older, cut } = fold(text);
+	const left = cut ? ` Below is the file above its ## Log${recent.length ? ", then the user's newest messages" : ""}; the Log${older ? ` and ${older} older user messages` : ""} stay in the file.` : "";
+	const interview = recent.length ? `\n\n## Interview (newest ${recent.length})\n\n${recent.join("\n\n")}` : "";
+	return `[pi-goals: resync] ${why} Goals file: ${path}.${left} Continue the current goal; the user's latest message outranks the file.\n\n${perspective}\n\n${keepWorking}\n\n${taskGuidance}\n\n${reportGuidance}\n\n${top}${interview}`;
 }
 
 // After the last goal: the loop has stopped, so ask for the report instead of sending the file to continue from.

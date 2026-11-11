@@ -22,7 +22,8 @@ describe("CompleteGoal", () => {
 		expect(goalLine(h.file)).toContain("[✓]");
 		expect(readFileSync(h.file, "utf8")).toMatch(/accepted "make the plot"/);
 		expect(result.content[0].text).toContain("[pi-goals: resync] Goal status changed.");
-		expect(result.content[0].text).toContain(readFileSync(h.file, "utf8"));
+		expect(result.content[0].text).toContain("2. [ ] goal: write the note");
+		expect(result.content[0].text).not.toContain("historical detail");
 		expect(h.requests[0]).toMatchObject({ agent: "pi-goals-judge", context: "fresh", model: "p/m", result: { kind: "structured" } });
 		expect(h.requests[0].task).toContain("## User-visible result");
 		expect(h.agents[0].definition.tools).toEqual(["read", "grep", "find", "ls"]);

@@ -38,7 +38,10 @@ describe("planning and Ready", () => {
 		await h.tools.get("RequestPlanReview").execute();
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
-		expect(h.sent.find(m => m.text.startsWith("[pi-goals] The user approved"))?.text).toContain(GOALS);
+		const approved = h.sent.find(m => m.text.startsWith("[pi-goals] The user approved"))!.text;
+		expect(approved).toContain(GOALS.split("\n## Log")[0].trimEnd());
+		expect(approved).toContain("> yes, reuse judge_demos.py");
+		expect(approved).not.toContain("historical detail");
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
 	});
 
@@ -331,13 +334,17 @@ describe("widget rendering", () => {
 });
 
 describe("context after compaction and resume", () => {
-	it("sends the whole goals file once after compaction, including Log", async () => {
+	it("sends the goals file above the Log and the user's newest messages once after compaction", async () => {
 		const h = setup({ choices: ["Ready"] });
 		await ready(h);
+		for (let n = 1; n <= 12; n++) await h.hook("input", { source: "interactive", text: `user message ${n}.` });
 		await h.hook("before_agent_start");
 		await h.hook("session_compact");
 		const retry = await h.hook("context", { messages: [] });
-		expect(retry.messages.at(-1).content[0].text).toContain("historical detail");
+		const text = retry.messages.at(-1).content[0].text as string;
+		for (const kept of [LOOP, "A plot.", "1. [/] goal: make the plot", "[ ] load data", "user message 12.", "user message 3."]) expect(text).toContain(kept);
+		for (const left of ["historical detail", "user message 2."]) expect(text).not.toContain(left);
+		expect(text.indexOf("user message 12.")).toBeGreaterThan(text.indexOf("2. [ ] goal: write the note"));
 		expect(await h.hook("context", { messages: [] })).toBeUndefined();
 	});
 
