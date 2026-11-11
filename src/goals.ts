@@ -2,18 +2,20 @@
 // only goal and task items, named sections and the Log fold, from a CommonMark syntax tree.
 // Edits splice the source at node offsets, so the rest of the file keeps its exact text.
 import { createHash } from "node:crypto";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Heading, ListItem, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 const WIDGET_GOAL_LIMIT = 3;
 const WIDGET_TASK_LIMIT = 5;
+const WIDGET_WAITING_LIMIT = 3;
 const WAKE_TASK_LIMIT = 8;
 const HOUR = 3_600_000;
 
 // [x] means reported done without a judge accept; [✓] means the judge accepted it.
 export type GoalStatus = "open" | "active" | "reported" | "done" | "cancelled";
-const STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", x: "reported", "✓": "done", "-": "cancelled" };
+// [?] is a task mark: the task waits on the user's decision. On a goal line it reads as active.
+const STATUS: Record<string, GoalStatus> = { " ": "open", "/": "active", "?": "active", x: "reported", "✓": "done", "-": "cancelled" };
 export interface Goal {
 	status: GoalStatus;
 	subject: string;
@@ -65,14 +67,21 @@ export function goals(text: string): Goal[] {
 const goalTasks = (text: string, goal: Goal): Checkbox[] =>
 	subItems(goal.item).flatMap((item) => checkbox(text, item) ?? (fieldKey(item) === "tasks" ? subItems(item).flatMap((task) => checkbox(text, task) ?? []) : []));
 
-const isDone = (task: Checkbox) => !" /".includes(task.mark);
+const isWaiting = (task: Checkbox) => task.mark === "?";
+const isDone = (task: Checkbox) => !" /?".includes(task.mark);
+const isUnfinished = (goal: Goal) => goal.status !== "done" && goal.status !== "cancelled";
 
-/** Open and active tasks of [/] goals, indented under the goal line; finished ones are counted. */
+/** [?] tasks of unfinished goals: what the user must decide, shown first in the widget. */
+export function waitingTasks(text: string): { goal: number; label: string }[] {
+	return goals(text).flatMap((goal, index) => isUnfinished(goal) ? goalTasks(text, goal).filter(isWaiting).map((task) => ({ goal: index + 1, label: task.label })) : []);
+}
+
+/** Open and active tasks of [/] goals, indented under the goal line; finished ones are counted, [?] ones are listed apart. */
 function activeTaskLines(text: string, goal: Goal, limit = Infinity): string[] {
 	if (goal.status !== "active") return [];
 	const tasks = goalTasks(text, goal);
-	const open = tasks.filter((task) => !isDone(task));
-	const done = tasks.length - open.length;
+	const open = tasks.filter((task) => !isDone(task) && !isWaiting(task));
+	const done = tasks.filter(isDone).length;
 	const hidden = Math.max(0, open.length - limit);
 	const tail = [hidden ? `${hidden} more` : "", done ? `${done} done` : ""].filter(Boolean).join(", ");
 	return [...open.slice(0, limit).map((task) => `    [${task.mark}] ${task.label}`), ...(tail ? [`    … ${tail}`] : [])];
@@ -84,7 +93,7 @@ export function hiddenTasks(text: string): string[] {
 	return heads.flatMap((item) => {
 		const head = item.children[0];
 		const lines = head?.type === "paragraph" ? text.slice(from(head), to(head)).split("\n").slice(1) : [];
-		return lines.filter((line) => /^\s*\d+[.)]\s+\[[ /xX✓-]\]\s/.test(line)).map((line) => line.trim());
+		return lines.filter((line) => /^\s*\d+[.)]\s+\[[ /?xX✓-]\]\s/.test(line)).map((line) => line.trim());
 	});
 }
 
@@ -112,25 +121,35 @@ export type TaskSince = Record<string, [string, number]>;
 
 /** PI/Claude: open tasks of [/] goals with the time their text last changed. Ages are sampled at each wake and
  * kept for open tasks of every goal, so pausing a goal does not reset them. Keys use goal and task text, not
- * list position, and the hash ignores list numbers, so reordering is not a change. */
-export function ageTasks(text: string, before: TaskSince, now: number): { since: TaskSince; lines: string[] } {
+ * list position, and the hash ignores list numbers, so reordering is not a change.
+ * `waiting` lists [?] tasks of unfinished goals; `idle` names [/] goals with no open task of either kind. */
+export function ageTasks(text: string, before: TaskSince, now: number): { since: TaskSince; lines: string[]; waiting: string[]; idle: string[] } {
 	const since: TaskSince = {};
 	const rows: { line: string; at: number }[] = [];
+	const waiting: { line: string; at: number }[] = [];
+	const idle: string[] = [];
 	for (const [index, goal] of goals(text).entries()) {
-		for (const task of goalTasks(text, goal).filter((task) => !isDone(task))) {
+		const open = goalTasks(text, goal).filter((task) => !isDone(task));
+		if (goal.status === "active" && !open.length) idle.push(`G${index + 1}`);
+		for (const task of open) {
 			let key = `${goal.subject} :: ${task.label}`;
 			for (let n = 2; key in since; n++) key = `${goal.subject} :: ${task.label} #${n}`;
 			const body = text.slice(from(task.item), to(task.item)).replace(/^\d+[.)]\s*/, "");
 			const hash = createHash("sha1").update(body).digest("hex").slice(0, 12);
 			const at = before[key]?.[0] === hash ? before[key][1] : now;
 			since[key] = [hash, at];
-			if (goal.status === "active") rows.push({ line: `G${index + 1} ${firstLine(text, task.item).trim()}`, at });
+			const row = { line: `G${index + 1} ${firstLine(text, task.item).trim()}`, at };
+			if (isWaiting(task)) { if (isUnfinished(goal)) waiting.push(row); }
+			else if (goal.status === "active") rows.push(row);
 		}
 	}
-	rows.sort((a, b) => a.at - b.at);
 	const hours = (at: number) => { const h = Math.floor((now - at) / HOUR); return h < 1 ? "under 1 h" : `${h} h`; };
-	const hidden = rows.length - WAKE_TASK_LIMIT;
-	return { since, lines: [...rows.slice(0, WAKE_TASK_LIMIT).map((row) => `- ${row.line} · unchanged ${hours(row.at)}`), ...(hidden > 0 ? [`- … ${hidden} more in the goals file`] : [])] };
+	const list = (items: { line: string; at: number }[]) => {
+		const sorted = [...items].sort((a, b) => a.at - b.at);
+		const hidden = sorted.length - WAKE_TASK_LIMIT;
+		return [...sorted.slice(0, WAKE_TASK_LIMIT).map((row) => `- ${row.line} · unchanged ${hours(row.at)}`), ...(hidden > 0 ? [`- … ${hidden} more in the goals file`] : [])];
+	};
+	return { since, lines: list(rows), waiting: list(waiting), idle };
 }
 
 /** Outcome and one status line per goal; the whole file is sent after Ready, compaction and resume. */
@@ -147,7 +166,13 @@ const PRIORITY: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, 
 export function widgetLines(text: string, path: string, width = 100): string[] {
 	const items = goals(text);
 	const sorted = [...items].sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
-	const lines: string[] = [];
+	const waiting = waitingTasks(text);
+	// Up to two lines each: the user needs the whole question, not its first half.
+	const lines = waiting.slice(0, WIDGET_WAITING_LIMIT).flatMap((task) => {
+		const [first, ...rest] = wrapTextWithAnsi(`? needs you (G${task.goal}): ${task.label}`, width);
+		return rest.length ? [first, `  ${rest.join(" ")}`] : [first];
+	});
+	if (waiting.length > WIDGET_WAITING_LIMIT) lines.push(`? … ${waiting.length - WIDGET_WAITING_LIMIT} more need you`);
 	for (const goal of sorted.slice(0, WIDGET_GOAL_LIMIT)) {
 		lines.push(`${MARK[goal.status]} G${items.indexOf(goal) + 1}: ${goal.subject}`, ...activeTaskLines(text, goal, WIDGET_TASK_LIMIT));
 	}

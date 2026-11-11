@@ -4,7 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ageTasks, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, widgetLines } from "./goals.js";
+import { ageTasks, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, waitingTasks, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -86,7 +86,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 		try {
 			const text = read();
 			const items = goals(text);
-			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted`);
+			const waiting = waitingTasks(text).length;
+			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted${waiting ? ` · ${waiting} need you` : ""}`);
 			const path = relative(ctx.cwd, state.file);
 			if (ctx.mode === "tui") {
 				// Parsing a large goals file takes tens of ms; render runs on every repaint.
@@ -221,7 +222,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 			const tasks = ageTasks(text, state.taskSince ?? {}, Date.now());
 			state = { ...state, taskSince: tasks.since };
 			persist();
-			return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), tasks.lines, state.file!, wakeSchedule(event.text)) };
+			return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), tasks, state.file!, wakeSchedule(event.text)) };
 		}
 		// Every user message is kept verbatim below the Log, so answers survive compaction.
 		if (state.file && event.source !== "extension" && event.text.trim()) {
@@ -323,8 +324,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const saved = appendLog(updated, `${stamp()} ${outcome.log}; ${relative(ctx.cwd, report)}`);
 				save(saved);
 				refresh(ctx);
-				if (!hasRemainingGoals(updated, state.judge)) pause(ctx);
-				return result(`${outcome.text}\n\n${relative(ctx.cwd, report)}${outcome.mark ? `\n\n${prompts.resync(saved, state.file!, "Goal status changed.")}` : ""}`);
+				const finished = !hasRemainingGoals(updated, state.judge);
+				if (finished) pause(ctx);
+				const next = !outcome.mark ? "" : finished ? prompts.allGoalsFinished(state.file!, section(saved, "Review preview")) : prompts.resync(saved, state.file!, "Goal status changed.");
+				return result([outcome.text, relative(ctx.cwd, report), next].filter(Boolean).join("\n\n"));
 			} finally { judging = false; }
 		},
 	});

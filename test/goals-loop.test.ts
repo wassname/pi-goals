@@ -124,6 +124,16 @@ describe("scheduled loop wake", () => {
 		}
 	});
 
+	it("lists [?] tasks after the agent's own open tasks", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h);
+		const prompt = h.schedulerReceipt("t1");
+		writeFileSync(file, GOALS.replace("     1. [ ] load data", "     1. [?] Log or linear y axis?\n     3. [ ] load data"));
+		const text = (await h.wake("t1", prompt)).text as string;
+		expect(text).toContain("G1 1. [?] Log or linear y axis?");
+		expect(text.indexOf("[?] Log or linear")).toBeGreaterThan(text.indexOf("[ ] load data"));
+	});
+
 	it("orders open tasks by time since their text changed, and keeps ages across a restart", async () => {
 		vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
 		try {

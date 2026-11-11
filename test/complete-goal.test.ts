@@ -86,11 +86,15 @@ describe("CompleteGoal", () => {
 		expect(goalLine(h.file)).toContain("[/]");
 	});
 
-	it("accepting the last goal removes the scheduled loop", async () => {
+	it("accepting the last goal removes the scheduled loop and asks for the report in the agreed layout, not for more work", async () => {
 		const h = await working();
-		writeFileSync(h.file, GOALS.replace("[ ] goal: write", "[-] goal: write"));
-		await h.complete("make the plot");
+		writeFileSync(h.file, GOALS.replace("[ ] goal: write", "[-] goal: write").replace("## Goals", "## Review preview\n\n| run | score-placeholder |\n\n## Goals"));
+		const result = await h.complete("make the plot");
 		expect(h.sent.at(-1)?.text).toBe("/schedule-remove t1");
+		const text = result.content[0].text;
+		expect(text).not.toContain("[pi-goals: resync]");
+		expect(text).not.toContain("historical detail");
+		expect(text).toContain("| run | score-placeholder |");
 	});
 });
 

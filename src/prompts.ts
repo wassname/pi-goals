@@ -59,7 +59,7 @@ Quotes are <user>'s words with spelling corrected; ## Interview has the exact te
 // PI/OpenAI: share the intent rule between planning and completion.
 const intentGuidance = "User voice outranks the agent's goal summary. A method switch must still deliver what the user asked for; otherwise record it as a finding, not goal completion.";
 // PI/OpenAI: keep widget labels separate from requirements and run history.
-const taskGuidance = "Write each task label as the outcome that marks it done, in plain English and the user's terms (\"Find and fix why X survives the filters\", not \"Read X\"); reminders show labels without their notes. It should make sense a week later without remembering this conversation. Aim for 5–10 words; keep more when needed for clarity. Put constraints in indented notes, observations in evidence, and run history in Log. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels.";
+const taskGuidance = "Write each task label as the outcome that marks it done, in plain English and the user's terms (\"Find and fix why X survives the filters\", not \"Read X\"); reminders show labels without their notes. It should make sense a week later without remembering this conversation. Aim for 5–10 words; keep more when needed for clarity. Put constraints in indented notes, observations in evidence, and run history in Log. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels. Mark a task that waits on the user's decision [?]: the user sees it first in the widget, and reminders list it apart from your own work. Its label is the whole question, readable by someone who has not followed the chat; its notes give the options, what each would change, your recommendation, and what you assume and do until they answer.";
 
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. Reduce that uncertainty: explore, then ask, then write a short goals file that captures what they actually want.
@@ -90,9 +90,9 @@ Conventions:
 - One goal per distinct outcome. Steps go under a goal as tasks; stages of one piece of work (brainstorm, pilot, final run) are tasks, not goals.
 - Some goals are searches: find a design, cause or setting that is good by the user's description. Keep one goal whose outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Give each candidate idea, including each one the user named, its own task (not one search task that lists ideas in its details), and make the last task "brainstorm new ideas and keep going". After each try, keep what works or move to the next most promising idea. Do not plan to try every idea in order, and do not add a budget or stop rule that turns "nothing found" into done unless the user set one.
 - ${taskGuidance}
-- Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning.
+- Goal status: [ ] open, [/] active, [x] reported done (no judge accept), [✓] accepted by the judge, [-] cancelled. Leave goals [ ] while planning. Tasks also take [?]: waits on the user's decision.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
-- Loop wakes repeat only the Loop statement, the User-visible result, one status line per goal and the open tasks of [/] goals, longest unchanged first. Keep the User-visible result short. Log and Interview preserve history.
+- Loop wakes repeat only the Loop statement, the User-visible result, one status line per goal, the open tasks of [/] goals, longest unchanged first, and the [?] tasks. Keep the User-visible result short. Log and Interview preserve history.
 
 Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not. If the user approves in chat (for example "ready" or "go"), call RequestPlanReview in that turn and do not start work; never say the menu will appear unless you called it.`;
 
@@ -106,8 +106,13 @@ export function readyPrompt(path: string, text: string): string {
 }
 
 // Scheduled wake: short, so it is read. Field details and advice go with the whole file in resync.
-export function loopPrompt(statement: string, focus: string, tasks: string[], path: string, wake: { id: string; schedule: string }): string {
-	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nLoop statement (${path}):\n${statement}\n\n${focus}${tasks.length ? `\n\nOpen tasks of active goals, longest unchanged first:\n${tasks.join("\n")}` : ""}`;
+export function loopPrompt(statement: string, focus: string, tasks: { lines: string[]; waiting: string[]; idle: string[] }, path: string, wake: { id: string; schedule: string }): string {
+	const lists = [
+		tasks.lines.length ? `Open tasks of active goals, longest unchanged first:\n${tasks.lines.join("\n")}` : "",
+		tasks.waiting.length ? `Waiting on the user's decision ([?] tasks; the user sees them in the widget):\n${tasks.waiting.join("\n")}` : "",
+		tasks.idle.length ? `Active with no open task: ${tasks.idle.join(", ")}. Add the next task, mark what waits on the user [?], or call CompleteGoal.` : "",
+	].filter(Boolean);
+	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nLoop statement (${path}):\n${statement}\n\n${[focus, ...lists].join("\n\n")}`;
 }
 
 // wassname 2026-10-27: "the real risk is they get distracted and forget the goal ... the other risk is they keep stopping and saying it's not possible or they are blocked when they are not" (spelling corrected). Wording agreed with wassname; framed as perspective, not rules.
@@ -122,6 +127,11 @@ export const forkNotice = (file: string) => `This session was forked from one wi
 // 4. Compaction or resume: the whole file, once.
 export function resync(text: string, path: string, why: string): string {
 	return `[pi-goals: resync] ${why} This is the whole goals file (${path}). Continue the current goal; the user's latest message outranks the file.\n\n${perspective}\n\n${keepWorking}\n\n${taskGuidance}\n\n${text}`;
+}
+
+// After the last goal: the loop has stopped, so ask for the report instead of sending the file to continue from.
+export function allGoalsFinished(path: string, preview: string | undefined): string {
+	return `[pi-goals] No goals remain in ${path}, so the reminders have stopped. Write the user the final report in the agreed ## Review preview layout: observed results in place of placeholders, only the checks you performed, and what remains uncertain. Assume the user has not followed the session; restore context first.${preview ? `\n\nReview preview:\n${preview}` : ""}`;
 }
 
 // 5. CompleteGoal, agent side.
