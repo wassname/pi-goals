@@ -169,7 +169,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				if (arg === "judge" || arg.startsWith("judge ")) {
 					const value = arg.slice(5).trim();
 					state = { ...state, judge: value !== "off", model: ["", "on", "off"].includes(value) ? undefined : value };
-					persist(); ctx.ui.notify(`Judge ${state.judge ? state.model ?? "uses the session model" : "disabled: completion is self-verification"}.`, "info"); return;
+					persist(); ctx.ui.notify(`Sign-off judge ${state.judge ? state.model ?? "uses the session model" : "disabled: completion is self-verification"}.`, "info"); return;
 				}
 				if (arg !== "new" && !arg.startsWith("new ")) throw new Error("Use /goals new [idea], review, pause, resume, clear, or judge.");
 				if (state.file) throw new Error("Clear the current goals before starting new ones; the file is preserved.");
@@ -316,7 +316,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const reviewed = state.judge ? await runJudge(pi.events, { goal: params.goal, text, path: state.file!, cwd: ctx.cwd, model }, signal) : undefined;
 				if (signal?.aborted || current !== generation) throw new Error("Review interrupted or goals session changed; no completion recorded.");
 				if (read() !== text) throw new Error("Goals changed during review; inspect the new requirements and review again.");
-				const outcome = reviewed ? decideSignOff(params.goal, reviewed) : { mark: "x" as const, text: prompts.selfVerified, log: `self-verified "${params.goal}" (judge disabled)` };
+				const outcome = reviewed ? decideSignOff(params.goal, reviewed) : { mark: "x" as const, text: prompts.selfVerified, log: `self-verified "${params.goal}" (sign-off judge disabled)` };
 				const report = join(ctx.cwd, ".pi/goals/reviews", `${randomUUID()}.json`);
 				mkdirSync(dirname(report), { recursive: true });
 				writeFileSync(report, JSON.stringify({ goal: params.goal, goals: text, result: reviewed ?? "self-verification", model }, null, 2));

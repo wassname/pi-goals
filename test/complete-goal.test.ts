@@ -58,7 +58,7 @@ describe("CompleteGoal", () => {
 
 	it("missing pi-subagents leaves the goal unfinished", async () => {
 		const h = await working(undefined, false);
-		expect((await h.complete("make the plot")).content[0].text).toMatch(/Judge unavailable/);
+		expect((await h.complete("make the plot")).content[0].text).toMatch(/unavailable/);
 		expect(goalLine(h.file)).toContain("[/]");
 	});
 

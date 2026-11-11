@@ -118,16 +118,16 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 export function decideSignOff(goal: string, result: JudgeResult): SignOff {
 	if (!result.ok) {
 		return {
-			text: `Judge unavailable (${result.error}). The goal is unchanged. Resolve the judge failure or ask the user whether to disable independent judging.`,
+			text: `Sign-off judge unavailable (${result.error}). The goal is unchanged. Resolve the failure or ask the user whether to disable the sign-off judge.`,
 			isError: true,
-			log: `review failed "${goal}" (judge unavailable: ${oneLine(result.error)})`,
+			log: `review failed "${goal}" (sign-off judge unavailable: ${oneLine(result.error)})`,
 		};
 	}
 	const { verdict, checks, missing } = result.verdict;
 	const review = checks.map((check) => `- ${check.path}: "${check.quote}" -> ${check.observation}`).join("\n");
 	if (verdict === "accept" && checks.length > 0 && !missing.trim()) {
-		return { text: `Sign-off ACCEPTED; goal marked [✓].\n\nJudge checks:\n${review}`, isError: false, mark: "✓", log: `accepted "${goal}" (judge${result.model ? ` ${result.model}` : ""})` };
+		return { text: `Sign-off ACCEPTED; goal marked [✓].\n\nSign-off judge checks:\n${review}`, isError: false, mark: "✓", log: `accepted "${goal}" (sign-off judge${result.model ? ` ${result.model}` : ""})` };
 	}
-	const why = verdict === "accept" ? "judge accepted without citing any file it opened" : missing || "no reason given";
-	return { text: `Sign-off REJECTED. Missing:\n${why}${review ? `\n\nJudge checks:\n${review}` : ""}`, isError: true, log: `rejected "${goal}": ${oneLine(why)}` };
+	const why = verdict === "accept" ? "the sign-off judge accepted without citing any file it opened" : missing || "no reason given";
+	return { text: `Sign-off REJECTED. Missing:\n${why}${review ? `\n\nSign-off judge checks:\n${review}` : ""}`, isError: true, log: `rejected "${goal}": ${oneLine(why)}` };
 }
