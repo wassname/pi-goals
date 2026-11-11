@@ -40,3 +40,32 @@ The script's "predicts" and "questions" cells were wrong for base1 and base2 (re
 Deleted 1, 3, 4 and 5 from `src/prompts.ts` (about 115 words, a tenth of the prompt). Kept 2.
 
 Limits: one request, one model, two runs per version. This can show a large regression; it cannot show the shorter prompt is as good.
+
+## Second trial: large contrasts (same day)
+
+wassname: "if all [the same] you need to try radically different setups?" Six more runs, two each, same request, answers and model:
+
+- bare: a 31-word planning prompt ("Find out what the user wants, then fill in the goals file skeleton. Do not start work. ...").
+- purpose: 193 words: explore, ask in rounds with recommendations, paste and agree a mock-up, check resources, one goal per outcome, a search is one goal with one task per idea and a keep-going task.
+- old: the prompt at 3d62212 (2026-11-03), before the search-goal rule and the typed-approval rule.
+
+| check (both runs of each agree unless shown) | current (base) | purpose | bare | old |
+|:--|:--|:--|:--|:--|
+| goals | 2 | 2 | 3 | 3 |
+| search is one goal, one task per idea, last task "brainstorm and keep going" | yes | yes | no: stages as goals | no: stages as goals |
+| turn 1: questions / with a recommendation (my read of run 1) | 5 / 5 | 3 / 3 | 4 / 1 | 6 / 6 |
+| turn 1: tool calls (exploration) | 26, 30 | 29, 25 | 6, 5 | 30, 42 |
+| turn 1: mock-up pasted in chat | markdown table | text in a code block | none | markdown table |
+| mock-up has a "What I checked" line | yes | no | no | yes |
+| file: Review preview lines / widest | 12 / 76, 14 / 78 | 16 / 142, 16 / 82 | 6 / 72, 1 / 239 | 14 / 78, 13 / 80 |
+| file: User voice quotes | 15, 15 | 16, 13 | 8, 4 | 15, 14 |
+| typed "ok ready": starts work before opening the review menu | no | yes | yes | yes |
+
+Reading:
+- The simulation detects bad prompts. The old prompt gives the plan shape wassname rejected on 2026-11-04 (finding designs and showing differences as separate goals, no task per idea, no keep-going task), and it starts work on a typed "ok ready". Both in 2 of 2 runs.
+- 193 words give the same plan shape as the current prompt of about 1,000 words. What the current prompt adds that these checks can see: no work on a typed "ok ready", the table layout and "What I checked" line of the mock-up, and more questions.
+- Not checked: quality of discriminators, invented thresholds, fidelity of User voice quotes, how the loop statement is handled. So this does not show the 193-word prompt is as good.
+
+## What the six runs did outside the simulation
+
+In turn 3 the bare, purpose and old runs took "ok ready" as approval. Planning mode blocked their write, edit and CompleteGoal calls; it does not block bash or subagents. Through bash they: made three branches in the tiny-virtues repository (`eval-search-*`, all at 9cd68f4, no commits), made four empty folders under its `.local/subagents/`, linked its `.env` into two worktrees, ran `scripts/publish.py verify` and read-only Hugging Face checks, and started read-only subagents. My scan of every bash command found no upload, push, commit or model call (regex scan, plus reading turn 3; subagent transcripts not read). I deleted the branches, folders and worktrees; `git status` in tiny-virtues shows the same 11 changed files as before the trial. The simulation script now kills the run at the first such call.

@@ -3,7 +3,10 @@
 Run: python3 slop/sims/20261111_planning_sim.py <pi-goals dir to load> <project dir> <out dir> [model]
 
 Three user turns: the seed (`/goals new ...`), fixed answers, then "ok ready" typed in chat.
-The review menu is always answered "Discuss in chat", so work never starts.
+The review menu is always answered "Discuss in chat". In turn 3 the run is killed at the first tool call other than
+RequestPlanReview: planning mode blocks write, edit and CompleteGoal, but not bash or subagents, and on 2026-11-11
+six runs took the typed "ok ready" as approval, made a branch and empty folders in the real project and read its .env.
+Give it a plain copy of the project (`git archive <commit> | tar -x -C <dir>`), not a git worktree.
 Writes <out>/events.jsonl (assistant messages, tool calls, review menus, per turn) and <out>/goals.md.
 Limits: the answers are fixed, so they may not match the questions a run asks; the project has no .env.
 """
@@ -64,6 +67,10 @@ def run_turn(turn: int, message: str) -> None:
             text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
             calls = [{"name": p.get("name"), "args": p.get("arguments")} for p in parts if p.get("type") == "toolCall"]
             record(turn, "assistant", text=text, calls=calls)
+            if turn == len(TURNS) and any(call["name"] != "RequestPlanReview" for call in calls):
+                record(turn, "started work; run killed")
+                proc.kill()
+                return
         elif kind == "extension_ui_request" and event.get("method") in ("select", "confirm", "input", "editor"):
             record(turn, "menu", method=event["method"], title=event.get("title"), options=event.get("options"))
             reply = {"value": "Discuss in chat"} if event["method"] == "select" else {"cancelled": True}
