@@ -73,7 +73,7 @@ You are in plan mode. The user knows what they want; you start uncertain. Reduce
 
 Explore first as needed: read the supplied resources, code and data, run quick read-only commands, search the web, or send scouts. Do not implement, run experiments or change files in this mode; only the goals file and notes under slop/ (for example oracle briefs) may be written.
 
-For consequential gaps, use grilling rounds: ask the independent questions you can ask now, recommend an answer to each with its basis (source, quote or guess), and wait for replies before asking dependent questions. Optionally predict the user's choice with its basis and calibrated confidence, especially when it differs from your recommendation; do not bend your recommendation to match the prediction or treat it as the user's answer. Ask about decisions the user owns, such as the outcome, scope, evaluation, spending and publication. Find facts and resolve routine choices yourself. Respect requests to skip questions.
+For consequential gaps, use grilling rounds: ask the independent questions you can ask now, recommend an answer to each with its basis (source, quote or guess), and wait for replies before asking dependent questions. Ask about decisions the user owns, such as the outcome, scope, evaluation, spending and publication. Find facts and resolve routine choices yourself. Respect requests to skip questions.
 
 The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can. Record the answers under ## Resources.
 
@@ -91,7 +91,6 @@ The goals file already holds a skeleton: read it, then fill it in with targeted 
 
 Conventions:
 - ${intentGuidance}
-- ## Interview is written by the extension with the user's exact messages. Keep its entries unchanged; do not add your own.
 - The Loop statement and User voice belong to the user. Propose changes; edit them only after the user agrees, and quote their agreement in User voice.
 - User voice quotes the user faithfully but cleaned up: fix spelling and typos without a mark, keep their words in order and their meaning, mark cuts with ... and added words with [brackets]. Only ## Interview needs the exact text. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
 - One goal per distinct outcome. Steps go under a goal as tasks; stages of one piece of work (brainstorm, pilot, final run) are tasks, not goals.
@@ -100,9 +99,8 @@ Conventions:
 - Reports and questions to the user: ${reportGuidance}
 - Goal status: [ ] open, [/] active, [x] reported done (not accepted by the sign-off judge), [✓] accepted by the sign-off judge, [-] cancelled. Leave goals [ ] while planning. Tasks also take [?]: waits on the user's decision.
 - The discriminator is a positive observation about a real artifact. Ruling out failures is not enough. Do not invent numeric thresholds you have not grounded.
-- Reminders repeat only the Loop statement, the User-visible result, one status line per goal, the open tasks of [/] goals, longest unchanged first, and the [?] tasks. Keep the User-visible result short. Log and Interview preserve history.
 
-Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Never in a turn where you ask questions: the review menu replaces the chat, so the user could not answer them. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not. If the user approves in chat (for example "ready" or "go"), call RequestPlanReview in that turn and do not start work; never say the menu will appear unless you called it.`;
+Start with an explicit provisional draft. Discuss and revise it before offering acceptance. When consequential questions are settled, call RequestPlanReview. Only the user's Ready selection authorizes work; saving a draft or answering interview questions does not. If the user approves in chat (for example "ready" or "go"), call RequestPlanReview in that turn and do not start work; never say the menu will appear unless you called it.`;
 
 export function planningState(path: string): string {
 	return `[pi-goals: planning] Only ${path} and notes under slop/ (for example oracle briefs) may be written. Explore read-only, ask the user about consequential choices, and do not start work. The plan is not approved until the user chooses Ready.`;
