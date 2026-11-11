@@ -1,0 +1,30 @@
+judged reviews: 238  {'accept': 122, 'reject': 116}
+  judge gpt-6.1-sol: n=16 accept 81%
+  judge claude-opus-5-5: n=214 accept 48%
+  judge gpt-6-astra: n=7 accept 86%
+  judge gpt-6-sol: n=1 accept 0%
+goals: 130  first verdict {'accept': 56, 'reject': 74}  tries until accept [(1, 56), (2, 39), (3, 17), (4, 5), (5, 4)]  never accepted 9
+reject reasons (keyword, n=116):
+   53% discriminator not shown
+   35% failure mode not ruled out
+   28% fidelity to the user
+   15% provenance
+   21% open tasks remain
+   12% quote does not match file
+   11% empty evidence
+files cited per review: median 8, min 3, max 36
+reject then retry: 107 pairs; discriminator text changed in 4; of those the retry was accepted in 0
+
+goals-file size in chars (newest 12): total = above Log + Log + Interview
+   117127 =  65068 +   1771 +  50288  2026/constitutional_grafting/.pi/goals/61f6ef-v1.md
+    19864 =  11081 +   4822 +   3961  2026/constitutional_grafting/.pi/goals/8450ac-v2.md
+   104763 =  24517 +    732 +  79514  2026/tiny-virtues/.pi/goals/89e4ee-v3.md
+   174891 =  43431 +  61039 +  70421  2026/honesty_heads/.pi/goals/6c719e-v2.md
+    90896 =  69925 +    677 +  20294  2026/virtue_cwsteer/.pi/goals/6aa7ed-v6.md
+    77384 =  31362 +  28021 +  18001  2026/tiny-character/.pi/goals/59957b-v1.md
+    10198 =   8001 +   2197 +      0  2026/constitutional_grafting/.pi/goals/c9d4e1-v1.md
+   151761 =  39276 +  75693 +  36792  2025/machiavelli_as_ds/.pi/goals/9582da-v1.md
+   126286 =  25291 +  90665 +  10330  2026/tiny-virtues/.pi/goals/89e4ee-v5.md
+    67755 =  22367 +  19542 +  25846  J-lens-vs-pathways-gedit/.pi/goals/28f19f-v1.md
+   204949 =  44579 +  47906 + 112464  2026/character-constitutions/.pi/goals/a66811-v1.md
+     7923 =   7603 +    306 +     14  2026/LUCID3_wikit/.pi/goals/79d4db-v1.md
