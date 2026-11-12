@@ -258,7 +258,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 	let reportedHidden = "";
 	function checkGoalsFile(before?: string): string[] {
 		const current = read();
-		const lost = (state.headings ?? []).filter((heading) => !headings(current).includes(heading));
+		// A file approved with ## User-visible result may move that text under the title, where the aim now lives.
+		const lost = (state.headings ?? []).filter((heading) => !headings(current).includes(heading) && !(heading === "User-visible result" && aim(current)));
 		const revert = lost.length > 0 && before !== undefined;
 		const { text, restored } = restoreInterview(revert ? before : current, knownInterview);
 		if (text !== current) save(text);

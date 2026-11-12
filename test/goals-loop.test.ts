@@ -7,10 +7,10 @@ import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
 import { DEFAULT_LOOP_STATEMENT } from "../src/prompts.js";
 import { GOALS, LOOP, setup } from "./harness.js";
 
-async function ready(h: ReturnType<typeof setup>) {
+async function ready(h: ReturnType<typeof setup>, text = GOALS) {
 	await h.commands.get("goals").handler("new plot the data", h.ctx);
 	const state = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data;
-	writeFileSync(state.file, GOALS);
+	writeFileSync(state.file, text);
 	await h.tools.get("RequestPlanReview").execute();
 	await h.hook("agent_settled");
 	return state.file as string;
@@ -183,6 +183,15 @@ describe("scheduled loop wake", () => {
 		expect(out.content).toHaveLength(2);
 		await h.hook("tool_call", { toolName: "edit", toolCallId: "c2", input: { path: file } });
 		expect(await h.hook("tool_result", { toolName: "edit", toolCallId: "c2", input: { path: file }, content: [] })).toBeUndefined();
+	});
+
+	it("lets a file approved with ## User-visible result move its aim under the title", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h, GOALS.replace("A plot.", "## User-visible result\n\nA plot."));
+		await h.hook("tool_call", { toolName: "write", toolCallId: "c1", input: { path: file } });
+		writeFileSync(file, GOALS);
+		expect(await h.hook("tool_result", { toolName: "write", toolCallId: "c1", input: { path: file }, content: [] })).toBeUndefined();
+		expect(readFileSync(file, "utf8")).toBe(GOALS);
 	});
 
 	it("undoes a write that drops an approved heading", async () => {
