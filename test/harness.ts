@@ -12,12 +12,6 @@ const SCHEDULER = fileURLToPath(import.meta.resolve("@jl1990/pi-scheduler/extens
 export const LOOP = "Custom loop statement written by the user.";
 export const GOALS = `# Title
 
-## Loop statement
-
-${LOOP}
-
-## User-visible result
-
 A plot.
 
 ## Goals
@@ -27,6 +21,10 @@ A plot.
      1. [ ] load data
      2. [x] old step
 2. [ ] goal: write the note
+
+## Loop statement
+
+${LOOP}
 
 ## Log
 

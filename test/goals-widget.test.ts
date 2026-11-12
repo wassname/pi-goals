@@ -1,17 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ageTasks, goals, hasRemainingGoals, loopFocus, markGoal, waitingTasks, widgetLines } from "../src/goals.js";
+import { ageTasks, aim, fold, goals, hasRemainingGoals, loopFocus, markGoal, waitingTasks, widgetLines } from "../src/goals.js";
 
-describe("goal status glyphs", () => {
-	it("shows self-verified goals as checked, distinct from accepted and cancelled", () => {
-		const goals = "1. [x] goal: Self-verified\n2. [✓] goal: Judge accepted\n3. [-] goal: Cancelled";
-		expect(widgetLines(goals, "goals.md")).toEqual([
-			"☑ G1: Self-verified", "✓ G2: Judge accepted", "✗ G3: Cancelled", "goals.md",
-		]);
+describe("widget", () => {
+	it("is empty when no goal is active and nothing waits on the user", () => {
+		expect(widgetLines("1. [x] goal: Self-verified\n2. [✓] goal: Judge accepted\n3. [-] goal: Cancelled\n4. [ ] goal: Open")).toEqual([]);
 	});
 
-	it("uses the same checked glyph in hidden-goal counts", () => {
-		const goals = "1. [/] goal: First\n2. [/] goal: Second\n3. [/] goal: Third\n4. [x] goal: Self-verified";
-		expect(widgetLines(goals, "goals.md").at(-1)).toBe("… 1 ☑; goals.md");
+	it("gives each active goal one line: tasks finished, the task in progress, and how many more are in progress", () => {
+		const text = "1. [/] goal: First\n   - tasks:\n     1. [x] a\n     2. [ ] b\n     3. [/] c\n        - details: hidden\n     4. [/] d\n2. [/] goal: No tasks yet\n3. [/] goal: Third\n4. [/] goal: Fourth\n5. [ ] goal: Open";
+		expect(widgetLines(text)).toEqual(["◼ G1 1/4, 2 in progress: c", "◼ G2 No tasks yet", "◼ G3 Third", "◼ … 1 more active goals"]);
 	});
 
 	it("reads goals from the markdown tree, not from lines in code blocks", () => {
@@ -26,14 +23,14 @@ describe("tasks that wait on the user", () => {
 	const text = "## User-visible result\n\nA plot.\n\n## Goals\n\n1. [/] goal: plot\n   - tasks:\n     1. [?] Log or linear y axis?\n        - options: log shows the tail\n     2. [ ] draw it\n     3. [x] load\n2. [/] goal: note\n   - tasks:\n     1. [x] outline\n3. [ ] goal: publish\n   - tasks:\n     1. [?] Which venue?\n4. [✓] goal: old\n   - tasks:\n     1. [?] stale question\n";
 
 	it("come first in the widget, apart from the agent's open tasks, and are not counted as done", () => {
-		const lines = widgetLines(text, "goals.md");
+		const lines = widgetLines(text);
 		expect(lines.slice(0, 2).map((line) => line.startsWith("?"))).toEqual([true, true]);
 		expect(lines[0]).toContain("G1");
 		expect(lines[0]).toContain("Log or linear y axis?");
 		expect(lines[1]).toContain("Which venue?");
 		expect(lines.filter((line) => line.includes("Log or linear"))).toHaveLength(1);
-		expect(lines).toContain("    [ ] draw it");
-		expect(lines).toContain("    … 1 done");
+		expect(lines).toContain("◼ G1 1/3 draw it");
+		expect(lines).toContain("◼ G2 1/1 note");
 		expect(lines.join("\n")).not.toContain("stale question");
 		expect(waitingTasks(text)).toEqual([{ goal: 1, label: "Log or linear y axis?" }, { goal: 3, label: "Which venue?" }]);
 	});
@@ -70,3 +67,28 @@ describe("task ages", () => {
 	});
 });
 
+
+describe("what a resync sends", () => {
+	const text = "# Title\n\nThe aim.\n\n## Goals\n\n1. [/] goal: plot\n   - discriminator: kept\n   - tasks:\n     1. [x] load\n        - result: 3 rows\n     2. [x] clean\n     3. [/] draw\n        - details: log axis\n     4. [ ] label\n        - details: later\n     5. [?] Which venue?\n        - options: A or B\n   - evidence: (empty)\n2. [✓] goal: old\n   - evidence: long\n3. [x] goal: reported\n   - evidence: awaits the judge\n\n## Review preview\n\nA table.\n\n## User voice\n\n- > \"make a plot\"\n\n## Loop statement\n\nGo.\n\n## Log\n\n- history\n";
+
+	it("puts the aim and the user's words before the goals, whatever the file order", () => {
+		const { top } = fold(text);
+		const at = ["# Title\n\nThe aim.", "## User voice", "## Goals", "## Review preview", "## Loop statement"].map((part) => top.indexOf(part));
+		expect(at).toEqual([...at].sort((a, b) => a - b));
+		expect(at[0]).toBe(0);
+		expect(top).not.toContain("history");
+	});
+
+	it("counts finished tasks, keeps notes only for tasks in progress or waiting on the user, and shortens accepted goals", () => {
+		const { top } = fold(text);
+		for (const kept of ["discriminator: kept", "     (2 finished tasks left out)\n     3. [/] draw\n        - details: log axis\n     4. [ ] label\n     5. [?] Which venue?\n        - options: A or B\n   - evidence: (empty)\n2. [✓] goal: old\n3. [x] goal: reported\n   - evidence: awaits the judge"]) expect(top).toContain(kept);
+		for (const left of ["load", "3 rows", "clean", "later", "evidence: long"]) expect(top).not.toContain(left);
+	});
+
+	it("reads the aim under the title, or ## User-visible result in an older file", () => {
+		expect(aim(text)).toBe("The aim.");
+		expect(aim("# Title\n\nProvenance note.\n\n## User-visible result\n\nA plot.\n\n## Goals\n")).toBe("A plot.");
+		expect(aim("# Title\n\n## Goals\n")).toBeUndefined();
+		expect(() => loopFocus("# Title\n\n## Goals\n\n1. [/] goal: plot\n")).toThrow();
+	});
+});

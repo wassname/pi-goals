@@ -39,7 +39,8 @@ describe("planning and Ready", () => {
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
 		const approved = h.sent.find(m => m.text.startsWith("[pi-goals] The user approved"))!.text;
-		expect(approved).toContain(GOALS.split("\n## Log")[0].trimEnd());
+		for (const kept of ["# Title\n\nA plot.", "1. [/] goal: make the plot", "1. [ ] load data", "(1 finished task left out)", LOOP]) expect(approved).toContain(kept);
+		expect(approved).not.toContain("old step");
 		expect(approved).toContain("> yes, reuse judge_demos.py");
 		expect(approved).not.toContain("historical detail");
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
@@ -115,7 +116,7 @@ describe("scheduled loop wake", () => {
    - evidence:
      - results/run.md: "41/6149 processed"`;
 		const text = GOALS.replace("A plot.", "A plot with error bars.")
-			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n## Log)/, `${active}\n2. [ ] goal: write the note\n   - tasks:\n     1. [ ] draft it\n3. [✓] goal: prepare the data\n`);
+			.replace(/1\. \[\/\] goal:[\s\S]*?(?=\n\n## Loop statement)/, `${active}\n2. [ ] goal: write the note\n   - tasks:\n     1. [ ] draft it\n3. [✓] goal: prepare the data\n`);
 		writeFileSync(file, text);
 		const out = await h.wake("t1", prompt, "3h");
 		expect(out.action).toBe("transform");
@@ -188,10 +189,10 @@ describe("scheduled loop wake", () => {
 		const h = setup({ choices: ["Ready"] });
 		const file = await ready(h);
 		await h.hook("tool_call", { toolName: "write", toolCallId: "c1", input: { path: file } });
-		writeFileSync(file, GOALS.replace("## User-visible result\n\nA plot.\n", ""));
+		writeFileSync(file, GOALS.replace(`## Loop statement\n\n${LOOP}\n`, ""));
 		const out = await h.hook("tool_result", { toolName: "write", toolCallId: "c1", input: { path: file }, content: [] });
 		expect(readFileSync(file, "utf8")).toBe(GOALS);
-		expect(out.content[0].text).toContain("User-visible result");
+		expect(out.content[0].text).toContain("Loop statement");
 	});
 
 	it("turn_end restores Interview after a shell edit, but respects the user's edits between turns", async () => {
@@ -309,7 +310,7 @@ describe("pi-tasks in goal mode", () => {
 });
 
 describe("widget rendering", () => {
-	it.each(["tui", "rpc"])("shows goal titles/status and open tasks of the [/] goal only, excludes evidence, and fits the width (%s)", async (mode) => {
+	it.each(["tui", "rpc"])("shows one line for the [/] goal with its task in progress, excludes evidence, and fits the width (%s)", async (mode) => {
 		const h = setup({ choices: ["Ready"] });
 		h.ctx.mode = mode;
 		const file = await ready(h);
@@ -321,12 +322,9 @@ describe("widget rendering", () => {
 		const component = mode === "tui" ? h.ctx.widget() : undefined;
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
-			expect(lines).toHaveLength(5);
-			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1:.*…$/);
-			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {4}\[ \] Experiment.*…$/);
-			expect(stripVTControlCharacters(lines[2])).toBe("    … 1 done");
-			expect(lines[3]).toBe("◻ G2: write the note");
-			expect(lines.join("\n")).not.toMatch(/48\/89|old step|◦/);
+			expect(lines).toHaveLength(1);
+			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1 1\/2 Exp.*…$/);
+			expect(lines.join("\n")).not.toMatch(/48\/89|old step|write the note/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 		expect(readFileSync(file, "utf8")).toBe(text);
@@ -353,7 +351,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget.slice(0, 4)).toEqual(["◼ G1: make the plot", "    [ ] load data", "    … 1 done", "◻ G2: write the note"]);
+		expect(h.ctx.widget).toEqual(["◼ G1 1/2 load data"]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

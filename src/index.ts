@@ -4,7 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ageTasks, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, waitingTasks, widgetLines } from "./goals.js";
+import { ageTasks, aim, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, waitingTasks, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -87,19 +87,20 @@ export default function piGoals(pi: ExtensionAPI): void {
 			const text = read();
 			const items = goals(text);
 			const waiting = waitingTasks(text).length;
-			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted${waiting ? ` · ${waiting} need you` : ""}`);
-			const path = relative(ctx.cwd, state.file);
-			if (ctx.mode === "tui") {
+			const reported = items.filter(g => g.status === "reported").length;
+			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted${reported ? ` · ${reported} reported` : ""}${waiting ? ` · ${waiting} need you` : ""} · ${relative(ctx.cwd, state.file)}`);
+			if (!widgetLines(text).length) ctx.ui.setWidget("goals", undefined);
+			else if (ctx.mode === "tui") {
 				// Parsing a large goals file takes tens of ms; render runs on every repaint.
 				let cached: { width: number; lines: string[] } | undefined;
 				ctx.ui.setWidget("goals", () => ({
 					render: (width) => {
-						if (cached?.width !== width) cached = { width, lines: widgetLines(text, path, width) };
+						if (cached?.width !== width) cached = { width, lines: widgetLines(text, width) };
 						return cached.lines;
 					},
 					invalidate() {},
 				}));
-			} else ctx.ui.setWidget("goals", widgetLines(text, path));
+			} else ctx.ui.setWidget("goals", widgetLines(text));
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 
@@ -115,7 +116,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 
 	function begin(ctx: ExtensionContext) {
 		const text = read();
-		if (!section(text, "Loop statement") || !hasRemainingGoals(text, state.judge)) throw new Error("The goals file needs a Loop statement and unfinished goals.");
+		if (!aim(text) || !section(text, "Loop statement") || !hasRemainingGoals(text, state.judge)) throw new Error("The goals file needs its aim under the title, a Loop statement and unfinished goals.");
 		const token = randomUUID();
 		startLoop(pi, ctx, token);
 		state = { ...state, phase: "working", token, headings: headings(text) };
@@ -132,7 +133,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		try {
 			while (current === generation) {
 				const text = read();
-				if (!goals(text).length || !section(text, "Loop statement")) throw new Error("Draft the goals and Loop statement before requesting Ready.");
+				if (!aim(text) || !goals(text).length || !section(text, "Loop statement")) throw new Error("Draft the aim under the title, the goals and the Loop statement before requesting Ready.");
 				pi.sendMessage({ customType: "goals-draft", content: text, display: true });
 				// Discuss (or Escape) closes the menu and keeps planning, so the user can answer in chat.
 				const choice = await ctx.ui.select(`Goals: ${relative(ctx.cwd, state.file!)}`, ["Ready", "Discuss in chat", "Edit", "Cancel"]);

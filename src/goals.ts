@@ -7,7 +7,6 @@ import type { Heading, ListItem, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 const WIDGET_GOAL_LIMIT = 3;
-const WIDGET_TASK_LIMIT = 5;
 const WIDGET_WAITING_LIMIT = 3;
 const WAKE_TASK_LIMIT = 8;
 const HOUR = 3_600_000;
@@ -77,17 +76,6 @@ export function waitingTasks(text: string): { goal: number; label: string }[] {
 	return goals(text).flatMap((goal, index) => isUnfinished(goal) ? goalTasks(text, goal).filter(isWaiting).map((task) => ({ goal: index + 1, label: task.label })) : []);
 }
 
-/** Open and active tasks of [/] goals, indented under the goal line; finished ones are counted, [?] ones are listed apart. */
-function activeTaskLines(text: string, goal: Goal, limit = Infinity): string[] {
-	if (goal.status !== "active") return [];
-	const tasks = goalTasks(text, goal);
-	const open = tasks.filter((task) => !isDone(task) && !isWaiting(task));
-	const done = tasks.filter(isDone).length;
-	const hidden = Math.max(0, open.length - limit);
-	const tail = [hidden ? `${hidden} more` : "", done ? `${done} done` : ""].filter(Boolean).join(", ");
-	return [...open.slice(0, limit).map((task) => `    [${task.mark}] ${task.label}`), ...(tail ? [`    … ${tail}`] : [])];
-}
-
 /** Task-looking lines that CommonMark reads as text: a numbered list right after a text line must start at 1. */
 export function hiddenTasks(text: string): string[] {
 	const heads = goals(text).flatMap((goal) => [goal.item, ...subItems(goal.item).filter((item) => fieldKey(item) === "tasks")]);
@@ -153,20 +141,24 @@ export function ageTasks(text: string, before: TaskSince, now: number): { since:
 	return { since, lines: list(rows), waiting: list(waiting), idle };
 }
 
-/** Outcome and one status line per goal; resync sends the file above the Log. */
-export function loopFocus(text: string): string {
-	const outcome = section(text, "User-visible result");
-	if (!outcome) throw new Error("The goals file needs a User-visible result.");
-	return `User-visible result:\n${outcome}\n\nGoals:\n${goals(text).map((goal) => goal.line.trim()).join("\n")}`;
+/** The aim: the lines under the title. Files written before the aim moved there keep it in ## User-visible result. */
+export function aim(text: string): string | undefined {
+	const root = parse(text);
+	const title = rootHeadings(root).find((heading) => heading.depth === 1);
+	const next = rootHeadings(root).find((heading) => heading !== title && (!title || from(heading) > from(title)));
+	return section(text, "User-visible result") || text.slice(title ? to(title) : 0, next ? from(next) : text.length).trim() || undefined;
 }
 
-const MARK: Record<GoalStatus, string> = { active: "◼", reported: "☑", open: "◻", done: "✓", cancelled: "✗" };
-const PRIORITY: Record<GoalStatus, number> = { active: 0, reported: 1, open: 2, done: 3, cancelled: 4 };
+/** Aim and one status line per goal; resync sends the file above the Log. */
+export function loopFocus(text: string): string {
+	const stated = aim(text);
+	if (!stated) throw new Error("The goals file needs its aim: one or two lines under the title.");
+	return `Aim:\n${stated}\n\nGoals:\n${goals(text).map((goal) => goal.line.trim()).join("\n")}`;
+}
 
-/** PI/OpenAI: goal titles/status; open tasks only under [/] goals, to keep the widget short. */
-export function widgetLines(text: string, path: string, width = 100): string[] {
+/** PI/Claude: screen lines are scarce. Questions for the user, then one line per [/] goal: tasks finished and the task in progress. */
+export function widgetLines(text: string, width = 100): string[] {
 	const items = goals(text);
-	const sorted = [...items].sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
 	const waiting = waitingTasks(text);
 	// Up to two lines each: the user needs the whole question, not its first half.
 	const lines = waiting.slice(0, WIDGET_WAITING_LIMIT).flatMap((task) => {
@@ -174,15 +166,16 @@ export function widgetLines(text: string, path: string, width = 100): string[] {
 		return rest.length ? [first, `  ${rest.join(" ")}`] : [first];
 	});
 	if (waiting.length > WIDGET_WAITING_LIMIT) lines.push(`? … ${waiting.length - WIDGET_WAITING_LIMIT} more need you`);
-	for (const goal of sorted.slice(0, WIDGET_GOAL_LIMIT)) {
-		lines.push(`${MARK[goal.status]} G${items.indexOf(goal) + 1}: ${goal.subject}`, ...activeTaskLines(text, goal, WIDGET_TASK_LIMIT));
+	const active = items.filter((goal) => goal.status === "active");
+	for (const goal of active.slice(0, WIDGET_GOAL_LIMIT)) {
+		const tasks = goalTasks(text, goal);
+		const open = tasks.filter((task) => !isDone(task) && !isWaiting(task));
+		const current = open.filter((task) => task.mark === "/");
+		const count = tasks.length ? ` ${tasks.filter(isDone).length}/${tasks.length}` : "";
+		const parallel = current.length > 1 ? `, ${current.length} in progress:` : "";
+		lines.push(`◼ G${items.indexOf(goal) + 1}${count}${parallel} ${(current[0] ?? open[0])?.label ?? goal.subject}`);
 	}
-	const hidden = sorted.slice(WIDGET_GOAL_LIMIT);
-	const counts = (Object.keys(MARK) as GoalStatus[]).map((status) => {
-		const count = hidden.filter((goal) => goal.status === status).length;
-		return count ? `${count} ${MARK[status]}` : "";
-	}).filter(Boolean);
-	lines.push(`${counts.length ? `… ${counts.join(", ")}; ` : ""}${path}`);
+	if (active.length > WIDGET_GOAL_LIMIT) lines.push(`◼ … ${active.length - WIDGET_GOAL_LIMIT} more active goals`);
 	return lines.map((line) => truncateToWidth(line, width, "…"));
 }
 
@@ -220,11 +213,40 @@ export function interviewEntries(text: string): string[] {
 	return cuts.slice(1).map((cut, index) => text.slice(cuts[index], cut).trim()).filter(Boolean);
 }
 
-/** What a resync sends: the file above ## Log and the newest Interview entries. The Log and older entries stay in the file. */
+/** Bounds what a resync sends however long the task list gets: accepted and cancelled goals keep only their line,
+ * finished tasks become a count, and notes stay only on [/] and [?] tasks. */
+function foldGoals(text: string): string {
+	const edits: [number, number, string][] = [];
+	const notes = (item: ListItem): [number, number, string] => [to(item.children[0]), to(item), ""];
+	for (const goal of goals(text)) {
+		if (!isUnfinished(goal)) { edits.push(notes(goal.item)); continue; }
+		const tasks = goalTasks(text, goal);
+		const done = tasks.filter(isDone);
+		done.forEach((task, index) => {
+			const start = text.lastIndexOf("\n", from(task.item) - 1) + 1;
+			edits.push([start, Math.min(text.length, to(task.item) + 1), index ? "" : `${text.slice(start, from(task.item))}(${done.length} finished task${done.length > 1 ? "s" : ""} left out)\n`]);
+		});
+		edits.push(...tasks.filter((task) => task.mark === " ").map((task) => notes(task.item)));
+	}
+	return edits.sort((a, b) => b[0] - a[0]).reduce((out, [start, end, put]) => out.slice(0, start) + put + out.slice(end), text);
+}
+
+const RESYNC_FIRST = ["user-visible result", "user voice", "goals"];
+/** The title and aim, then the user's words, then the goals; other ## sections follow in file order. */
+function arrange(text: string): string {
+	const heads = rootHeadings(parse(text)).filter((heading) => heading.depth === 2);
+	if (!heads.length) return text;
+	const rank = (heading: Heading) => (RESYNC_FIRST.indexOf(headingName(text, heading).toLowerCase()) + 1) || RESYNC_FIRST.length + 1;
+	const parts = heads.map((heading, index) => ({ rank: rank(heading), body: text.slice(from(heading), heads[index + 1] ? from(heads[index + 1]) : text.length).trimEnd() }));
+	return [text.slice(0, from(heads[0])).trimEnd(), ...parts.sort((a, b) => a.rank - b.rank).map((part) => part.body)].filter(Boolean).join("\n\n");
+}
+
+/** What a resync sends: the file above ## Log, arranged and folded, and the newest Interview entries. The Log, the
+ * folded task text and older entries stay in the file. */
 export function fold(text: string): { top: string; recent: string[]; older: number; cut: boolean } {
 	const cut = rootHeadings(parse(text)).find((heading) => ["log", "interview"].includes(headingName(text, heading).toLowerCase()));
 	const entries = interviewEntries(text);
-	return { top: (cut ? text.slice(0, from(cut)) : text).trimEnd(), recent: entries.slice(-RESYNC_INTERVIEW_LIMIT), older: Math.max(0, entries.length - RESYNC_INTERVIEW_LIMIT), cut: Boolean(cut) };
+	return { top: arrange(foldGoals((cut ? text.slice(0, from(cut)) : text).trimEnd())), recent: entries.slice(-RESYNC_INTERVIEW_LIMIT), older: Math.max(0, entries.length - RESYNC_INTERVIEW_LIMIT), cut: Boolean(cut) };
 }
 
 /** Put back entries an agent edit removed; the user's words are not the agent's to rewrite. */

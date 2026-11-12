@@ -25,7 +25,7 @@ describe("CompleteGoal", () => {
 		expect(result.content[0].text).toContain("2. [ ] goal: write the note");
 		expect(result.content[0].text).not.toContain("historical detail");
 		expect(h.requests[0]).toMatchObject({ agent: "pi-goals-judge", context: "fresh", model: "p/m", result: { kind: "structured" } });
-		expect(h.requests[0].task).toContain("## User-visible result");
+		expect(h.requests[0].task).toContain("A plot.");
 		expect(h.agents[0].definition.tools).toEqual(["read", "grep", "find", "ls"]);
 		expect(h.agents[0].disposed).toBe(true);
 	});

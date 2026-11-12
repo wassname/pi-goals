@@ -16,13 +16,18 @@ Put decisions for the user in [?] tasks. Message the user only for a result that
 export const goalsTemplate = `\
 # <short title>
 
-## Loop statement
+<the aim, in one or two lines: what the user finally wants, and what they will be shown when it works>
 
-${DEFAULT_LOOP_STATEMENT}
+## Goals
 
-## User-visible result
-
-<one concrete sentence: what the user will be shown when this works>
+1. [ ] goal: <short, checkable outcome>
+   - references: <code, data or plots to reuse>
+   - subtle failure mode: <how this could look done but not be>
+   - discriminator: <the observation that tells real success from that failure>
+   - tasks:
+     1. [ ] <short action>
+        - details: <constraints or context, if needed>
+   - evidence: (empty until sign-off)
 
 ## Review preview
 
@@ -36,22 +41,15 @@ Quotes are <user>'s words with spelling corrected; ## Interview has the exact te
 - In reply to <the question or proposal they answered>:
   > "<their short reply, e.g. yes>"
 
-## Goals
-
-1. [ ] goal: <short, checkable outcome>
-   - references: <code, data or plots to reuse>
-   - subtle failure mode: <how this could look done but not be>
-   - discriminator: <the observation that tells real success from that failure>
-   - tasks:
-     1. [ ] <short action>
-        - details: <constraints or context, if needed>
-   - evidence: (empty until sign-off)
-
 ## Resources
 
 - <credential, compute or budget fact>: <how it was checked, or the user's words>
 
 ## Out of scope
+
+## Loop statement
+
+${DEFAULT_LOOP_STATEMENT}
 
 ## Log
 
@@ -62,7 +60,9 @@ Quotes are <user>'s words with spelling corrected; ## Interview has the exact te
 // PI/OpenAI: share the intent rule between planning and completion.
 const intentGuidance = "User voice outranks the agent's goal summary. A method switch must still deliver what the user asked for; otherwise record it as a finding, not goal completion.";
 // PI/OpenAI: keep widget labels separate from requirements and run history.
-const taskGuidance = "Write each task label as the outcome that marks it done, in plain English and the user's terms (\"Find and fix why X survives the filters\", not \"Read X\"); reminders show labels without their notes. It should make sense a week later without remembering this conversation. Aim for 5–10 words; keep more when needed for clarity. Put constraints in indented notes, observations in evidence, and run history in Log. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels. Mark a task that waits on the user's decision [?]: the user sees it first in the widget, and reminders list it apart from your own work. Its label is the whole question, readable by someone who has not followed the chat; its notes give the options, what each would change, your recommendation, and what you assume and do until they answer.";
+// wassname 2026-11-12: "tasks get arbitrarily long"; "maybe evidence should be a link to a markdown heading in the log instead".
+// Measured in his files: 32 of 38 KB of one Goals section was task notes, 34 + 22 of 66 KB of another was labels and evidence.
+const taskGuidance = "Write each task label as the outcome that marks it done, in plain English and the user's terms (\"Find and fix why X survives the filters\", not \"Read X\"); reminders show labels without their notes. It should make sense a week later without remembering this conversation. Aim for 5–10 words; keep more when needed for clarity. Notes hold the task's constraints. A result takes one line in a note or in evidence: what it shows, and a link to the heading that holds it (a dated ### heading in ## Log, or a heading in the project's journal or run report); the numbers, quotes and run history go under that heading. Shorten overlong task labels without dropping their requirements; do not append progress reports to labels. Mark a task that waits on the user's decision [?]: the user sees it first in the widget, and reminders list it apart from your own work. Its label is the whole question, readable by someone who has not followed the chat; its notes give the options, what each would change, your recommendation, and what you assume and do until they answer.";
 
 // wassname 2026-11-11: a bare "the judge" is ambiguous when a project has three, and a full name orients the reader in the project;
 // "the 1056 rows and 35 unit tests and 32 reviews is useless grader pleasing" (spelling corrected).
@@ -87,9 +87,10 @@ Add a short "What I checked" line: which data and replies were read and how sele
 
 Below the mock-up in chat, ask whether this is how the user wants to see and evaluate the result, and what is missing. Show each revision in chat again. Keep the agreed layout under ## Review preview; use it for the actual report. Respect requests to skip this discussion.
 
-The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the outcome, goal status and open tasks on each reminder. The file above ## Log, with the user's newest messages, is sent after Ready, compaction, resume and goal completion. Ask the user whether to adapt the Loop statement, and record their wording.
+The goals file already holds a skeleton: read it, then fill it in with targeted edits. Clarity beats conformance, but keep its ## headings. The Loop statement is the user's default; it is sent verbatim with the aim, goal status and open tasks on each reminder. After Ready, compaction, resume and goal completion you are sent the aim, User voice and the goals with the notes of tasks in progress, then the rest of the file above ## Log and the user's newest messages. Ask the user whether to adapt the Loop statement, and record their wording.
 
 Conventions:
+- The aim under the title is your understanding of what the user finally wants and what they will be shown, in one or two lines. It heads every reminder; keep it short and current.
 - ${intentGuidance}
 - The Loop statement and User voice belong to the user. Propose changes; edit them only after the user agrees, and quote their agreement in User voice.
 - User voice quotes the user faithfully but cleaned up: fix spelling and typos without a mark, keep their words in order and their meaning, mark cuts with ... and added words with [brackets]. Only ## Interview needs the exact text. When a reply depends on an earlier question ("yes", "let's do that"), say briefly what it answered, outside the quote. Never put an assistant proposal or inference in User voice.
@@ -108,7 +109,7 @@ export function planningState(path: string): string {
 
 // 2. Ready.
 export function readyPrompt(path: string, text: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each reminder, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, outcome, goal status and open tasks.\n\n${resync(text, path, "Ready approved.")}`;
+	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each reminder, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, aim, goal status and open tasks.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
 // Scheduled wake: short, so it is read. Field details and advice go with the file in resync.
@@ -133,7 +134,7 @@ export const forkNotice = (file: string) => `This session was forked from one wi
 // 4. Ready, compaction, resume or an accepted goal: the file above ## Log and the user's newest messages, once.
 export function resync(text: string, path: string, why: string): string {
 	const { top, recent, older, cut } = fold(text);
-	const left = cut ? ` Below is the file above its ## Log${recent.length ? ", then the user's newest messages" : ""}; the Log${older ? ` and ${older} older user messages` : ""} stay in the file.` : "";
+	const left = ` Below: the aim, User voice and the goals, then the rest of the file${cut ? " above its ## Log" : ""}${recent.length ? ", then the user's newest messages" : ""}. Accepted and cancelled goals show only their line, finished tasks are counted, and notes are shown only for tasks marked [/] or [?]; read the file when you start another task.${cut ? ` The Log${older ? ` and ${older} older user messages` : ""} stay in the file.` : ""}`;
 	const interview = recent.length ? `\n\n## Interview (newest ${recent.length})\n\n${recent.join("\n\n")}` : "";
 	return `[pi-goals: resync] ${why} Goals file: ${path}.${left} Continue the current goal; the user's latest message outranks the file.\n\n${perspective}\n\n${keepWorking}\n\n${taskGuidance}\n\n${reportGuidance}\n\n${top}${interview}`;
 }
@@ -146,7 +147,7 @@ export function allGoalsFinished(path: string, preview: string | undefined): str
 // 5. CompleteGoal, agent side.
 export const completeGoalDescription =
 	`${intentGuidance} ` +
-	"Ask the sign-off judge, a fresh read-only agent, to check one goal. First fill the goal's evidence in the goals file: each item names a durable artifact, quotes what you actually observed in it, and says what that shows. " +
+	"Ask the sign-off judge, a fresh read-only agent, to check one goal. First fill the goal's evidence in the goals file: one line per result, saying what it shows and linking to the heading that holds it (a dated ### heading in ## Log, or a heading in the project's journal or run report). Under that heading, name the durable artifact and quote what you actually observed in it. " +
 	"If the goal has a verify command, run it yourself and save the output; the sign-off judge can only read files. It reads the goals file and the cited files in the working tree, " +
 	"then accepts (the goal becomes [✓]) or rejects with what is missing (the goal stays open). If the sign-off judge fails to run, the goal stays unfinished. If the user explicitly disabled it, completion is recorded as [x], self-verified, not independently accepted.";
 export const completeGoalParamDescription = "The goal's text: the words after 'goal:' in the goals file.";
@@ -170,9 +171,9 @@ The agent claims this goal is complete:
   goal: ${goal}
 
 Find the exact goal subject in the goals file below (${path}). If no goal matches, reject. Check, in order:
-0. Fidelity: read User-visible result, User voice, the separate project AGENTS.md content and the goal's references first. User voice outranks the agent's goal summary. If the method changed, check that it still delivers the user's intended outcome, not merely the score in the goal line. Reject a substitution; it can be a useful finding without completing the goal.
+0. Fidelity: read the aim under the title (## User-visible result in older files), User voice, the separate project AGENTS.md content and the goal's references first. User voice outranks the agent's goal summary. If the method changed, check that it still delivers the user's intended outcome, not merely the score in the goal line. Reject a substitution; it can be a useful finding without completing the goal.
 1. Evidence exists: an empty or placeholder evidence list is a reject.
-2. Each evidence item names its source, quotes what was observed, and says what it shows.
+2. Each evidence item says what it shows and names its source with a quote of what was observed, either in the item or under the heading it links to (in ## Log of this file, or in a file you open).
 3. Provenance: it is visible how each result was produced.
 4. Spot-check: open the cited files. A quote that does not match the file means reconstructed evidence: reject.
 5. Substance: the evidence shows the discriminator's success positively, not only that failures were avoided, and the subtle failure mode is ruled out.
