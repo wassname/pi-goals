@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
 import { ageTasks, aim, fold, goals, hasRemainingGoals, loopFocus, markGoal, waitingTasks, widgetLines } from "../src/goals.js";
 
@@ -8,7 +9,10 @@ describe("widget", () => {
 
 	it("gives each active goal one line: tasks finished, the task in progress, and how many more are in progress", () => {
 		const text = "1. [/] goal: First\n   - tasks:\n     1. [x] a\n     2. [ ] b\n     3. [/] c\n        - details: hidden\n     4. [/] d\n2. [/] goal: No tasks yet\n3. [/] goal: Third\n4. [/] goal: Fourth\n5. [ ] goal: Open";
-		expect(widgetLines(text)).toEqual(["◼ G1 1/4, 2 in progress: c", "◼ G2 No tasks yet", "◼ G3 Third", "◼ … 1 more active goals"]);
+		expect(widgetLines(text)).toEqual(["◼ G1 1/4 · c · +1 in progress", "◼ G2 · No tasks yet", "◼ G3 · Third", "◼ … 1 more active goals"]);
+		const long = text.replace("[/] c", `[/] ${"long label ".repeat(20)}`);
+		expect(stripVTControlCharacters(widgetLines(long, 60)[0])).toMatch(/^◼ G1 1\/4 · long label .*… · \+1 in progress$/);
+		expect(widgetLines(long, 20)[0]).not.toContain("in progress");
 	});
 
 	it("reads goals from the markdown tree, not from lines in code blocks", () => {
@@ -29,8 +33,8 @@ describe("tasks that wait on the user", () => {
 		expect(lines[0]).toContain("Log or linear y axis?");
 		expect(lines[1]).toContain("Which venue?");
 		expect(lines.filter((line) => line.includes("Log or linear"))).toHaveLength(1);
-		expect(lines).toContain("◼ G1 1/3 draw it");
-		expect(lines).toContain("◼ G2 1/1 note");
+		expect(lines).toContain("◼ G1 1/3 · draw it");
+		expect(lines).toContain("◼ G2 1/1 · note");
 		expect(lines.join("\n")).not.toContain("stale question");
 		expect(waitingTasks(text)).toEqual([{ goal: 1, label: "Log or linear y axis?" }, { goal: 3, label: "Which venue?" }]);
 	});

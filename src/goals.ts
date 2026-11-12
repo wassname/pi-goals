@@ -2,11 +2,12 @@
 // only goal and task items, named sections and the Log fold, from a CommonMark syntax tree.
 // Edits splice the source at node offsets, so the rest of the file keeps its exact text.
 import { createHash } from "node:crypto";
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Heading, ListItem, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 const WIDGET_GOAL_LIMIT = 3;
+const WIDGET_LABEL_MIN = 30;
 const WIDGET_WAITING_LIMIT = 3;
 const WAKE_TASK_LIMIT = 8;
 const HOUR = 3_600_000;
@@ -156,27 +157,31 @@ export function loopFocus(text: string): string {
 	return `Aim:\n${stated}\n\nGoals:\n${goals(text).map((goal) => goal.line.trim()).join("\n")}`;
 }
 
-/** PI/Claude: screen lines are scarce. Questions for the user, then one line per [/] goal: tasks finished and the task in progress. */
+/** PI/Claude: screen lines are scarce. Questions for the user, then one line per [/] goal: tasks finished, the task
+ * in progress and how many more are in progress. The label is cut before that count is. */
 export function widgetLines(text: string, width = 100): string[] {
 	const items = goals(text);
 	const waiting = waitingTasks(text);
 	// Up to two lines each: the user needs the whole question, not its first half.
-	const lines = waiting.slice(0, WIDGET_WAITING_LIMIT).flatMap((task) => {
+	const lines: [string, string][] = waiting.slice(0, WIDGET_WAITING_LIMIT).flatMap((task) => {
 		const [first, ...rest] = wrapTextWithAnsi(`? needs you (G${task.goal}): ${task.label}`, width);
-		return rest.length ? [first, `  ${rest.join(" ")}`] : [first];
+		return rest.length ? [[first, ""], [`  ${rest.join(" ")}`, ""]] : [[first, ""]];
 	});
-	if (waiting.length > WIDGET_WAITING_LIMIT) lines.push(`? … ${waiting.length - WIDGET_WAITING_LIMIT} more need you`);
+	if (waiting.length > WIDGET_WAITING_LIMIT) lines.push([`? … ${waiting.length - WIDGET_WAITING_LIMIT} more need you`, ""]);
 	const active = items.filter((goal) => goal.status === "active");
 	for (const goal of active.slice(0, WIDGET_GOAL_LIMIT)) {
 		const tasks = goalTasks(text, goal);
 		const open = tasks.filter((task) => !isDone(task) && !isWaiting(task));
 		const current = open.filter((task) => task.mark === "/");
 		const count = tasks.length ? ` ${tasks.filter(isDone).length}/${tasks.length}` : "";
-		const parallel = current.length > 1 ? `, ${current.length} in progress:` : "";
-		lines.push(`◼ G${items.indexOf(goal) + 1}${count}${parallel} ${(current[0] ?? open[0])?.label ?? goal.subject}`);
+		lines.push([`◼ G${items.indexOf(goal) + 1}${count} · ${(current[0] ?? open[0])?.label ?? goal.subject}`, current.length > 1 ? ` · +${current.length - 1} in progress` : ""]);
 	}
-	if (active.length > WIDGET_GOAL_LIMIT) lines.push(`◼ … ${active.length - WIDGET_GOAL_LIMIT} more active goals`);
-	return lines.map((line) => truncateToWidth(line, width, "…"));
+	if (active.length > WIDGET_GOAL_LIMIT) lines.push([`◼ … ${active.length - WIDGET_GOAL_LIMIT} more active goals`, ""]);
+	// A narrow terminal keeps the label and drops the tail.
+	return lines.map(([line, tail]) => {
+		const room = width - visibleWidth(tail);
+		return room >= WIDGET_LABEL_MIN ? truncateToWidth(line, room, "…") + tail : truncateToWidth(line, width, "…");
+	});
 }
 
 /** Set the checkbox of the one goal whose subject matches exactly (case-insensitive). */

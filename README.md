@@ -40,7 +40,7 @@ The plan is saved in `.pi/goals/`. It opens with the aim in one or two lines, th
 
 You can edit the file at any time. The next reminder uses your changes. The agent should ask before changing your instructions or recorded preferences.
 
-Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified, `[✓]` accepted by the sign-off judge, `[-]` cancelled. The widget shows one line per active goal, for example `◼ G2 3/8 Train on the new labels`; the status line counts accepted goals and names the goals file.
+Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified, `[✓]` accepted by the sign-off judge, `[-]` cancelled. The widget shows one line per active goal, for example `◼ G2 3/8 · Train on the new labels · +2 in progress` when two more tasks are in progress. The status line counts accepted goals and names the goals file.
 
 <!-- [?] paragraph: PI/Claude. -->
 A task marked `[?]` waits on your decision. The widget lists these first, as `? needs you (G2): <question>`, and the status line counts them. The agent is asked to write the label as the whole question, with the options, what each changes, its recommendation and what it assumes meanwhile in the task's notes, so you can answer without the chat history.

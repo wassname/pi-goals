@@ -323,7 +323,7 @@ describe("widget rendering", () => {
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
 			expect(lines).toHaveLength(1);
-			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1 1\/2 Exp.*…$/);
+			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1 1\/2 · Exp.*…$/);
 			expect(lines.join("\n")).not.toMatch(/48\/89|old step|write the note/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
@@ -351,7 +351,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget).toEqual(["◼ G1 1/2 load data"]);
+		expect(h.ctx.widget).toEqual(["◼ G1 1/2 · load data"]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");
