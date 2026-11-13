@@ -1,14 +1,12 @@
 // Fake Pi, scheduler commands and pi-subagents event owner: enough to exercise data flow, not rendering.
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RUNTIME_AGENT_REGISTER_EVENT } from "pi-subagents/agents";
 import { SUBAGENT_DELEGATION_REQUEST_EVENT, SUBAGENT_DELEGATION_RESPONSE_EVENT, SUBAGENT_DELEGATION_STARTED_EVENT } from "pi-subagents/delegation";
 import piGoals from "../src/index.js";
 
-const SCHEDULER = fileURLToPath(import.meta.resolve("@jl1990/pi-scheduler/extensions/scheduler/index.ts"));
 export const LOOP = "Custom loop statement written by the user.";
 export const GOALS = `# Title
 
@@ -33,9 +31,12 @@ ${LOOP}
 
 export type JudgeReply = { status: string; value?: unknown; error?: string } | "silent";
 
-export function setup(opts: { choices?: Array<string | undefined>; judge?: JudgeReply; subagents?: boolean; onRequest?: () => void } = {}) {
+export function setup(opts: { choices?: Array<string | undefined>; judge?: JudgeReply; subagents?: boolean; onRequest?: () => void; autoSchedule?: boolean; autoStart?: boolean; schedulerVersion?: string; schedulerLoaded?: boolean } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-goals-"));
 	const choices = [...(opts.choices ?? [])];
+	const scheduler = join(cwd, "scheduler/extensions/scheduler/index.ts");
+	mkdirSync(join(cwd, "scheduler/extensions/scheduler"), { recursive: true });
+	writeFileSync(join(cwd, "scheduler/package.json"), JSON.stringify({ name: "@jl1990/pi-scheduler", version: opts.schedulerVersion ?? "0.6.0" }));
 	const branch: any[] = [];
 	const sent: Array<{ text: string; options?: unknown }> = [];
 	const notes: string[] = [];
@@ -94,19 +95,35 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data: structuredClone(data) }),
 		sendMessage: (message: { customType: string; content: string }) => shown.push(message),
 		sendUserMessage: (text: string, options?: unknown) => sent.push({ text, options }),
-		getCommands: () => ["schedule", "schedule-remove"].map(name => ({ name, source: "extension", sourceInfo: { path: SCHEDULER } })),
+		getCommands: () => (opts.schedulerLoaded === false ? [] : ["schedule", "schedule-remove"]).map(name => ({ name, source: "extension", sourceInfo: { path: scheduler } })),
 	};
 	piGoals(pi as unknown as ExtensionAPI);
-	const hook = (name: string, event: any = {}) => hooks.get(name)!(event, ctx);
+	let cursor = 0;
+	let nextTask = 0;
+	async function flush() {
+		while (cursor < sent.length) {
+			const message = sent[cursor++];
+			if (message.text.startsWith("/schedule ") && opts.autoSchedule !== false) schedulerReceipt(`t${++nextTask}`);
+			if (message.text.startsWith("/goals confirm ")) await commands.get("goals").handler(message.text.slice(7), ctx);
+			if (message.text.startsWith("[pi-goals:start-work:") && opts.autoStart !== false) {
+				const out = await hooks.get("input")!({ source: "extension", text: message.text }, ctx);
+				if (out?.action === "transform") message.text = out.text;
+			}
+		}
+	}
+	const hook = async (name: string, event: any = {}) => { const out = await hooks.get(name)!(event, ctx); await flush(); return out; };
+	const goalsCommand = commands.get("goals");
+	const originalHandler = goalsCommand.handler;
+	goalsCommand.handler = async (...args: any[]) => { await originalHandler(...args); await flush(); };
 	/** What the stock scheduler records after `/schedule prompt ... :: <marker>`. */
 	function schedulerReceipt(id: string) {
 		const command = sent.findLast(m => m.text.startsWith("/schedule "))!;
 		const prompt = command.text.split(" :: ")[1];
-		branch.push({ type: "custom_message", customType: "scheduled-task", details: { task: { id, prompt, action: "prompt", scope: "session", sessionFile: ctx.sessionManager.getSessionFile() } } });
+		branch.push({ type: "custom_message", customType: "scheduled-task", details: { task: { id, prompt, action: "prompt", type: "interval", schedule: "1h", enabled: true, status: "pending", scope: "session", sessionFile: ctx.sessionManager.getSessionFile() } } });
 		return prompt;
 	}
 	/** The stock scheduler's wake: its header lines, a blank line, then the stored prompt. */
 	const wake = (id: string, prompt: string, schedule = "1h") => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\nType: interval\nSchedule: ${schedule}\nScheduled for: 2026-01-01T00:00:00.000Z\n\n${prompt}` });
 	const complete = (goal: string) => tools.get("CompleteGoal").execute("call", { goal }, undefined, undefined, ctx);
-	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake };
+	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake, flush, pi };
 }

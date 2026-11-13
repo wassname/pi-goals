@@ -6,6 +6,13 @@ import { fold } from "./goals.js";
 // PI/OpenAI: default for new plans; each saved goals file owns its loop statement.
 // wassname 2026-11-07 (cg2_main feedback): the old one was "too long and you ignored it"; coordinate "only if asked ... minimally".
 // wassname 2026-11-11: "needs to be very short. I usually come back and say /busy anyway" (spelling corrected).
+// PI/OpenAI: startup messages stay non-working until an owned scheduler receipt is confirmed.
+export const schedulerUnavailable = "Load exactly one @jl1990/pi-scheduler >=0.6.0: pi install npm:@jl1990/pi-scheduler@0.6.0, then /reload. Check startup errors if it cannot load. Scheduler 0.6.0 fails to load graceful-fs in the tested compiled Pi 1.4.0/1.5.2 binaries; use Node Pi for scheduled work, or omit the scheduler to keep planning available. Goals are preserved; use /goals resume to check pending startup, or /goals review to approve again.";
+export const unconfirmedWork = "This session recorded working without a valid scheduler receipt. Goals are paused and the file is preserved. Inspect /schedules all for any old reminder before /goals resume.";
+export const startupPending = "Scheduler creation is not confirmed; work has not started. Use /goals resume to check again without creating another reminder. If creation failed, fix the scheduler and use /goals retry, or /goals pause or clear to cancel.";
+export const startWork = (token: string) => `[pi-goals:start-work:${token}]`;
+export const startWorkToken = (text: string) => /^\[pi-goals:start-work:([\w-]+)\]$/.exec(text)?.[1];
+
 export const DEFAULT_LOOP_STATEMENT = `\
 Write one or two lines on the overall goal and your progress, then start the next task (usually the one unchanged longest).
 Do not poll jobs or other sessions; their notices will wake you. Do not coordinate other sessions unless the user asked.

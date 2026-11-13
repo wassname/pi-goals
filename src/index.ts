@@ -1,18 +1,20 @@
 // PI/OpenAI: one agent, one goals file, human Ready, and a stock scheduled loop.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ageTasks, aim, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, waitingTasks, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
-import { startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
+import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
 
 const STATE = "pi-goals-single-agent";
 interface State {
 	owner: string;
-	phase: "planning" | "working" | "paused" | null;
+	phase: "planning" | "starting" | "working" | "paused" | null;
+	startup?: { token: string; hash: string; source: string };
+	retired?: { token: string; source: string }[];
 	file?: string;
 	/** Identifies this Ready's scheduled wakes; older or foreign wakes are dropped. */
 	token?: string;
@@ -104,26 +106,71 @@ export default function piGoals(pi: ExtensionAPI): void {
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 
+	function retireStartup() {
+		if (!state.startup) return;
+		state = { ...state, retired: [...(state.retired ?? []), { token: state.startup.token, source: state.startup.source }], startup: undefined };
+	}
+	function cleanRetired(ctx: ExtensionContext) {
+		for (const task of state.retired ?? []) {
+			if (!loopTaskId(ctx, task.token)) continue;
+			try {
+				stopLoop(pi, ctx, task.token, task.source);
+				state = { ...state, retired: state.retired!.filter(t => t.token !== task.token) };
+				persist();
+			} catch (error) { ctx.ui.notify(String(error), "error"); }
+		}
+	}
+
 	function pause(ctx: ExtensionContext) {
 		const token = state.token;
+		retireStartup();
 		state = { ...state, phase: "paused", token: undefined };
 		generation++;
 		persist();
 		refresh(ctx);
+		cleanRetired(ctx);
 		if (!token) return;
 		try { stopLoop(pi, ctx, token); } catch (error) { ctx.ui.notify(String(error), "error"); }
 	}
 
-	function begin(ctx: ExtensionContext) {
+	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+	function checkedStartup(ctx: ExtensionContext) {
+		cleanRetired(ctx);
+		const pending = state.startup;
+		if (!pending || state.phase !== "starting") return;
+		schedulerCommand(pi, "schedule", pending.source);
+		schedulerCommand(pi, "schedule-remove", pending.source);
 		const text = read();
+		if (digest(text) !== pending.hash) {
+			retireStartup();
+			state = { ...state, phase: "planning" };
+			generation++; persist(); refresh(ctx); cleanRetired(ctx);
+			throw new Error("Goals changed during startup. Work did not start; use /goals review to approve the current file.");
+		}
+		if (!loopTaskId(ctx, pending.token)) {
+			ctx.ui.notify(prompts.startupPending, "warning");
+			return;
+		}
+		return { ...pending, text };
+	}
+	function confirmStartup(ctx: ExtensionContext) {
+		const pending = checkedStartup(ctx);
+		if (pending) pi.sendUserMessage(prompts.startWork(pending.token), { deliverAs: "followUp" });
+	}
+	function begin(ctx: ExtensionContext, approved = read()) {
+		if (state.startup) { confirmStartup(ctx); return; }
+		const text = read();
+		if (text !== approved) throw new Error("Goals changed while the Ready menu was open; review the current file again.");
 		if (!aim(text) || !section(text, "Loop statement") || !hasRemainingGoals(text, state.judge)) throw new Error("The goals file needs its aim under the title, a Loop statement and unfinished goals.");
+		if (!ctx.sessionManager.getSessionFile()) throw new Error("The goals loop needs a saved Pi session.");
+		const { source } = schedulerCommand(pi, "schedule");
+		schedulerCommand(pi, "schedule-remove", source);
 		const token = randomUUID();
-		startLoop(pi, ctx, token);
-		state = { ...state, phase: "working", token, headings: headings(text) };
-		generation++;
-		persist();
-		refresh(ctx);
-		pi.sendUserMessage(prompts.readyPrompt(state.file!, text), { deliverAs: "followUp" });
+		state = { ...state, phase: "starting", startup: { token, hash: digest(text), source } };
+		generation++; persist(); refresh(ctx);
+		startLoop(pi, ctx, token, source);
+		// PI/OpenAI: settled commands run serially; elsewhere a missing receipt stays pending for resume.
+		pi.sendUserMessage(`/goals confirm ${token}`, { expandPromptTemplates: true, deliverAs: "followUp" });
 	}
 
 	async function review(ctx: ExtensionContext) {
@@ -138,41 +185,51 @@ export default function piGoals(pi: ExtensionAPI): void {
 				// Discuss (or Escape) closes the menu and keeps planning, so the user can answer in chat.
 				const choice = await ctx.ui.select(`Goals: ${relative(ctx.cwd, state.file!)}`, ["Ready", "Discuss in chat", "Edit", "Cancel"]);
 				if (current !== generation) return;
-				if (choice === "Ready") return begin(ctx);
+				if (choice === "Ready") return begin(ctx, text);
 				if (choice === "Edit") {
 					const edited = await ctx.ui.editor("Edit goals", text);
 					if (current !== generation) return;
 					if (edited !== undefined) save(edited);
 					continue;
 				}
-				if (choice === "Cancel") { state = initial(state.owner); generation++; persist(); refresh(ctx); }
+				if (choice === "Cancel") { state = { ...initial(state.owner), retired: state.retired }; generation++; persist(); refresh(ctx); }
 				return;
 			}
 		} finally { reviewing = false; }
 	}
 
 	pi.registerCommand("goals", {
-		description: "Goals: new [idea], review, pause, resume, clear, judge [off|on|provider/model]",
+		description: "Goals: new [idea], review, pause, resume, retry, clear, judge [off|on|provider/model]",
 		handler: async (args, ctx) => {
 			try {
 				let arg = args.trim();
+				cleanRetired(ctx);
+				if (arg.startsWith("confirm ")) {
+					if (arg.slice(8) === state.startup?.token) confirmStartup(ctx);
+					return;
+				}
 				if (!arg) arg = (await ctx.ui.select("Goals", state.file ? ["review", "pause", "resume", "clear"] : ["new"])) ?? "";
 				if (!arg) return;
 				if (arg === "clear") {
-					if (state.token) pause(ctx);
-					state = initial(ctx.sessionManager.getSessionId());
+					if (state.token || state.startup) pause(ctx);
+					state = { ...initial(ctx.sessionManager.getSessionId()), retired: state.retired };
 					generation++; resyncDue = false; reviewRequested = false;
 					persist(); refresh(ctx); return;
 				}
-				if (arg === "pause") { if (state.phase === "working") pause(ctx); return; }
-				if (arg === "resume") { if (state.phase !== "paused") throw new Error("Only paused goals can resume."); begin(ctx); return; }
+				if (arg === "pause") { if (state.phase === "working" || state.phase === "starting") pause(ctx); return; }
+				if (arg === "resume") { if (state.phase !== "paused" && state.phase !== "starting") throw new Error("Only paused or starting goals can resume."); begin(ctx); return; }
+				if (arg === "retry") {
+					if (state.phase !== "starting") throw new Error("Only pending startup can retry.");
+					if (digest(read()) !== state.startup!.hash || loopTaskId(ctx, state.startup!.token)) { confirmStartup(ctx); return; }
+					retireStartup(); cleanRetired(ctx); begin(ctx); return;
+				}
 				if (arg === "review") { await review(ctx); return; }
 				if (arg === "judge" || arg.startsWith("judge ")) {
 					const value = arg.slice(5).trim();
 					state = { ...state, judge: value !== "off", model: ["", "on", "off"].includes(value) ? undefined : value };
 					persist(); ctx.ui.notify(`Sign-off judge ${state.judge ? state.model ?? "uses the session model" : "disabled: completion is self-verification"}.`, "info"); return;
 				}
-				if (arg !== "new" && !arg.startsWith("new ")) throw new Error("Use /goals new [idea], review, pause, resume, clear, or judge.");
+				if (arg !== "new" && !arg.startsWith("new ")) throw new Error("Use /goals new [idea], review, pause, resume, retry, clear, or judge.");
 				if (state.file) throw new Error("Clear the current goals before starting new ones; the file is preserved.");
 				const idea = arg.slice(3).trim();
 				const dir = join(ctx.cwd, ".pi/goals");
@@ -213,6 +270,18 @@ export default function piGoals(pi: ExtensionAPI): void {
 	});
 
 	pi.on("input", async (event, ctx) => {
+		const work = event.source === "extension" ? prompts.startWorkToken(event.text) : undefined;
+		if (work) {
+			if (work !== state.startup?.token || state.phase !== "starting") return handled;
+			try {
+				const pending = checkedStartup(ctx);
+				if (!pending) return handled;
+				const text = pending.text;
+				state = { ...state, phase: "working", token: pending.token, startup: undefined, headings: headings(text) };
+				generation++; persist(); refresh(ctx);
+				return { action: "transform" as const, text: prompts.readyPrompt(state.file!, text) };
+			} catch (error) { ctx.ui.notify(String(error), "error"); return handled; }
+		}
 		const token = event.source === "extension" ? wakeToken(event.text) : undefined;
 		if (token) {
 			if (token !== state.token || state.phase !== "working") return handled;
@@ -234,7 +303,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 
 	// Goals file above the Log after compaction or resume: persisted at the next prompt, or transient once if an
 	// auto-compaction retry continues the run without before_agent_start.
-	const resyncText = () => [state.phase === "planning" ? prompts.planningState(state.file!) : "", prompts.resync(read(), state.file!, "Session started or compacted.")].filter(Boolean).join("\n\n");
+	const resyncText = () => [["planning", "starting"].includes(state.phase ?? "") ? prompts.planningState(state.file!) : "", prompts.resync(read(), state.file!, "Session started or compacted.")].filter(Boolean).join("\n\n");
 	pi.on("before_agent_start", async () => {
 		if (!state.file || !resyncDue) return;
 		resyncDue = false;
@@ -280,7 +349,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		if (goalsEdit) textBefore.set(event.toolCallId, read());
 		// Planning allows exploration; only file edits outside the goals file and slop/ (briefs, notes), and completion, are blocked.
 		const slopEdit = ["write", "edit"].includes(event.toolName) && !relative(resolve(ctx.cwd, "slop"), resolve(ctx.cwd, String((event.input as { path?: string }).path))).startsWith("..");
-		if (state.phase !== "planning" || goalsEdit || slopEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
+		if (!["planning", "starting"].includes(state.phase ?? "") || goalsEdit || slopEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;
 		return { block: true, reason: prompts.planningState(state.file!) };
 	});
 	pi.on("tool_result", async (event) => {
@@ -297,8 +366,16 @@ export default function piGoals(pi: ExtensionAPI): void {
 		state = saved?.owner === ctx.sessionManager.getSessionId() ? saved : initial(ctx.sessionManager.getSessionId());
 		// A fork has a new session ID, so it does not inherit goals; say so once, then record that this session has none.
 		if (saved?.file && saved.owner !== state.owner) { ctx.ui.notify(prompts.forkNotice(saved.file), "info"); persist(); }
+		if (state.phase === "working" && (!state.token || !loopTaskId(ctx, state.token))) {
+			state = { ...state, phase: "paused", token: undefined };
+			persist(); ctx.ui.notify(prompts.unconfirmedWork, "warning");
+		}
 		resyncDue = Boolean(state.file);
 		refresh(ctx);
+		try {
+			cleanRetired(ctx);
+			if (state.startup) ctx.ui.notify(prompts.startupPending, "warning");
+		} catch (error) { ctx.ui.notify(String(error), "error"); }
 	});
 	pi.on("session_shutdown", async () => { generation++; });
 

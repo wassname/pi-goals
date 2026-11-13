@@ -15,7 +15,7 @@ describe("real pi-scheduler core", () => {
 	it("our /schedule payload creates a recurring session prompt whose receipt carries the marker", () => {
 		const parsed = core.splitScheduleCommand(`prompt every 1h :: ${marker("abc-1")}`, new Date());
 		const task = core.createScheduledTask({ action: parsed.action, type: parsed.type, schedule: parsed.schedule, prompt: parsed.payload, scope: "session", sessionFile: "/s.jsonl", cwd: "/" }, new Date());
-		expect(task).toMatchObject({ action: "prompt", type: "interval", prompt: "pi-goals-loop:abc-1", scope: "session", sessionFile: "/s.jsonl" });
+		expect(task).toMatchObject({ action: "prompt", type: "interval", schedule: "1h", enabled: true, status: "pending", prompt: "pi-goals-loop:abc-1", scope: "session", sessionFile: "/s.jsonl" });
 	});
 
 	it("wakeToken reads the scheduler's real header format", () => {
