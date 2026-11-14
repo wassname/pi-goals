@@ -27,9 +27,6 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@jl1990/pi-scheduler": {
-      "optional": true
-    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     },
