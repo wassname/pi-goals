@@ -346,7 +346,7 @@ describe("widget rendering", () => {
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
 			expect(lines).toHaveLength(3);
-			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {2}◼ G1 ✔ 1\/2 Exp.*…$/);
+			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {2}◼ G1 ✔ 1\/2 · Exp.*…$/);
 			expect(lines.join("\n")).not.toMatch(/48\/89|old step/);
 			if (width >= 80) expect(stripVTControlCharacters(lines[2])).toBe("  ◻ G2 write the note");
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
@@ -354,14 +354,22 @@ describe("widget rendering", () => {
 		expect(readFileSync(file, "utf8")).toBe(text);
 	});
 
-	it("alt+g expands the widget to every goal and its open tasks, and collapses it again", async () => {
+	it("a click or Pi's ctrl+o (tools expanded) flips the widget between collapsed and every goal with its open tasks", async () => {
 		const h = setup({ choices: ["Ready"] });
+		h.ctx.mode = "tui";
 		await ready(h);
-		const collapsed = h.ctx.widget;
-		await h.shortcuts.get("alt+g").handler(h.ctx);
-		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g collapse", "  ◼ G1 ✔ 1/2 make the plot", "    ◻ load data", "    ✔ 1 done", "  ◻ G2 write the note"]);
-		await h.shortcuts.get("alt+g").handler(h.ctx);
-		expect(h.ctx.widget).toEqual(collapsed);
+		await h.hook("session_start");
+		const widget = h.ctx.widget(undefined, { fg: (_color: string, s: string) => s, strikethrough: (s: string) => s });
+		const collapsed = ["● 2 goals (1 active, 1 open) · click to expand", "  ◼ G1 ✔ 1/2 · load data", "  ◻ G2 write the note"];
+		const expanded = ["● 2 goals (1 active, 1 open) · click to collapse", "  ◼ G1 ✔ 1/2 · make the plot", "    ◻ load data", "    ✔ 1 done", "  ◻ G2 write the note"];
+		expect(widget.render(100)).toEqual(collapsed);
+		expect(widget.handleMouse({ type: "move", button: "none" })).toBeUndefined();
+		expect(widget.handleMouse({ type: "click", button: "left" })).toEqual({ handled: true });
+		expect(widget.render(100)).toEqual(expanded);
+		h.ctx.toolsExpanded = true; // ctrl+o
+		expect(widget.render(100)).toEqual(collapsed);
+		widget.handleMouse({ type: "click", button: "left" });
+		expect(widget.render(100)).toEqual(expanded);
 	});
 });
 
@@ -398,7 +406,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g expand", "  ◼ G1 ✔ 1/2 load data", "  ◻ G2 write the note"]);
+		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · click to expand", "  ◼ G1 ✔ 1/2 · load data", "  ◻ G2 write the note"]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

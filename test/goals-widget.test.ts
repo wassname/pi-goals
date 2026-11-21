@@ -9,9 +9,9 @@ describe("widget", () => {
 
 	it("has a header, then up to two goals, active first: tasks done, the task in progress, and how many more are in progress", () => {
 		const text = "1. [/] goal: First\n   - tasks:\n     1. [x] a\n     2. [ ] b\n     3. [/] c\n        - details: hidden\n     4. [/] d\n2. [/] goal: No tasks yet\n3. [/] goal: Third\n4. [/] goal: Fourth\n5. [ ] goal: Open";
-		expect(widgetLines(text)).toEqual(["● 5 goals (4 active, 1 open) · alt+g expand", "  ◼ G1 ✔ 1/4 c +1 in progress", "  ◼ G2 No tasks yet"]);
+		expect(widgetLines(text)).toEqual(["● 5 goals (4 active, 1 open) · click to expand", "  ◼ G1 ✔ 1/4 · c +1 in progress", "  ◼ G2 No tasks yet"]);
 		const long = text.replace("[/] c", `[/] ${"long label ".repeat(20)}`);
-		expect(stripVTControlCharacters(widgetLines(long, 60)[1])).toMatch(/^ {2}◼ G1 ✔ 1\/4 long label .*… \+1 in progress$/);
+		expect(stripVTControlCharacters(widgetLines(long, 60)[1])).toMatch(/^ {2}◼ G1 ✔ 1\/4 · long label .*… \+1 in progress$/);
 		expect(widgetLines(long, 20)[1]).not.toContain("in progress");
 	});
 
@@ -36,9 +36,9 @@ describe("tasks that wait on the user", () => {
 
 	it("come first in the widget, as one summary line when there are two or more, and are not counted as done", () => {
 		const lines = widgetLines(text);
-		expect(lines[0]).toBe("● 4 goals (1 accepted, 2 active, 1 open) · 2 need you · alt+g expand");
-		expect(lines[1]).toBe("  ? 2 questions for you (G1, G3) · ask the agent, or alt+g to read them");
-		expect(lines.slice(2)).toEqual(["  ◼ G1 ✔ 1/3 draw it", "  ◼ G2 ✔ 1/1 note"]);
+		expect(lines[0]).toBe("● 4 goals (1 accepted, 2 active, 1 open) · 2 need you · click to expand");
+		expect(lines[1]).toBe("  ? 2 questions for you (G1, G3) · ask the agent, or click to read them");
+		expect(lines.slice(2)).toEqual(["  ◼ G1 ✔ 1/3 · draw it", "  ◼ G2 ✔ 1/1 · note"]);
 		expect(widgetLines(text.replace("[?] Which venue?", "[x] Which venue?"))[1]).toBe("  ? G1 Log or linear y axis?");
 		expect(widgetLines("1. [/] goal: plot\n2. [ ] goal: note\n3. [ ] goal: publish").slice(1)).toEqual(["  ◼ G1 plot", "  ◻ G2 note"]);
 		const open = widgetLines(text, 100, { expanded: true });

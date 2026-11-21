@@ -176,10 +176,10 @@ export function widgetLines(text: string, width = 100, { expanded = false, style
 	const number = (goal: Goal) => s.fg("dim", `G${items.indexOf(goal) + 1}`);
 	const ask = s.fg("warning", "?");
 	const glyph = (goal: Goal) => goal.status === "active" ? s.fg("accent", "◼") : goal.status === "reported" ? s.fg("success", "☑") : "◻";
-	const done = (tasks: Checkbox[]) => tasks.length ? ` ${s.fg("dim", `✔ ${tasks.filter(isDone).length}/${tasks.length}`)}` : "";
+	const done = (tasks: Checkbox[]) => tasks.length ? ` ${s.fg("dim", `✔ ${tasks.filter(isDone).length}/${tasks.length} ·`)}` : "";
 	const counts = ([["accepted", "done"], ["reported", "reported"], ["active", "active"], ["open", "open"], ["cancelled", "cancelled"]] as const)
 		.map(([word, status]) => [word, items.filter((goal) => goal.status === status).length] as const).filter(([, n]) => n).map(([word, n]) => `${n} ${word}`);
-	const lines = [clip(`${s.fg("accent", `● ${items.length} goal${items.length === 1 ? "" : "s"} (${counts.join(", ")})`)}${waiting.length ? ` · ${s.fg("warning", `${waiting.length} need you`)}` : ""}${s.fg("dim", ` · alt+g ${expanded ? "collapse" : "expand"}`)}`)];
+	const lines = [clip(`${s.fg("accent", `● ${items.length} goal${items.length === 1 ? "" : "s"} (${counts.join(", ")})`)}${waiting.length ? ` · ${s.fg("warning", `${waiting.length} need you`)}` : ""}${s.fg("dim", ` · click to ${expanded ? "collapse" : "expand"}`)}`)];
 
 	if (expanded) {
 		for (const goal of items) {
@@ -202,7 +202,7 @@ export function widgetLines(text: string, width = 100, { expanded = false, style
 	}
 
 	if (waiting.length === 1) lines.push(clip(`  ${ask} G${waiting[0].goal} ${waiting[0].label}`));
-	else if (waiting.length) lines.push(clip(`  ${ask} ${s.fg("warning", `${waiting.length} questions for you`)} ${s.fg("dim", `(${[...new Set(waiting.map((task) => `G${task.goal}`))].join(", ")}) · ask the agent, or alt+g to read them`)}`));
+	else if (waiting.length) lines.push(clip(`  ${ask} ${s.fg("warning", `${waiting.length} questions for you`)} ${s.fg("dim", `(${[...new Set(waiting.map((task) => `G${task.goal}`))].join(", ")}) · ask the agent, or click to read them`)}`));
 	// The header counts the rest.
 	for (const goal of [...active, ...items.filter((goal) => goal.status === "open" || goal.status === "reported")].slice(0, WIDGET_GOAL_LIMIT)) {
 		const tasks = goalTasks(text, goal);

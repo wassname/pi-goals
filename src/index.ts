@@ -79,11 +79,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 		}
 	}
 
-	let expanded = false;
-	pi.registerShortcut("alt+g", {
-		description: "Expand or collapse the goals widget",
-		handler: async (ctx) => { expanded = !expanded; refresh(ctx); },
-	});
+	// A click on the widget flips it; so does Pi's ctrl+o (app.tools.expand), read at each render.
+	let clicked = false;
 
 	function refresh(ctx: ExtensionContext) {
 		syncTaskTools();
@@ -101,16 +98,21 @@ export default function piGoals(pi: ExtensionAPI): void {
 			if (!widgetLines(text).length) ctx.ui.setWidget("goals", undefined);
 			else if (ctx.mode === "tui") {
 				// Parsing a large goals file takes tens of ms; render runs on every repaint.
-				let cached: { width: number; lines: string[] } | undefined;
-				const open = expanded;
+				let cached: { width: number; expanded: boolean; lines: string[] } | undefined;
 				ctx.ui.setWidget("goals", (_tui, theme) => ({
 					render: (width) => {
-						if (cached?.width !== width) cached = { width, lines: widgetLines(text, width, { expanded: open, style: { fg: (color, s) => theme.fg(color, s), strike: (s) => theme.strikethrough(s) } }) };
+						const expanded = clicked !== ctx.ui.getToolsExpanded();
+						if (cached?.width !== width || cached.expanded !== expanded) cached = { width, expanded, lines: widgetLines(text, width, { expanded, style: { fg: (color, s) => theme.fg(color, s), strike: (s) => theme.strikethrough(s) } }) };
 						return cached.lines;
+					},
+					handleMouse: (event) => {
+						if (event.type !== "click" || event.button !== "left") return undefined;
+						clicked = !clicked;
+						return { handled: true };
 					},
 					invalidate() { cached = undefined; },
 				}));
-			} else ctx.ui.setWidget("goals", widgetLines(text, 100, { expanded }));
+			} else ctx.ui.setWidget("goals", widgetLines(text));
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 
