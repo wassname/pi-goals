@@ -333,7 +333,7 @@ describe("pi-tasks in goal mode", () => {
 });
 
 describe("widget rendering", () => {
-	it.each(["tui", "rpc"])("shows one line for the [/] goal with its task in progress, excludes evidence, and fits the width (%s)", async (mode) => {
+	it.each(["tui", "rpc"])("shows the [/] goal with its task in progress, then the next open goal, excludes evidence, and fits the width (%s)", async (mode) => {
 		const h = setup({ choices: ["Ready"] });
 		h.ctx.mode = mode;
 		const file = await ready(h);
@@ -345,9 +345,10 @@ describe("widget rendering", () => {
 		const component = mode === "tui" ? h.ctx.widget(undefined, { fg: (_color: string, s: string) => s, strikethrough: (s: string) => s }) : undefined;
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
-			expect(lines).toHaveLength(2);
-			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {2}◼ G1 1\/2 Exp.*…$/);
-			expect(lines.join("\n")).not.toMatch(/48\/89|old step|write the note/);
+			expect(lines).toHaveLength(3);
+			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {2}◼ G1 ✔ 1\/2 Exp.*…$/);
+			expect(lines.join("\n")).not.toMatch(/48\/89|old step/);
+			if (width >= 80) expect(stripVTControlCharacters(lines[2])).toBe("  ◻ G2 write the note");
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 		expect(readFileSync(file, "utf8")).toBe(text);
@@ -358,7 +359,7 @@ describe("widget rendering", () => {
 		await ready(h);
 		const collapsed = h.ctx.widget;
 		await h.shortcuts.get("alt+g").handler(h.ctx);
-		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g collapse", "  ◼ G1 1/2 make the plot", "    ◻ load data", "    ✔ 1 done", "  ◻ G2 write the note"]);
+		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g collapse", "  ◼ G1 ✔ 1/2 make the plot", "    ◻ load data", "    ✔ 1 done", "  ◻ G2 write the note"]);
 		await h.shortcuts.get("alt+g").handler(h.ctx);
 		expect(h.ctx.widget).toEqual(collapsed);
 	});
@@ -397,7 +398,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g expand", "  ◼ G1 1/2 load data"]);
+		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g expand", "  ◼ G1 ✔ 1/2 load data", "  ◻ G2 write the note"]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

@@ -6,7 +6,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import type { Heading, ListItem, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
-const WIDGET_GOAL_LIMIT = 3;
+const WIDGET_GOAL_LIMIT = 2;
 const WIDGET_LABEL_MIN = 30;
 const WIDGET_TASK_LIMIT = 8;
 const WAKE_TASK_LIMIT = 8;
@@ -165,8 +165,8 @@ export interface WidgetStyle {
 const plainStyle: WidgetStyle = { fg: (_color, text) => text, strike: (text) => text };
 
 /** PI/Claude: laid out like the pi-tasks widget: a header with counts, then one glyph row per item.
- * Collapsed: questions for the user (one summary row when there are 2 or more), then one row per [/] goal with its
- * task in progress. Expanded: every goal, the full questions, and the open tasks of active goals. */
+ * Collapsed: questions for the user (one summary row when there are 2 or more), then up to 2 unfinished goals, [/] first,
+ * each with tasks done ("✔ 31/45") and its task in progress. Expanded: every goal, the full questions, and open tasks. */
 export function widgetLines(text: string, width = 100, { expanded = false, style: s = plainStyle }: { expanded?: boolean; style?: WidgetStyle } = {}): string[] {
 	const items = goals(text);
 	const waiting = waitingTasks(text);
@@ -175,6 +175,8 @@ export function widgetLines(text: string, width = 100, { expanded = false, style
 	const clip = (line: string) => truncateToWidth(line, width, "…");
 	const number = (goal: Goal) => s.fg("dim", `G${items.indexOf(goal) + 1}`);
 	const ask = s.fg("warning", "?");
+	const glyph = (goal: Goal) => goal.status === "active" ? s.fg("accent", "◼") : goal.status === "reported" ? s.fg("success", "☑") : "◻";
+	const done = (tasks: Checkbox[]) => tasks.length ? ` ${s.fg("dim", `✔ ${tasks.filter(isDone).length}/${tasks.length}`)}` : "";
 	const counts = ([["accepted", "done"], ["reported", "reported"], ["active", "active"], ["open", "open"], ["cancelled", "cancelled"]] as const)
 		.map(([word, status]) => [word, items.filter((goal) => goal.status === status).length] as const).filter(([, n]) => n).map(([word, n]) => `${n} ${word}`);
 	const lines = [clip(`${s.fg("accent", `● ${items.length} goal${items.length === 1 ? "" : "s"} (${counts.join(", ")})`)}${waiting.length ? ` · ${s.fg("warning", `${waiting.length} need you`)}` : ""}${s.fg("dim", ` · alt+g ${expanded ? "collapse" : "expand"}`)}`)];
@@ -182,9 +184,8 @@ export function widgetLines(text: string, width = 100, { expanded = false, style
 	if (expanded) {
 		for (const goal of items) {
 			const tasks = goalTasks(text, goal);
-			const count = tasks.length ? ` ${s.fg("dim", `${tasks.filter(isDone).length}/${tasks.length}`)}` : "";
 			if (!isUnfinished(goal)) { lines.push(clip(`  ${s.fg(goal.status === "done" ? "success" : "dim", goal.status === "done" ? "✔" : "✗")} ${number(goal)} ${s.fg("dim", s.strike(goal.subject))}`)); continue; }
-			lines.push(clip(`  ${goal.status === "active" ? s.fg("accent", "◼") : goal.status === "reported" ? s.fg("success", "☑") : "◻"} ${number(goal)}${count} ${goal.subject}`));
+			lines.push(clip(`  ${glyph(goal)} ${number(goal)}${done(tasks)} ${goal.subject}`));
 			// The whole question, wrapped: the user answers it from here.
 			for (const task of tasks.filter(isWaiting)) {
 				const [first, ...rest] = wrapTextWithAnsi(task.label, Math.max(WIDGET_LABEL_MIN, width - 6));
@@ -194,26 +195,26 @@ export function widgetLines(text: string, width = 100, { expanded = false, style
 			const open = [...tasks.filter((task) => task.mark === "/"), ...tasks.filter((task) => task.mark === " ")];
 			lines.push(...open.slice(0, WIDGET_TASK_LIMIT).map((task) => clip(`    ${task.mark === "/" ? s.fg("accent", "◼") : "◻"} ${task.label}`)));
 			if (open.length > WIDGET_TASK_LIMIT) lines.push(clip(s.fg("dim", `    … ${open.length - WIDGET_TASK_LIMIT} more open`)));
-			const done = tasks.filter(isDone).length;
-			if (done) lines.push(clip(`    ${s.fg("success", "✔")} ${s.fg("dim", `${done} done`)}`));
+			const finished = tasks.filter(isDone).length;
+			if (finished) lines.push(clip(`    ${s.fg("success", "✔")} ${s.fg("dim", `${finished} done`)}`));
 		}
 		return lines;
 	}
 
 	if (waiting.length === 1) lines.push(clip(`  ${ask} G${waiting[0].goal} ${waiting[0].label}`));
 	else if (waiting.length) lines.push(clip(`  ${ask} ${s.fg("warning", `${waiting.length} questions for you`)} ${s.fg("dim", `(${[...new Set(waiting.map((task) => `G${task.goal}`))].join(", ")}) · ask the agent, or alt+g to read them`)}`));
-	for (const goal of active.slice(0, WIDGET_GOAL_LIMIT)) {
+	// The header counts the rest.
+	for (const goal of [...active, ...items.filter((goal) => goal.status === "open" || goal.status === "reported")].slice(0, WIDGET_GOAL_LIMIT)) {
 		const tasks = goalTasks(text, goal);
 		const open = tasks.filter((task) => !isDone(task) && !isWaiting(task));
 		const current = open.filter((task) => task.mark === "/");
-		const count = tasks.length ? ` ${s.fg("dim", `${tasks.filter(isDone).length}/${tasks.length}`)}` : "";
-		const line = `  ${s.fg("accent", "◼")} ${number(goal)}${count} ${(current[0] ?? open[0])?.label ?? goal.subject}`;
-		const tail = current.length > 1 ? s.fg("dim", ` +${current.length - 1} in progress`) : "";
+		const label = goal.status === "active" ? (current[0] ?? open[0])?.label ?? goal.subject : goal.subject;
+		const line = `  ${glyph(goal)} ${number(goal)}${done(tasks)} ${label}`;
+		const tail = goal.status === "active" && current.length > 1 ? s.fg("dim", ` +${current.length - 1} in progress`) : "";
 		// A narrow terminal keeps the label and drops the tail.
 		const room = width - visibleWidth(tail);
 		lines.push(room >= WIDGET_LABEL_MIN ? truncateToWidth(line, room, "…") + tail : clip(line));
 	}
-	if (active.length > WIDGET_GOAL_LIMIT) lines.push(clip(s.fg("dim", `  … ${active.length - WIDGET_GOAL_LIMIT} more active goals`)));
 	return lines;
 }
 
