@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { section } from "../src/goals.js";
-import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
+import piGoals, { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
 import { DEFAULT_LOOP_STATEMENT } from "../src/prompts.js";
 import { GOALS, LOOP, setup } from "./harness.js";
 
@@ -316,6 +317,19 @@ describe("pi-tasks in goal mode", () => {
 		await h.commands.get("goals").handler("pause", h.ctx);
 		expect(h.activeTools()).toContain("TaskCreate");
 	});
+
+	it("restores TaskCreate on pause after a reload, when Pi kept the reduced tool list from the transcript", async () => {
+		const h = setup({ choices: ["Ready"] });
+		await ready(h);
+		piGoals(h.pi as unknown as ExtensionAPI); // reload: a new extension instance with no memory
+		await h.hook("session_start");
+		expect(h.activeTools()).not.toContain("TaskCreate");
+		await h.commands.get("goals").handler("pause", h.ctx);
+		expect(h.activeTools()).toContain("TaskCreate");
+		await h.commands.get("goals").handler("resume", h.ctx);
+		await h.flush(); // the reloaded command is not wrapped by the harness
+		expect(h.activeTools()).not.toContain("TaskCreate");
+	});
 });
 
 describe("widget rendering", () => {
@@ -328,15 +342,25 @@ describe("widget rendering", () => {
 			.replace("   - tasks:", "   - evidence: 48/89 vs 37/89\n   - tasks:");
 		writeFileSync(file, text);
 		await h.hook("session_start");
-		const component = mode === "tui" ? h.ctx.widget() : undefined;
+		const component = mode === "tui" ? h.ctx.widget(undefined, { fg: (_color: string, s: string) => s, strikethrough: (s: string) => s }) : undefined;
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
-			expect(lines).toHaveLength(1);
-			expect(stripVTControlCharacters(lines[0])).toMatch(/^◼ G1 1\/2 · Exp.*…$/);
+			expect(lines).toHaveLength(2);
+			expect(stripVTControlCharacters(lines[1])).toMatch(/^ {2}◼ G1 1\/2 Exp.*…$/);
 			expect(lines.join("\n")).not.toMatch(/48\/89|old step|write the note/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 		expect(readFileSync(file, "utf8")).toBe(text);
+	});
+
+	it("alt+g expands the widget to every goal and its open tasks, and collapses it again", async () => {
+		const h = setup({ choices: ["Ready"] });
+		await ready(h);
+		const collapsed = h.ctx.widget;
+		await h.shortcuts.get("alt+g").handler(h.ctx);
+		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g collapse", "  ◼ G1 1/2 make the plot", "    ◻ load data", "    ✔ 1 done", "  ◻ G2 write the note"]);
+		await h.shortcuts.get("alt+g").handler(h.ctx);
+		expect(h.ctx.widget).toEqual(collapsed);
 	});
 });
 
@@ -360,7 +384,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget).toEqual(["◼ G1 1/2 · load data"]);
+		expect(h.ctx.widget).toEqual(["● 2 goals (1 active, 1 open) · alt+g expand", "  ◼ G1 1/2 load data"]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

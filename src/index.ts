@@ -24,6 +24,8 @@ interface State {
 	headings?: string[];
 	/** When each open task's text last changed, sampled at wakes. */
 	taskSince?: TaskSince;
+	/** pi-goals turned TaskCreate off. Pi restores the tool list from the transcript on reload, so this is persisted. */
+	taskCreateOff?: boolean;
 }
 // wassname 2026-11-07: pi-subagents ends each successful completion notice with this text, which asks the
 // agent to report and forbids a quiet stop; while goals run it pulls the agent into reporting. Matched exactly
@@ -65,18 +67,23 @@ export default function piGoals(pi: ExtensionAPI): void {
 	const save = (text: string) => writeFileSync(state.file!, text);
 
 	// Goal mode: steps live in the goals file, so pi-tasks may not create a second list. TaskUpdate stays,
-	// because pi-tasks keeps reminding about leftover tasks until they are deleted.
-	let removedTaskCreate = false;
+	// because pi-tasks keeps reminding about leftover tasks until they are deleted. Outside working, TaskCreate returns.
 	function syncTaskTools() {
 		const active = pi.getActiveTools();
 		if (state.phase === "working" && active.includes("TaskCreate")) {
 			pi.setActiveTools(active.filter((name) => name !== "TaskCreate"));
-			removedTaskCreate = true;
-		} else if (state.phase !== "working" && removedTaskCreate) {
-			pi.setActiveTools([...active, "TaskCreate"]);
-			removedTaskCreate = false;
+			state = { ...state, taskCreateOff: true }; persist();
+		} else if (state.phase !== "working" && state.taskCreateOff) {
+			if (!active.includes("TaskCreate") && pi.getAllTools().some((tool) => tool.name === "TaskCreate")) pi.setActiveTools([...active, "TaskCreate"]);
+			state = { ...state, taskCreateOff: false }; persist();
 		}
 	}
+
+	let expanded = false;
+	pi.registerShortcut("alt+g", {
+		description: "Expand or collapse the goals widget",
+		handler: async (ctx) => { expanded = !expanded; refresh(ctx); },
+	});
 
 	function refresh(ctx: ExtensionContext) {
 		syncTaskTools();
@@ -95,14 +102,15 @@ export default function piGoals(pi: ExtensionAPI): void {
 			else if (ctx.mode === "tui") {
 				// Parsing a large goals file takes tens of ms; render runs on every repaint.
 				let cached: { width: number; lines: string[] } | undefined;
-				ctx.ui.setWidget("goals", () => ({
+				const open = expanded;
+				ctx.ui.setWidget("goals", (_tui, theme) => ({
 					render: (width) => {
-						if (cached?.width !== width) cached = { width, lines: widgetLines(text, width) };
+						if (cached?.width !== width) cached = { width, lines: widgetLines(text, width, { expanded: open, style: { fg: (color, s) => theme.fg(color, s), strike: (s) => theme.strikethrough(s) } }) };
 						return cached.lines;
 					},
-					invalidate() {},
+					invalidate() { cached = undefined; },
 				}));
-			} else ctx.ui.setWidget("goals", widgetLines(text));
+			} else ctx.ui.setWidget("goals", widgetLines(text, 100, { expanded }));
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 
@@ -212,7 +220,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				if (!arg) return;
 				if (arg === "clear") {
 					if (state.token || state.startup) pause(ctx);
-					state = { ...initial(ctx.sessionManager.getSessionId()), retired: state.retired };
+					state = { ...initial(ctx.sessionManager.getSessionId()), retired: state.retired, taskCreateOff: state.taskCreateOff };
 					generation++; resyncDue = false; reviewRequested = false;
 					persist(); refresh(ctx); return;
 				}
@@ -364,6 +372,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 		const last = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === STATE).at(-1);
 		const saved = last?.type === "custom" ? last.data as State : undefined;
 		state = saved?.owner === ctx.sessionManager.getSessionId() ? saved : initial(ctx.sessionManager.getSessionId());
+		// Forks share the transcript's tool list. Entries saved before taskCreateOff existed: assume a goals session removed it.
+		state = { ...state, taskCreateOff: saved?.taskCreateOff ?? Boolean(saved?.file) };
 		// A fork has a new session ID, so it does not inherit goals; say so once, then record that this session has none.
 		if (saved?.file && saved.owner !== state.owner) { ctx.ui.notify(prompts.forkNotice(saved.file), "info"); persist(); }
 		if (state.phase === "working" && (!state.token || !loopTaskId(ctx, state.token))) {

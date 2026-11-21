@@ -7,12 +7,20 @@ describe("widget", () => {
 		expect(widgetLines("1. [x] goal: Self-verified\n2. [✓] goal: Judge accepted\n3. [-] goal: Cancelled\n4. [ ] goal: Open")).toEqual([]);
 	});
 
-	it("gives each active goal one line: tasks finished, the task in progress, and how many more are in progress", () => {
+	it("has a header, then one line per active goal: tasks finished, the task in progress, and how many more are in progress", () => {
 		const text = "1. [/] goal: First\n   - tasks:\n     1. [x] a\n     2. [ ] b\n     3. [/] c\n        - details: hidden\n     4. [/] d\n2. [/] goal: No tasks yet\n3. [/] goal: Third\n4. [/] goal: Fourth\n5. [ ] goal: Open";
-		expect(widgetLines(text)).toEqual(["◼ G1 1/4 · c · +1 in progress", "◼ G2 · No tasks yet", "◼ G3 · Third", "◼ … 1 more active goals"]);
+		expect(widgetLines(text)).toEqual(["● 5 goals (4 active, 1 open) · alt+g expand", "  ◼ G1 1/4 c +1 in progress", "  ◼ G2 No tasks yet", "  ◼ G3 Third", "  … 1 more active goals"]);
 		const long = text.replace("[/] c", `[/] ${"long label ".repeat(20)}`);
-		expect(stripVTControlCharacters(widgetLines(long, 60)[0])).toMatch(/^◼ G1 1\/4 · long label .*… · \+1 in progress$/);
-		expect(widgetLines(long, 20)[0]).not.toContain("in progress");
+		expect(stripVTControlCharacters(widgetLines(long, 60)[1])).toMatch(/^ {2}◼ G1 1\/4 long label .*… \+1 in progress$/);
+		expect(widgetLines(long, 20)[1]).not.toContain("in progress");
+	});
+
+	it("colours glyphs through the theme style when one is given", () => {
+		const style = { fg: (color: string, s: string) => `<${color}>${s}`, strike: (s: string) => `~${s}~` };
+		const lines = widgetLines("1. [/] goal: plot\n2. [✓] goal: old", 100, { expanded: true, style });
+		expect(lines[1]).toContain("<accent>◼");
+		expect(lines[2]).toContain("<success>✔");
+		expect(lines[2]).toContain("<dim>~old~");
 	});
 
 	it("reads goals from the markdown tree, not from lines in code blocks", () => {
@@ -26,16 +34,15 @@ describe("widget", () => {
 describe("tasks that wait on the user", () => {
 	const text = "## User-visible result\n\nA plot.\n\n## Goals\n\n1. [/] goal: plot\n   - tasks:\n     1. [?] Log or linear y axis?\n        - options: log shows the tail\n     2. [ ] draw it\n     3. [x] load\n2. [/] goal: note\n   - tasks:\n     1. [x] outline\n3. [ ] goal: publish\n   - tasks:\n     1. [?] Which venue?\n4. [✓] goal: old\n   - tasks:\n     1. [?] stale question\n";
 
-	it("come first in the widget, apart from the agent's open tasks, and are not counted as done", () => {
+	it("come first in the widget, as one summary line when there are two or more, and are not counted as done", () => {
 		const lines = widgetLines(text);
-		expect(lines.slice(0, 2).map((line) => line.startsWith("?"))).toEqual([true, true]);
-		expect(lines[0]).toContain("G1");
-		expect(lines[0]).toContain("Log or linear y axis?");
-		expect(lines[1]).toContain("Which venue?");
-		expect(lines.filter((line) => line.includes("Log or linear"))).toHaveLength(1);
-		expect(lines).toContain("◼ G1 1/3 · draw it");
-		expect(lines).toContain("◼ G2 1/1 · note");
-		expect(lines.join("\n")).not.toContain("stale question");
+		expect(lines[0]).toBe("● 4 goals (1 accepted, 2 active, 1 open) · 2 need you · alt+g expand");
+		expect(lines[1]).toBe("  ? 2 questions for you (G1, G3) · ask the agent, or alt+g to read them");
+		expect(lines.slice(2)).toEqual(["  ◼ G1 1/3 draw it", "  ◼ G2 1/1 note"]);
+		expect(widgetLines(text.replace("[?] Which venue?", "[x] Which venue?"))[1]).toBe("  ? G1 Log or linear y axis?");
+		const open = widgetLines(text, 100, { expanded: true });
+		for (const question of ["    ? Log or linear y axis?", "    ? Which venue?"]) expect(open).toContain(question);
+		expect(open.join("\n")).not.toContain("stale question");
 		expect(waitingTasks(text)).toEqual([{ goal: 1, label: "Log or linear y axis?" }, { goal: 3, label: "Which venue?" }]);
 	});
 

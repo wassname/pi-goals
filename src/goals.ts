@@ -8,7 +8,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 
 const WIDGET_GOAL_LIMIT = 3;
 const WIDGET_LABEL_MIN = 30;
-const WIDGET_WAITING_LIMIT = 3;
+const WIDGET_TASK_LIMIT = 8;
 const WAKE_TASK_LIMIT = 8;
 const HOUR = 3_600_000;
 const RESYNC_INTERVIEW_LIMIT = 10;
@@ -157,31 +157,64 @@ export function loopFocus(text: string): string {
 	return `Aim:\n${stated}\n\nGoals:\n${goals(text).map((goal) => goal.line.trim()).join("\n")}`;
 }
 
-/** PI/Claude: screen lines are scarce. Questions for the user, then one line per [/] goal: tasks finished, the task
- * in progress and how many more are in progress. The label is cut before that count is. */
-export function widgetLines(text: string, width = 100): string[] {
+/** Theme colours for the widget; the default is plain text (RPC mode and tests). */
+export interface WidgetStyle {
+	fg(color: "accent" | "success" | "warning" | "dim", text: string): string;
+	strike(text: string): string;
+}
+const plainStyle: WidgetStyle = { fg: (_color, text) => text, strike: (text) => text };
+
+/** PI/Claude: laid out like the pi-tasks widget: a header with counts, then one glyph row per item.
+ * Collapsed: questions for the user (one summary row when there are 2 or more), then one row per [/] goal with its
+ * task in progress. Expanded: every goal, the full questions, and the open tasks of active goals. */
+export function widgetLines(text: string, width = 100, { expanded = false, style: s = plainStyle }: { expanded?: boolean; style?: WidgetStyle } = {}): string[] {
 	const items = goals(text);
 	const waiting = waitingTasks(text);
-	// Up to two lines each: the user needs the whole question, not its first half.
-	const lines: [string, string][] = waiting.slice(0, WIDGET_WAITING_LIMIT).flatMap((task) => {
-		const [first, ...rest] = wrapTextWithAnsi(`? needs you (G${task.goal}): ${task.label}`, width);
-		return rest.length ? [[first, ""], [`  ${rest.join(" ")}`, ""]] : [[first, ""]];
-	});
-	if (waiting.length > WIDGET_WAITING_LIMIT) lines.push([`? … ${waiting.length - WIDGET_WAITING_LIMIT} more need you`, ""]);
 	const active = items.filter((goal) => goal.status === "active");
+	if (!active.length && !waiting.length) return [];
+	const clip = (line: string) => truncateToWidth(line, width, "…");
+	const number = (goal: Goal) => s.fg("dim", `G${items.indexOf(goal) + 1}`);
+	const ask = s.fg("warning", "?");
+	const counts = ([["accepted", "done"], ["reported", "reported"], ["active", "active"], ["open", "open"], ["cancelled", "cancelled"]] as const)
+		.map(([word, status]) => [word, items.filter((goal) => goal.status === status).length] as const).filter(([, n]) => n).map(([word, n]) => `${n} ${word}`);
+	const lines = [clip(`${s.fg("accent", `● ${items.length} goal${items.length === 1 ? "" : "s"} (${counts.join(", ")})`)}${waiting.length ? ` · ${s.fg("warning", `${waiting.length} need you`)}` : ""}${s.fg("dim", ` · alt+g ${expanded ? "collapse" : "expand"}`)}`)];
+
+	if (expanded) {
+		for (const goal of items) {
+			const tasks = goalTasks(text, goal);
+			const count = tasks.length ? ` ${s.fg("dim", `${tasks.filter(isDone).length}/${tasks.length}`)}` : "";
+			if (!isUnfinished(goal)) { lines.push(clip(`  ${s.fg(goal.status === "done" ? "success" : "dim", goal.status === "done" ? "✔" : "✗")} ${number(goal)} ${s.fg("dim", s.strike(goal.subject))}`)); continue; }
+			lines.push(clip(`  ${goal.status === "active" ? s.fg("accent", "◼") : goal.status === "reported" ? s.fg("success", "☑") : "◻"} ${number(goal)}${count} ${goal.subject}`));
+			// The whole question, wrapped: the user answers it from here.
+			for (const task of tasks.filter(isWaiting)) {
+				const [first, ...rest] = wrapTextWithAnsi(task.label, Math.max(WIDGET_LABEL_MIN, width - 6));
+				lines.push(clip(`    ${ask} ${first}`), ...rest.map((line) => clip(`      ${line}`)));
+			}
+			if (goal.status !== "active") continue;
+			const open = [...tasks.filter((task) => task.mark === "/"), ...tasks.filter((task) => task.mark === " ")];
+			lines.push(...open.slice(0, WIDGET_TASK_LIMIT).map((task) => clip(`    ${task.mark === "/" ? s.fg("accent", "◼") : "◻"} ${task.label}`)));
+			if (open.length > WIDGET_TASK_LIMIT) lines.push(clip(s.fg("dim", `    … ${open.length - WIDGET_TASK_LIMIT} more open`)));
+			const done = tasks.filter(isDone).length;
+			if (done) lines.push(clip(`    ${s.fg("success", "✔")} ${s.fg("dim", `${done} done`)}`));
+		}
+		return lines;
+	}
+
+	if (waiting.length === 1) lines.push(clip(`  ${ask} G${waiting[0].goal} ${waiting[0].label}`));
+	else if (waiting.length) lines.push(clip(`  ${ask} ${s.fg("warning", `${waiting.length} questions for you`)} ${s.fg("dim", `(${[...new Set(waiting.map((task) => `G${task.goal}`))].join(", ")}) · ask the agent, or alt+g to read them`)}`));
 	for (const goal of active.slice(0, WIDGET_GOAL_LIMIT)) {
 		const tasks = goalTasks(text, goal);
 		const open = tasks.filter((task) => !isDone(task) && !isWaiting(task));
 		const current = open.filter((task) => task.mark === "/");
-		const count = tasks.length ? ` ${tasks.filter(isDone).length}/${tasks.length}` : "";
-		lines.push([`◼ G${items.indexOf(goal) + 1}${count} · ${(current[0] ?? open[0])?.label ?? goal.subject}`, current.length > 1 ? ` · +${current.length - 1} in progress` : ""]);
-	}
-	if (active.length > WIDGET_GOAL_LIMIT) lines.push([`◼ … ${active.length - WIDGET_GOAL_LIMIT} more active goals`, ""]);
-	// A narrow terminal keeps the label and drops the tail.
-	return lines.map(([line, tail]) => {
+		const count = tasks.length ? ` ${s.fg("dim", `${tasks.filter(isDone).length}/${tasks.length}`)}` : "";
+		const line = `  ${s.fg("accent", "◼")} ${number(goal)}${count} ${(current[0] ?? open[0])?.label ?? goal.subject}`;
+		const tail = current.length > 1 ? s.fg("dim", ` +${current.length - 1} in progress`) : "";
+		// A narrow terminal keeps the label and drops the tail.
 		const room = width - visibleWidth(tail);
-		return room >= WIDGET_LABEL_MIN ? truncateToWidth(line, room, "…") + tail : truncateToWidth(line, width, "…");
-	});
+		lines.push(room >= WIDGET_LABEL_MIN ? truncateToWidth(line, room, "…") + tail : clip(line));
+	}
+	if (active.length > WIDGET_GOAL_LIMIT) lines.push(clip(s.fg("dim", `  … ${active.length - WIDGET_GOAL_LIMIT} more active goals`)));
+	return lines;
 }
 
 /** Set the checkbox of the one goal whose subject matches exactly (case-insensitive). */

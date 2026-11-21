@@ -47,6 +47,7 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	const hooks = new Map<string, (event: any, ctx: any) => any>();
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
+	const shortcuts = new Map<string, any>();
 	const events = {
 		emit: (channel: string, data: unknown) => { for (const handler of [...(listeners.get(channel) ?? [])]) handler(data); },
 		on: (channel: string, handler: (data: unknown) => void) => {
@@ -88,6 +89,8 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	const pi = {
 		events,
 		getActiveTools: () => [...activeTools],
+		getAllTools: () => ["read", "bash", "TaskCreate", "TaskUpdate", ...tools.keys()].map((name) => ({ name })),
+		registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut),
 		setActiveTools: (names: string[]) => { activeTools = [...names]; },
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
@@ -125,5 +128,5 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	/** The stock scheduler's wake: its header lines, a blank line, then the stored prompt. */
 	const wake = (id: string, prompt: string, schedule = "1h") => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\nType: interval\nSchedule: ${schedule}\nScheduled for: 2026-01-01T00:00:00.000Z\n\n${prompt}` });
 	const complete = (goal: string) => tools.get("CompleteGoal").execute("call", { goal }, undefined, undefined, ctx);
-	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake, flush, pi };
+	return { activeTools: () => activeTools, shortcuts, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake, flush, pi };
 }
