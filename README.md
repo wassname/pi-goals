@@ -51,7 +51,7 @@ Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified, `[✓]` accepted by t
 <!-- [?] paragraph: PI/Claude. -->
 A task marked `[?]` waits on your decision. The widget shows one first, as `? G2 <question>`; two or more become one line, `? 3 questions for you (G1, G2)`, to ask the agent about or read in full with `alt+g`. The status line counts them. The agent is asked to write the label as the whole question, with the options, what each changes, its recommendation and what it assumes meanwhile in the task's notes, so you can answer without the chat history.
 
-While goals run, tasks stay in this file instead of a separate pi-tasks list: pi-goals turns off pi-tasks' TaskCreate, and turns it back on when goals are paused, finished or cleared, also after a reload.
+While goals run, tasks stay in this file instead of a separate pi-tasks list: pi-goals turns off pi-tasks' TaskCreate, and turns it back on when goals are paused, finished or cleared, also after a reload. Paused goals send no reminders; after compaction or resume the agent still gets the goals file, marked paused, as context.
 
 The sign-off judge reads the goals file and cited files; it cannot run tests. The working agent must run checks and save their output first. Its reviews are saved in `.pi/goals/reviews/`.
 

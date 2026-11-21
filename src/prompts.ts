@@ -139,10 +139,14 @@ const keepWorking = "Before you stop to wait for the user: search the goals file
 export const forkNotice = (file: string) => `This session was forked from one with goals ${file}. Goals are not inherited; use /goals new for this session's own purpose.`;
 
 // 4. Ready, compaction, resume or an accepted goal: the file above ## Log and the user's newest messages, once.
-export function resync(text: string, path: string, why: string): string {
+// While paused: the file stays in context after compaction or resume, without the push to keep working.
+export const pausedState = "[pi-goals: paused] Goals are paused: no reminders, and CompleteGoal is off until the user runs /goals resume. The goals file below is context. The user's messages lead; work on the goals only if they ask.";
+
+export function resync(text: string, path: string, why: string, paused = false): string {
 	const { top, recent, older, cut } = fold(text);
 	const left = ` Below: the aim, User voice and the goals, then the rest of the file${cut ? " above its ## Log" : ""}${recent.length ? ", then the user's newest messages" : ""}. Accepted and cancelled goals show only their line, finished tasks are counted, and notes are shown only for tasks marked [/] or [?]; read the file when you start another task.${cut ? ` The Log${older ? ` and ${older} older user messages` : ""} stay in the file.` : ""}`;
 	const interview = recent.length ? `\n\n## Interview (newest ${recent.length})\n\n${recent.join("\n\n")}` : "";
+	if (paused) return `${pausedState}\n\n[pi-goals: resync] ${why} Goals file: ${path}.${left}\n\n${top}${interview}`;
 	return `[pi-goals: resync] ${why} Goals file: ${path}.${left} Continue the current goal; the user's latest message outranks the file.\n\n${perspective}\n\n${keepWorking}\n\n${taskGuidance}\n\n${reportGuidance}\n\n${top}${interview}`;
 }
 

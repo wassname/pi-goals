@@ -379,6 +379,19 @@ describe("context after compaction and resume", () => {
 		expect(await h.hook("context", { messages: [] })).toBeUndefined();
 	});
 
+	it("while paused, sends nothing at pause and marks the file paused when it is re-sent after compaction", async () => {
+		const h = setup({ choices: ["Ready"] });
+		await ready(h);
+		const sent = h.sent.length;
+		await h.commands.get("goals").handler("pause", h.ctx);
+		expect(h.sent.slice(sent).filter((m) => !m.text.startsWith("/schedule-remove"))).toEqual([]);
+		await h.hook("session_compact");
+		const text = (await h.hook("context", { messages: [] })).messages.at(-1).content[0].text as string;
+		expect(text.startsWith("[pi-goals: paused]")).toBe(true);
+		expect(text).toContain("1. [/] goal: make the plot");
+		expect(text).not.toContain("Continue the current goal");
+	});
+
 	it("restores this session's goals on resume and ignores another session's state", async () => {
 		const h = setup({ choices: ["Ready"] });
 		await ready(h);

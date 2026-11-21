@@ -311,7 +311,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 
 	// Goals file above the Log after compaction or resume: persisted at the next prompt, or transient once if an
 	// auto-compaction retry continues the run without before_agent_start.
-	const resyncText = () => [["planning", "starting"].includes(state.phase ?? "") ? prompts.planningState(state.file!) : "", prompts.resync(read(), state.file!, "Session started or compacted.")].filter(Boolean).join("\n\n");
+	const resyncText = () => [["planning", "starting"].includes(state.phase ?? "") ? prompts.planningState(state.file!) : "", prompts.resync(read(), state.file!, "Session started or compacted.", state.phase === "paused")].filter(Boolean).join("\n\n");
 	pi.on("before_agent_start", async () => {
 		if (!state.file || !resyncDue) return;
 		resyncDue = false;
