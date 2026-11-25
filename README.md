@@ -2,64 +2,9 @@
 
 A Pi extension for work that takes more than one conversation. You agree on goals and how to check the results. The agent keeps those goals in view while it works, including when you're away.
 
-## Workflow
+## Widget mock-up
 
-1. Run `/goals new <idea>`. The agent explores and asks clarifying questions before drafting a plan.
-2. Agree on the goals and a short mock-up of how you'll review the results. The mock-up shows possible outcomes, not results already measured.
-3. Review the plan and choose **Ready** to start work. During planning, the agent can only read, search, consult helpers, and write the goals file or notes under `slop/`.
-4. Follow the work in a widget: a header with goal counts, then up to two unfinished goals, active first, each with its tasks done and the task in progress. Click it to see every goal and task ([mock-up](#goals-and-evidence)). Hourly reminders are kept short so they get read, and ask the agent to state the overall goal and its progress in one or two lines, name the next task and start it. They show your loop statement, the aim, one status line per goal, and the open tasks of active goals, longest unchanged first, with their age. Tasks that wait on your decision are listed apart. They also say how often they fire and that the agent can change it. Failure modes, evidence and task details stay in the goals file. After Ready, compaction or resume the agent gets the aim, your words (User voice) and the goals, then the rest of the file above its Log and your newest messages, with advice to step back to the goal and to look for answers before waiting for you. To keep this short however long the task list gets, finished tasks are counted, notes are sent only for tasks in progress or waiting on you, and accepted goals keep one line. The Log, the left-out task text and your older messages stay in the file for it to search.
-5. Before a goal is ticked off, a fresh, read-only subagent checks the evidence. This sign-off judge can reject completion if the work misses what you asked for.
-6. When the last goal is finished, reminders stop and the agent is asked for the final report in the review layout you agreed.
-
-The sign-off judge is optional. With it off, the agent marks goals as self-verified. Its acceptance is another reading of the evidence, not a guarantee that the result is correct.
-
-## Install
-
-Add to your Pi settings:
-
-```json
-"packages": ["npm:@jl1990/pi-scheduler@0.6.0", "npm:pi-subagents@0.84.0", "~/path/to/pi-goals"]
-```
-
-<!-- PI/OpenAI: scheduler installation and startup recovery. -->
-Requires Pi 1.2 or newer (pi-subagents 0.84 needs it). Install and load pi-scheduler 0.6.0 or newer separately; it is not bundled. Install pi-subagents 0.84.0 separately for the sign-off judge.
-
-Scheduled work is tested with Node Pi 1.5.2 and scheduler 0.6.0. The unmodified scheduler 0.6.0 package fails to load `graceful-fs` in compiled Linux Pi 1.4.0 and 1.5.2. Use Node Pi for scheduled work until that upstream loading problem is fixed. Work can start without a compatible scheduler, but it will not receive hourly reminders.
-
-Ready starts work without waiting for the scheduler. If the scheduler does not confirm the reminder, the goals status shows `scheduler: unconfirmed`. pi-goals also records a warning in the transcript and the goals file's Log. To retry the reminder after fixing the scheduler, use `/goals retry`. If an older session still shows `starting`, run `/goals review` and choose Ready again. If the plan changes while the Ready menu is open, review it again; Log and Interview entries do not require a new review.
-
-## Commands
-
-```text
-/goals new <idea>      discuss and draft a plan
-/goals review          open Ready / Discuss in chat / Edit / Cancel
-/goals pause           stop reminders; keep the goals file
-/goals resume          resume paused work and restart reminders
-/goals retry           retry failed reminder creation
-/goals clear           stop reminders and detach the goals file
-/goals judge off|on|<provider/model>
-```
-
-## Goals and evidence
-
-The plan is saved in `.pi/goals/`. It opens with the aim in one or two lines, then the goals with their tasks and evidence, the review mock-up and your words; it keeps your messages word for word at the end. A result takes one line in the goals, with a link to the heading that holds its numbers and quotes (in the Log or the project's journal). Each goal describes how the work could look complete but still be wrong, and what check would catch that.
-
-You can edit the file at any time. The next reminder uses your changes. The agent should ask before changing your instructions or recorded preferences.
-
-Goal marks: `[ ]` open, `[/]` active, `[x]` self-verified, `[✓]` accepted by the sign-off judge, `[-]` cancelled. The status line counts accepted goals and names the goals file.
-
-<!-- widget mock-up: PI/Claude, rendered by widgetLines() from an example goals file. -->
-The widget shows a header with goal counts, then up to two unfinished goals, active first. `✔ 3/8` means 3 of 8 tasks are done; `+1 in progress` counts the other tasks marked `[/]`:
-
-```
-● 3 goals (1 accepted, 1 active, 1 open) · 2 need you · click to expand
-  ? 2 questions for you (G2, G3) · ask the agent, or click to read them
-  ◼ G2 ✔ 3/8 · Train the 1B model on the new labels +1 in progress
-  ◻ G3 ✔ 0/1 · Write the report
-```
-
-A click on the widget, or Pi's ctrl+o, expands it to every goal with its open tasks and the full questions:
-
+<!-- PI/Claude: mock-up rendered by widgetLines(). PI/OpenAI: moved the expanded view to the top. -->
 ```
 ● 3 goals (1 accepted, 1 active, 1 open) · 2 need you · click to collapse
   ✔ G1 Clean the labels
@@ -74,14 +19,42 @@ A click on the widget, or Pi's ctrl+o, expands it to every goal with its open ta
     ? Publish the report on the blog, or only share it with the team?
 ```
 
-Clicks reach the widget only in Pi's fullscreen mode, the default. ctrl+o also expands tool output.
+Click the widget in Pi's fullscreen mode or press `Ctrl+O` to expand it.
 
-<!-- [?] paragraph: PI/Claude. -->
-A task marked `[?]` waits on your decision. The widget shows one question on its own line; two or more become one line, as above. The status line counts them. The agent is asked to write the label as the whole question, with the options, what each changes, its recommendation and what it assumes meanwhile in the task's notes, so you can answer without the chat history.
+## Workflow
 
-While goals run, tasks stay in this file instead of a separate pi-tasks list: pi-goals turns off pi-tasks' TaskCreate, and turns it back on when goals are paused, finished or cleared, also after a reload. Paused goals send no reminders; after compaction or resume the agent still gets the goals file, marked paused, as context.
+<!-- PI/OpenAI: shortened the workflow and linked the widget mock-up. -->
+1. Run `/goals new <idea>` and answer the agent's questions.
+2. Agree on the goals and a mock-up of the final report.
+3. Review the plan and choose **Ready** to start work.
+4. See progress and questions in the goals widget ([mock-up](#widget-mock-up)).
+5. A fresh, read-only judge checks each goal before it is marked done.
+6. Get the final report in the format you agreed on.
 
-The sign-off judge reads the goals file and cited files; it cannot run tests. The working agent must run checks and save their output first. Its reviews are saved in `.pi/goals/reviews/`.
+The sign-off judge is optional. With it off, the agent marks goals as self-verified. Its acceptance is another reading of the evidence, not a guarantee that the result is correct.
+
+## Install
+
+Add to your Pi settings:
+
+```json
+"packages": ["npm:@jl1990/pi-scheduler@0.6.0", "npm:pi-subagents@0.84.0", "~/path/to/pi-goals"]
+```
+
+<!-- PI/OpenAI: kept the minimum version and the install choice that affects reminders. -->
+Requires Pi 1.2 or newer. Use Node Pi for scheduled reminders.
+
+## Commands
+
+```text
+/goals new <idea>      discuss and draft a plan
+/goals review          open Ready / Discuss in chat / Edit / Cancel
+/goals pause           stop reminders; keep the goals file
+/goals resume          resume paused work and restart reminders
+/goals retry           retry failed reminder creation
+/goals clear           stop reminders and detach the goals file
+/goals judge off|on|<provider/model>
+```
 
 ## Design intent
 
