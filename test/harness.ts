@@ -40,7 +40,7 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	const branch: any[] = [];
 	const sent: Array<{ text: string; options?: unknown }> = [];
 	const notes: string[] = [];
-	const shown: Array<{ customType: string; content: string }> = [];
+	const shown: Array<{ customType: string; content: string; display: boolean }> = [];
 	const requests: any[] = [];
 	const agents: any[] = [];
 	const listeners = new Map<string, Set<(data: unknown) => void>>();
@@ -95,7 +95,7 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		on: (name: string, handler: any) => hooks.set(name, handler),
 		appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data: structuredClone(data) }),
-		sendMessage: (message: { customType: string; content: string }) => shown.push(message),
+		sendMessage: (message: (typeof shown)[number]) => shown.push(message),
 		sendUserMessage: (text: string, options?: unknown) => sent.push({ text, options }),
 		getCommands: () => (opts.schedulerLoaded === false ? [] : ["schedule", "schedule-remove"]).map(name => ({ name, source: "extension", sourceInfo: { path: scheduler } })),
 	};
@@ -106,7 +106,6 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		while (cursor < sent.length) {
 			const message = sent[cursor++];
 			if (message.text.startsWith("/schedule ") && opts.autoSchedule !== false) schedulerReceipt(`t${++nextTask}`);
-			if (message.text.startsWith("/goals confirm ")) await commands.get("goals").handler(message.text.slice(7), ctx);
 			if (message.text.startsWith("[pi-goals:start-work:") && opts.autoStart !== false) {
 				const out = await hooks.get("input")!({ source: "extension", text: message.text }, ctx);
 				if (out?.action === "transform") message.text = out.text;

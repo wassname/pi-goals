@@ -280,10 +280,24 @@ function arrange(text: string): string {
 	return [text.slice(0, from(heads[0])).trimEnd(), ...parts.sort((a, b) => a.rank - b.rank).map((part) => part.body)].filter(Boolean).join("\n\n");
 }
 
-/** What a resync sends: the file above ## Log, arranged and folded, and the newest Interview entries. The Log, the
- * folded task text and older entries stay in the file. */
+const isHistory = (text: string, heading: Heading) => ["log", "interview"].includes(headingName(text, heading).toLowerCase());
+
+export function planText(text: string): string {
+	const heads = rootHeadings(parse(text));
+	let start = 0;
+	const parts: string[] = [];
+	for (const [i, heading] of heads.entries()) {
+		if (from(heading) < start || heading.depth !== 2 || !isHistory(text, heading)) continue;
+		parts.push(text.slice(start, from(heading)).trimEnd());
+		const next = heads.slice(i + 1).find(next => next.depth <= heading.depth);
+		start = next ? from(next) : text.length;
+	}
+	return [...parts, text.slice(start).trimEnd()].filter(Boolean).join("\n\n");
+}
+
+/** What a resync sends: the file above the Log, folded, and the newest Interview entries. */
 export function fold(text: string): { top: string; recent: string[]; older: number; cut: boolean } {
-	const cut = rootHeadings(parse(text)).find((heading) => ["log", "interview"].includes(headingName(text, heading).toLowerCase()));
+	const cut = rootHeadings(parse(text)).find(heading => isHistory(text, heading));
 	const entries = interviewEntries(text);
 	return { top: arrange(foldGoals((cut ? text.slice(0, from(cut)) : text).trimEnd())), recent: entries.slice(-RESYNC_INTERVIEW_LIMIT), older: Math.max(0, entries.length - RESYNC_INTERVIEW_LIMIT), cut: Boolean(cut) };
 }

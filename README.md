@@ -24,9 +24,9 @@ Add to your Pi settings:
 <!-- PI/OpenAI: scheduler installation and startup recovery. -->
 Requires Pi 1.2 or newer (pi-subagents 0.84 needs it). Install and load pi-scheduler 0.6.0 or newer separately; it is not bundled. Install pi-subagents 0.84.0 separately for the sign-off judge.
 
-Scheduled work is tested with Node Pi 1.5.2 and scheduler 0.6.0. The unmodified scheduler 0.6.0 package fails to load `graceful-fs` in compiled Linux Pi 1.4.0 and 1.5.2. Use Node Pi for scheduled work until that upstream loading problem is fixed. With the scheduler omitted, planning and recovery remain available in the tested compiled versions. Scheduler 0.5.1 is rejected before Ready can use it.
+Scheduled work is tested with Node Pi 1.5.2 and scheduler 0.6.0. The unmodified scheduler 0.6.0 package fails to load `graceful-fs` in compiled Linux Pi 1.4.0 and 1.5.2. Use Node Pi for scheduled work until that upstream loading problem is fixed. Work can start without a compatible scheduler, but it will not receive hourly reminders.
 
-Ready keeps work blocked until the scheduler's session-scoped creation receipt is confirmed. If startup remains pending, `/goals resume` checks again without creating another reminder. If creation failed, fix the scheduler's startup error, then use `/goals retry`. Pause or clear cancels startup and preserves the goals file. Changed goals must be reviewed again.
+Ready starts work without waiting for the scheduler. pi-goals records a missing reminder in the transcript and the goals file's Log. To retry the reminder after fixing the scheduler, use `/goals retry`. If an older session still shows `starting`, run `/goals review` and choose Ready again. If the plan changes while the Ready menu is open, review it again; Log and Interview entries do not require a new review.
 
 ## Commands
 
@@ -34,7 +34,7 @@ Ready keeps work blocked until the scheduler's session-scoped creation receipt i
 /goals new <idea>      discuss and draft a plan
 /goals review          open Ready / Discuss in chat / Edit / Cancel
 /goals pause           stop reminders; keep the goals file
-/goals resume          restart reminders, or check pending startup
+/goals resume          resume paused work and restart reminders
 /goals retry           retry failed reminder creation
 /goals clear           stop reminders and detach the goals file
 /goals judge off|on|<provider/model>
@@ -89,7 +89,7 @@ One working agent, one goals file, scheduled reminders, and an optional sign-off
 
 The default loop statement is a few lines: state the goal and progress, start the task unchanged longest, do not poll running jobs or coordinate other sessions unless you asked, put decisions for you in `[?]` tasks, and message you only for a result that changes a goal. While goals run, pi-goals removes pi-subagents' "or report completion ... Do not silently yield" line from successful completion notices, so a finished subagent does not prompt a status report. Existing goals files keep their saved instructions.
 
-Reminders stop when you pause, clear, or finish all goals. They can remind an agent of its goals; they cannot prevent drift between reminders. Tests cover data flow with a fake Pi and real dependency parsers. Run `PI_TEST_BIN=/path/to/node-pi npm run test:pi` for real scheduler create/remove and Ready confirmation checks, with isolated state and no model calls. Use `PI_COMPILED_BIN=/path/to/compiled-pi npm run test:compiled` for the compiled-host regression; scheduler 0.6.0 currently fails that check. Set `PI_TEST_NO_SCHEDULER=1` to check that compiled Pi preserves planning and reports the missing scheduler instead of starting work.
+Reminders stop when you pause, clear, or finish all goals. They can remind an agent of its goals; they cannot prevent drift between reminders. Tests cover data flow with a fake Pi and real dependency parsers. Run `PI_TEST_BIN=/path/to/node-pi npm run test:pi` for real scheduler create/remove and Ready confirmation checks, with isolated state and no model calls. Use `PI_COMPILED_BIN=/path/to/compiled-pi npm run test:compiled` for the compiled-host regression; scheduler 0.6.0 currently fails that check. Set `PI_TEST_NO_SCHEDULER=1` to check that compiled Pi starts work and records the missing scheduler.
 
 <!-- Use paragraph: PI/Claude; source slop/analysis/20261111_judge_reviews.py. -->
 It has run for several days at a time in about ten research projects, where the sign-off judge rejected about half of the completion requests. That use was not a controlled test. How often the sign-off judge accepted a goal that was not done has not been measured.

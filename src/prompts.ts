@@ -6,10 +6,13 @@ import { fold } from "./goals.js";
 // PI/OpenAI: default for new plans; each saved goals file owns its loop statement.
 // wassname 2026-11-07 (cg2_main feedback): the old one was "too long and you ignored it"; coordinate "only if asked ... minimally".
 // wassname 2026-11-11: "needs to be very short. I usually come back and say /busy anyway" (spelling corrected).
-// PI/OpenAI: startup messages stay non-working until an owned scheduler receipt is confirmed.
-export const schedulerUnavailable = "Load exactly one @jl1990/pi-scheduler >=0.6.0: pi install npm:@jl1990/pi-scheduler@0.6.0, then /reload. Check startup errors if it cannot load. Scheduler 0.6.0 fails to load graceful-fs in the tested compiled Pi 1.4.0/1.5.2 binaries; use Node Pi for scheduled work, or omit the scheduler to keep planning available. Goals are preserved; use /goals resume to check pending startup, or /goals review to approve again.";
-export const unconfirmedWork = "This session recorded working without a valid scheduler receipt. Goals are paused and the file is preserved. Inspect /schedules all for any old reminder before /goals resume.";
-export const startupPending = "Scheduler creation is not confirmed; work has not started. Use /goals resume to check again without creating another reminder. If creation failed, fix the scheduler and use /goals retry, or /goals pause or clear to cancel.";
+export const schedulerUnavailable = "Load exactly one @jl1990/pi-scheduler >=0.6.0: pi install npm:@jl1990/pi-scheduler@0.6.0, then /reload. Use Node Pi if compiled Pi cannot load the scheduler.";
+export const changedPlan = "[pi-goals] The plan changed while the Ready menu was open. Work did not start. Use /goals review to approve the current plan.";
+export const interruptedStartup = "[pi-goals] The previous startup did not finish. Use /goals review and choose Ready to start the current plan.";
+export const noReminderReceipt = "The scheduler has not confirmed creation. Check its errors and /schedules all.";
+export const reminderWarning = (reason: string) => `[pi-goals] Work is enabled, but the hourly reminder is not confirmed. ${reason} Use /goals retry to retry the reminder.`;
+export const reminderConfirmed = "[pi-goals] The scheduler confirmed the hourly reminder.";
+export const reviewUnavailable = "Review opens only while drafting a plan.";
 export const startWork = (token: string) => `[pi-goals:start-work:${token}]`;
 export const startWorkToken = (text: string) => /^\[pi-goals:start-work:([\w-]+)\]$/.exec(text)?.[1];
 
@@ -116,7 +119,7 @@ export function planningState(path: string): string {
 
 // 2. Ready.
 export function readyPrompt(path: string, text: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each reminder, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. A scheduled loop will remind you of the loop statement, aim, goal status and open tasks.\n\n${resync(text, path, "Ready approved.")}`;
+	return `[pi-goals] The user approved ${path}. Work the goals. Use the approved review preview for reports, replacing placeholders with observed results and claiming only checks actually performed. Mark the goal you work on [/] and its current task [/]; the user sees that goal's open tasks in a widget and you see them on each reminder, so keep tasks and evidence current. Steps live only in this file: TaskCreate is off in goal mode; delete any leftover pi-tasks tasks with TaskUpdate (status deleted). When a goal's discriminator is shown, fill its evidence and call CompleteGoal. If a reminder is scheduled, it will show the loop statement, aim, goal status and open tasks.\n\n${resync(text, path, "Ready approved.")}`;
 }
 
 // Scheduled wake: short, so it is read. Field details and advice go with the file in resync.

@@ -1,10 +1,10 @@
 // PI/OpenAI: one agent, one goals file, human Ready, and a stock scheduled loop.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ageTasks, aim, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, restoreInterview, section, stamp, type TaskSince, waitingTasks, widgetLines } from "./goals.js";
+import { ageTasks, aim, appendInterview, appendLog, goals, hasRemainingGoals, headings, hiddenTasks, interviewEntries, loopFocus, markGoal, planText, restoreInterview, section, stamp, type TaskSince, waitingTasks, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge } from "./judge.js";
 import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -13,8 +13,11 @@ const STATE = "pi-goals-single-agent";
 interface State {
 	owner: string;
 	phase: "planning" | "starting" | "working" | "paused" | null;
-	startup?: { token: string; hash: string; source: string };
-	retired?: { token: string; source: string }[];
+	/** Older sessions may still be waiting for Ready confirmation. */
+	startup?: { token: string; source: string };
+	retired?: { token: string; source?: string }[];
+	reminderSource?: string;
+	reminderWarning?: boolean;
 	file?: string;
 	/** Identifies this Ready's scheduled wakes; older or foreign wakes are dropped. */
 	token?: string;
@@ -60,6 +63,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 	let resyncDue = false;
 	let reviewing = false;
 	let judging = false;
+	let kickoff: string | undefined;
 	/** Interview entries the agent must not remove: snapshot at turn start plus new user messages. */
 	let knownInterview: string[] = [];
 	const persist = () => pi.appendEntry(STATE, { ...state });
@@ -131,56 +135,54 @@ export default function piGoals(pi: ExtensionAPI): void {
 		}
 	}
 
+	function retireReminder() {
+		if (!state.token) return;
+		state = { ...state, retired: [...(state.retired ?? []), { token: state.token, source: state.reminderSource }], token: undefined, reminderSource: undefined, reminderWarning: undefined };
+	}
 	function pause(ctx: ExtensionContext) {
-		const token = state.token;
+		kickoff = undefined;
 		retireStartup();
-		state = { ...state, phase: "paused", token: undefined };
-		generation++;
-		persist();
-		refresh(ctx);
-		cleanRetired(ctx);
-		if (!token) return;
-		try { stopLoop(pi, ctx, token); } catch (error) { ctx.ui.notify(String(error), "error"); }
+		retireReminder();
+		state = { ...state, phase: "paused" };
+		generation++; persist(); refresh(ctx); cleanRetired(ctx);
 	}
 
-	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
-	function checkedStartup(ctx: ExtensionContext) {
-		cleanRetired(ctx);
-		const pending = state.startup;
-		if (!pending || state.phase !== "starting") return;
-		schedulerCommand(pi, "schedule", pending.source);
-		schedulerCommand(pi, "schedule-remove", pending.source);
-		const text = read();
-		if (digest(text) !== pending.hash) {
-			retireStartup();
-			state = { ...state, phase: "planning" };
-			generation++; persist(); refresh(ctx); cleanRetired(ctx);
-			throw new Error("Goals changed during startup. Work did not start; use /goals review to approve the current file.");
-		}
-		if (!loopTaskId(ctx, pending.token)) {
-			ctx.ui.notify(prompts.startupPending, "warning");
-			return;
-		}
-		return { ...pending, text };
+	function logStartup(ctx: ExtensionContext, message: string) {
+		pi.sendMessage({ customType: "goals-startup", content: message, display: true }, { triggerTurn: false });
+		try { save(appendLog(read(), `${stamp()} ${message}`)); } catch (error) { ctx.ui.notify(String(error), "error"); }
 	}
-	function confirmStartup(ctx: ExtensionContext) {
-		const pending = checkedStartup(ctx);
-		if (pending) pi.sendUserMessage(prompts.startWork(pending.token), { deliverAs: "followUp" });
+	function warnReminder(ctx: ExtensionContext, reason: string) {
+		if (state.reminderWarning) return;
+		state = { ...state, reminderWarning: true }; persist();
+		logStartup(ctx, prompts.reminderWarning(reason));
+	}
+	function checkReminder(ctx: ExtensionContext) {
+		if (state.phase !== "working") return;
+		if (state.token && loopTaskId(ctx, state.token)) {
+			if (state.reminderWarning) {
+				state = { ...state, reminderWarning: undefined }; persist();
+				logStartup(ctx, prompts.reminderConfirmed);
+			}
+		} else warnReminder(ctx, prompts.noReminderReceipt);
+	}
+	function scheduleReminder(ctx: ExtensionContext) {
+		try {
+			const { source } = schedulerCommand(pi, "schedule");
+			schedulerCommand(pi, "schedule-remove", source);
+			state = { ...state, reminderSource: source }; persist();
+			startLoop(pi, ctx, state.token!, source);
+		} catch (error) { warnReminder(ctx, error instanceof Error ? error.message : String(error)); }
 	}
 	function begin(ctx: ExtensionContext, approved = read()) {
-		if (state.startup) { confirmStartup(ctx); return; }
 		const text = read();
-		if (text !== approved) throw new Error("Goals changed while the Ready menu was open; review the current file again.");
+		if (planText(text) !== planText(approved)) { logStartup(ctx, prompts.changedPlan); return; }
 		if (!aim(text) || !section(text, "Loop statement") || !hasRemainingGoals(text, state.judge)) throw new Error("The goals file needs its aim under the title, a Loop statement and unfinished goals.");
-		if (!ctx.sessionManager.getSessionFile()) throw new Error("The goals loop needs a saved Pi session.");
-		const { source } = schedulerCommand(pi, "schedule");
-		schedulerCommand(pi, "schedule-remove", source);
 		const token = randomUUID();
-		state = { ...state, phase: "starting", startup: { token, hash: digest(text), source } };
+		state = { ...state, phase: "working", token, headings: headings(text) };
 		generation++; persist(); refresh(ctx);
-		startLoop(pi, ctx, token, source);
-		// PI/OpenAI: settled commands run serially; elsewhere a missing receipt stays pending for resume.
-		pi.sendUserMessage(`/goals confirm ${token}`, { expandPromptTemplates: true, deliverAs: "followUp" });
+		scheduleReminder(ctx);
+		kickoff = token;
+		pi.sendUserMessage(prompts.startWork(token), { deliverAs: "steer" });
 	}
 
 	async function review(ctx: ExtensionContext) {
@@ -214,10 +216,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 			try {
 				let arg = args.trim();
 				cleanRetired(ctx);
-				if (arg.startsWith("confirm ")) {
-					if (arg.slice(8) === state.startup?.token) confirmStartup(ctx);
-					return;
-				}
+				if (arg.startsWith("confirm ")) return; // Queued by an older version.
 				if (!arg) arg = (await ctx.ui.select("Goals", state.file ? ["review", "pause", "resume", "clear"] : ["new"])) ?? "";
 				if (!arg) return;
 				if (arg === "clear") {
@@ -227,13 +226,27 @@ export default function piGoals(pi: ExtensionAPI): void {
 					persist(); refresh(ctx); return;
 				}
 				if (arg === "pause") { if (state.phase === "working" || state.phase === "starting") pause(ctx); return; }
-				if (arg === "resume") { if (state.phase !== "paused" && state.phase !== "starting") throw new Error("Only paused or starting goals can resume."); begin(ctx); return; }
-				if (arg === "retry") {
-					if (state.phase !== "starting") throw new Error("Only pending startup can retry.");
-					if (digest(read()) !== state.startup!.hash || loopTaskId(ctx, state.startup!.token)) { confirmStartup(ctx); return; }
-					retireStartup(); cleanRetired(ctx); begin(ctx); return;
+				if (["review", "resume", "retry"].includes(arg) && state.phase === "starting") {
+					retireStartup();
+					state = { ...state, phase: "planning" };
+					generation++; persist(); refresh(ctx); cleanRetired(ctx);
+					logStartup(ctx, prompts.interruptedStartup);
+					await review(ctx); return;
 				}
-				if (arg === "review") { await review(ctx); return; }
+				if (arg === "resume") { if (state.phase !== "paused") throw new Error("Only paused goals can resume."); begin(ctx); return; }
+				if (arg === "retry") {
+					if (state.phase !== "working") throw new Error("Only working goals can retry reminders.");
+					if (state.token && loopTaskId(ctx, state.token)) { checkReminder(ctx); ctx.ui.notify(prompts.reminderConfirmed, "info"); return; }
+					if (kickoff) throw new Error("Retry reminders after the Ready prompt is delivered.");
+					retireReminder();
+					state = { ...state, token: randomUUID() }; persist();
+					scheduleReminder(ctx); return;
+				}
+				if (arg === "review") {
+					if (state.phase !== "planning") ctx.ui.notify(prompts.reviewUnavailable, "info");
+					else await review(ctx);
+					return;
+				}
 				if (arg === "judge" || arg.startsWith("judge ")) {
 					const value = arg.slice(5).trim();
 					state = { ...state, judge: value !== "off", model: ["", "on", "off"].includes(value) ? undefined : value };
@@ -274,6 +287,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 		if (event.message.role === "user") reviewRequested = false;
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
+		cleanRetired(ctx);
+		if (!kickoff) checkReminder(ctx);
 		if (!reviewRequested) return;
 		reviewRequested = false;
 		try { await review(ctx); } catch (error) { ctx.ui.notify(String(error), "error"); }
@@ -282,19 +297,13 @@ export default function piGoals(pi: ExtensionAPI): void {
 	pi.on("input", async (event, ctx) => {
 		const work = event.source === "extension" ? prompts.startWorkToken(event.text) : undefined;
 		if (work) {
-			if (work !== state.startup?.token || state.phase !== "starting") return handled;
-			try {
-				const pending = checkedStartup(ctx);
-				if (!pending) return handled;
-				const text = pending.text;
-				state = { ...state, phase: "working", token: pending.token, startup: undefined, headings: headings(text) };
-				generation++; persist(); refresh(ctx);
-				return { action: "transform" as const, text: prompts.readyPrompt(state.file!, text) };
-			} catch (error) { ctx.ui.notify(String(error), "error"); return handled; }
+			if (work !== kickoff || state.phase !== "working") return handled;
+			kickoff = undefined;
+			return { action: "transform" as const, text: prompts.readyPrompt(state.file!, read()) };
 		}
 		const token = event.source === "extension" ? wakeToken(event.text) : undefined;
 		if (token) {
-			if (token !== state.token || state.phase !== "working") return handled;
+			if (token !== state.token || state.phase !== "working") { cleanRetired(ctx); return handled; }
 			const text = read();
 			if (!hasRemainingGoals(text, state.judge)) { pause(ctx); return handled; }
 			const statement = section(text, "Loop statement");
@@ -370,7 +379,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		if (notes.length) return { content: [...event.content, ...notes.map((text) => ({ type: "text" as const, text }))] };
 	});
 	pi.on("session_start", async (_event, ctx) => {
-		generation++; reviewRequested = false;
+		generation++; reviewRequested = false; kickoff = undefined;
 		const last = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === STATE).at(-1);
 		const saved = last?.type === "custom" ? last.data as State : undefined;
 		state = saved?.owner === ctx.sessionManager.getSessionId() ? saved : initial(ctx.sessionManager.getSessionId());
@@ -378,15 +387,12 @@ export default function piGoals(pi: ExtensionAPI): void {
 		state = { ...state, taskCreateOff: saved?.taskCreateOff ?? Boolean(saved?.file) };
 		// A fork has a new session ID, so it does not inherit goals; say so once, then record that this session has none.
 		if (saved?.file && saved.owner !== state.owner) { ctx.ui.notify(prompts.forkNotice(saved.file), "info"); persist(); }
-		if (state.phase === "working" && (!state.token || !loopTaskId(ctx, state.token))) {
-			state = { ...state, phase: "paused", token: undefined };
-			persist(); ctx.ui.notify(prompts.unconfirmedWork, "warning");
-		}
 		resyncDue = Boolean(state.file);
 		refresh(ctx);
 		try {
 			cleanRetired(ctx);
-			if (state.startup) ctx.ui.notify(prompts.startupPending, "warning");
+			if (state.startup) ctx.ui.notify(prompts.interruptedStartup, "warning");
+			checkReminder(ctx);
 		} catch (error) { ctx.ui.notify(String(error), "error"); }
 	});
 	pi.on("session_shutdown", async () => { generation++; });

@@ -13,7 +13,7 @@ const scheduler = process.env.PI_TEST_SCHEDULER ?? join(root, "node_modules/@jl1
 const schedulerEnabled = process.env.PI_TEST_NO_SCHEDULER !== "1";
 const extension = process.env.PI_TEST_GOALS_EXTENSION ?? join(root, "src/index.ts");
 
-test(schedulerEnabled ? "Pi loads the installed scheduler, creates/removes reminders and confirms Ready before work" : "Pi keeps goals planning available without a loaded scheduler", { timeout: 90_000 }, async t => {
+test(schedulerEnabled ? "Pi starts work and creates/removes a session reminder" : "Pi starts work and records the missing scheduler", { timeout: 90_000 }, async t => {
 	assert.ok(binary, "Set PI_COMPILED_BIN to a released compiled Pi executable, or PI_TEST_BIN to a Node Pi launcher.");
 	const executable = resolve(binary);
 	if (process.env.PI_COMPILED_BIN) {
@@ -93,10 +93,14 @@ test(schedulerEnabled ? "Pi loads the installed scheduler, creates/removes remin
 		await rpc("prompt", { message: "/goals new integration" });
 		await rpc("prompt", { message: "/fixture-seed" });
 		await rpc("prompt", { message: "/goals review" });
+		await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-input" && record.message?.content.startsWith("[pi-goals] The user approved"));
+		const warning = await waitFor(record => record.type === "message_end" && record.message?.customType === "goals-startup");
+		assert.equal(warning.message.display, true);
+		assert.match(warning.message.content, /hourly reminder is not confirmed/);
 		await rpc("prompt", { message: "/fixture-state" });
 		const snapshot = await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-state");
-		assert.equal(snapshot.message.details.data.phase, "planning");
-		assert.ok(records.some(record => record.type === "extension_ui_request" && record.method === "notify" && record.message.includes("pi install npm:@jl1990/pi-scheduler@0.6.0")));
+		assert.equal(snapshot.message.details.data.phase, "working");
+		assert.ok(readFileSync(snapshot.message.details.data.file, "utf8").split("## Log")[1].includes(warning.message.content));
 		assert.equal(records.some(record => record.type === "agent_start"), false);
 		return;
 	}
@@ -117,7 +121,6 @@ test(schedulerEnabled ? "Pi loads the installed scheduler, creates/removes remin
 	await rpc("prompt", { message: "/fixture-seed" });
 	await rpc("prompt", { message: "/goals review" });
 	const created = await waitFor(record => record.type === "message_end" && record.message?.customType === "scheduled-task" && /^pi-goals-loop:(?!compiled-)/.test(record.message?.details?.task?.prompt ?? ""));
-	await rpc("prompt", { message: "/goals resume" });
 	await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-input" && record.message?.content.startsWith("[pi-goals] The user approved"));
 	await rpc("prompt", { message: "/fixture-state" });
 	const snapshot = await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-state");
