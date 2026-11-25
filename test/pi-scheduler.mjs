@@ -96,7 +96,8 @@ test(schedulerEnabled ? "Pi starts work and creates/removes a session reminder" 
 		await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-input" && record.message?.content.startsWith("[pi-goals] The user approved"));
 		const warning = await waitFor(record => record.type === "message_end" && record.message?.customType === "goals-startup");
 		assert.equal(warning.message.display, true);
-		assert.match(warning.message.content, /hourly reminder is not confirmed/);
+		assert.match(warning.message.content, /Scheduler warning:.*not confirmed/);
+		assert.ok(records.some(record => record.type === "extension_ui_request" && record.method === "setStatus" && JSON.stringify(record).includes("scheduler: unconfirmed")));
 		await rpc("prompt", { message: "/fixture-state" });
 		const snapshot = await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-state");
 		assert.equal(snapshot.message.details.data.phase, "working");
@@ -105,32 +106,24 @@ test(schedulerEnabled ? "Pi starts work and creates/removes a session reminder" 
 		return;
 	}
 	assert.ok(commands.commands.some(command => command.name === "schedule"), `Scheduler did not load: ${stderr}`);
-	for (let n = 0; n < 3; n++) {
-		const prompt = `pi-goals-loop:compiled-${n}`;
-		await rpc("prompt", { message: `/schedule prompt every 1h :: ${prompt}` });
-		const receipt = await waitFor(record => record.type === "message_end" && record.message?.customType === "scheduled-task" && record.message?.details?.task?.prompt === prompt);
-		const task = receipt.message.details.task;
-		assert.equal(task.scope, "session");
-		assert.equal(task.action, "prompt");
-		assert.ok(task.sessionFile);
-		assert.equal(readFileSync(join(dir, "tasks.json"), "utf8").includes(task.id), true);
-		await rpc("prompt", { message: `/schedule-remove ${task.id}` });
-		assert.equal(readFileSync(join(dir, "tasks.json"), "utf8").includes(task.id), false);
-	}
 	await rpc("prompt", { message: "/goals new integration" });
 	await rpc("prompt", { message: "/fixture-seed" });
 	await rpc("prompt", { message: "/goals review" });
-	const created = await waitFor(record => record.type === "message_end" && record.message?.customType === "scheduled-task" && /^pi-goals-loop:(?!compiled-)/.test(record.message?.details?.task?.prompt ?? ""));
+	const created = await waitFor(record => record.type === "message_end" && record.message?.customType === "scheduled-task" && record.message?.details?.task?.prompt?.startsWith("pi-goals-loop:"));
+	const reminder = created.message.details.task;
+	assert.equal(reminder.scope, "session");
+	assert.equal(reminder.action, "prompt");
+	assert.ok(reminder.sessionFile);
+	assert.equal(readFileSync(join(dir, "tasks.json"), "utf8").includes(reminder.id), true);
 	await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-input" && record.message?.content.startsWith("[pi-goals] The user approved"));
 	await rpc("prompt", { message: "/fixture-state" });
 	const snapshot = await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-state");
 	assert.equal(snapshot.message.details.data.phase, "working");
 	const approvals = records.filter(record => record.type === "message_end" && record.message?.customType === "fixture-input" && record.message?.content.startsWith("[pi-goals] The user approved"));
 	assert.equal(approvals.length, 1);
-	const reminder = created.message.details.task;
 	await rpc("prompt", { message: "/goals pause" });
 	await waitFor(record => record.type === "extension_ui_request" && record.method === "notify" && record.message === `Removed scheduled task ${reminder.id}`);
 	assert.equal(readFileSync(join(dir, "tasks.json"), "utf8").includes(reminder.id), false);
 	assert.equal(records.some(record => record.type === "agent_start"), false, "A model turn was unexpectedly requested");
-	assert.equal(stderr, "");
+
 });

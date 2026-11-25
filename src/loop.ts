@@ -36,7 +36,7 @@ export function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, token: string
 	pi.sendUserMessage(`/${schedulerCommand(pi, "schedule", source).name} prompt every 1h :: ${marker(token)}`, { expandPromptTemplates: true, deliverAs: "followUp" });
 }
 
-/** PI/OpenAI: only an enabled, recurring, session-bound prompt receipt can authorize work. */
+/** Find the scheduler's creation receipt for this session and reminder. */
 export function loopTaskId(ctx: ExtensionContext, token: string): string | undefined {
 	const sessionFile = ctx.sessionManager.getSessionFile();
 	let id: string | undefined;
@@ -49,8 +49,6 @@ export function loopTaskId(ctx: ExtensionContext, token: string): string | undef
 	return id;
 }
 
-export function stopLoop(pi: ExtensionAPI, ctx: ExtensionContext, token: string, source?: string): void {
-	const id = loopTaskId(ctx, token);
-	if (!id) throw new Error("Goals loop task not found in this session; inspect /schedules all and remove it by ID.");
+export function stopLoop(pi: ExtensionAPI, id: string, source?: string): void {
 	pi.sendUserMessage(`/${schedulerCommand(pi, "schedule-remove", source).name} ${id}`, { expandPromptTemplates: true, deliverAs: "followUp" });
 }

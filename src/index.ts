@@ -55,6 +55,7 @@ function quietSubagentNotices(messages: Messages): Messages {
 const initial = (owner: string): State => ({ owner, phase: null, judge: true });
 const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 const handled = { action: "handled" as const };
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export default function piGoals(pi: ExtensionAPI): void {
 	let state = initial("");
@@ -98,7 +99,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 			const items = goals(text);
 			const waiting = waitingTasks(text).length;
 			const reported = items.filter(g => g.status === "reported").length;
-			ctx.ui.setStatus("goals", `${state.phase} · ${items.filter(g => g.status === "done").length}/${items.length} accepted${reported ? ` · ${reported} reported` : ""}${waiting ? ` · ${waiting} need you` : ""} · ${relative(ctx.cwd, state.file)}`);
+			const scheduler = state.phase === "working" && state.reminderWarning ? " · scheduler: unconfirmed" : "";
+			ctx.ui.setStatus("goals", `${state.phase}${scheduler} · ${items.filter(g => g.status === "done").length}/${items.length} accepted${reported ? ` · ${reported} reported` : ""}${waiting ? ` · ${waiting} need you` : ""} · ${relative(ctx.cwd, state.file)}`);
 			if (!widgetLines(text).length) ctx.ui.setWidget("goals", undefined);
 			else if (ctx.mode === "tui") {
 				// Parsing a large goals file takes tens of ms; render runs on every repaint.
@@ -126,12 +128,12 @@ export default function piGoals(pi: ExtensionAPI): void {
 	}
 	function cleanRetired(ctx: ExtensionContext) {
 		for (const task of state.retired ?? []) {
-			if (!loopTaskId(ctx, task.token)) continue;
-			try {
-				stopLoop(pi, ctx, task.token, task.source);
-				state = { ...state, retired: state.retired!.filter(t => t.token !== task.token) };
-				persist();
-			} catch (error) { ctx.ui.notify(String(error), "error"); }
+			const id = loopTaskId(ctx, task.token);
+			if (!id) continue;
+			try { stopLoop(pi, id, task.source); }
+			catch (error) { ctx.ui.notify(prompts.schedulerCleanupFailed(id, errorMessage(error)), "warning"); continue; }
+			state = { ...state, retired: state.retired!.filter(t => t.token !== task.token) };
+			persist();
 		}
 	}
 
@@ -153,17 +155,19 @@ export default function piGoals(pi: ExtensionAPI): void {
 	}
 	function warnReminder(ctx: ExtensionContext, reason: string) {
 		if (state.reminderWarning) return;
-		state = { ...state, reminderWarning: true }; persist();
+		state = { ...state, reminderWarning: true }; persist(); refresh(ctx);
 		logStartup(ctx, prompts.reminderWarning(reason));
 	}
-	function checkReminder(ctx: ExtensionContext) {
-		if (state.phase !== "working") return;
-		if (state.token && loopTaskId(ctx, state.token)) {
-			if (state.reminderWarning) {
-				state = { ...state, reminderWarning: undefined }; persist();
-				logStartup(ctx, prompts.reminderConfirmed);
-			}
-		} else warnReminder(ctx, prompts.noReminderReceipt);
+	function checkReminder(ctx: ExtensionContext): boolean {
+		if (state.phase !== "working") return false;
+		try { schedulerCommand(pi, "schedule", state.reminderSource); }
+		catch (error) { warnReminder(ctx, errorMessage(error)); return false; }
+		if (!state.token || !loopTaskId(ctx, state.token)) { warnReminder(ctx, prompts.noReminderReceipt); return false; }
+		if (state.reminderWarning) {
+			state = { ...state, reminderWarning: undefined }; persist(); refresh(ctx);
+			logStartup(ctx, prompts.reminderConfirmed);
+		}
+		return true;
 	}
 	function scheduleReminder(ctx: ExtensionContext) {
 		try {
@@ -171,7 +175,10 @@ export default function piGoals(pi: ExtensionAPI): void {
 			schedulerCommand(pi, "schedule-remove", source);
 			state = { ...state, reminderSource: source }; persist();
 			startLoop(pi, ctx, state.token!, source);
-		} catch (error) { warnReminder(ctx, error instanceof Error ? error.message : String(error)); }
+		} catch (error) {
+			if (state.reminderWarning) logStartup(ctx, prompts.reminderWarning(errorMessage(error)));
+			else warnReminder(ctx, errorMessage(error));
+		}
 	}
 	function begin(ctx: ExtensionContext, approved = read()) {
 		const text = read();
@@ -236,10 +243,16 @@ export default function piGoals(pi: ExtensionAPI): void {
 				if (arg === "resume") { if (state.phase !== "paused") throw new Error("Only paused goals can resume."); begin(ctx); return; }
 				if (arg === "retry") {
 					if (state.phase !== "working") throw new Error("Only working goals can retry reminders.");
-					if (state.token && loopTaskId(ctx, state.token)) { checkReminder(ctx); ctx.ui.notify(prompts.reminderConfirmed, "info"); return; }
-					if (kickoff) throw new Error("Retry reminders after the Ready prompt is delivered.");
+					if (kickoff) throw new Error("Retry the scheduler after the Ready prompt is delivered.");
+					if (state.token && loopTaskId(ctx, state.token)) {
+						if (checkReminder(ctx)) ctx.ui.notify(prompts.reminderConfirmed, "info");
+						else ctx.ui.notify(prompts.schedulerUnavailable, "warning");
+						return;
+					}
+					ctx.ui.notify(prompts.reminderRetrying, "info");
+					const reminderWarning = state.reminderWarning;
 					retireReminder();
-					state = { ...state, token: randomUUID() }; persist();
+					state = { ...state, token: randomUUID(), reminderWarning }; persist();
 					scheduleReminder(ctx); return;
 				}
 				if (arg === "review") {
@@ -304,14 +317,20 @@ export default function piGoals(pi: ExtensionAPI): void {
 		const token = event.source === "extension" ? wakeToken(event.text) : undefined;
 		if (token) {
 			if (token !== state.token || state.phase !== "working") { cleanRetired(ctx); return handled; }
-			const text = read();
-			if (!hasRemainingGoals(text, state.judge)) { pause(ctx); return handled; }
-			const statement = section(text, "Loop statement");
-			if (!statement) throw new Error(`${state.file} has no Loop statement.`);
-			const tasks = ageTasks(text, state.taskSince ?? {}, Date.now());
-			state = { ...state, taskSince: tasks.since };
-			persist();
-			return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), tasks, state.file!, wakeSchedule(event.text)) };
+			try {
+				const text = read();
+				if (!hasRemainingGoals(text, state.judge)) { pause(ctx); return handled; }
+				const statement = section(text, "Loop statement");
+				if (!statement) throw new Error(`${state.file} has no Loop statement.`);
+				const schedule = wakeSchedule(event.text);
+				const tasks = ageTasks(text, state.taskSince ?? {}, Date.now());
+				state = { ...state, taskSince: tasks.since };
+				persist();
+				return { action: "transform" as const, text: prompts.loopPrompt(statement, loopFocus(text), tasks, state.file!, schedule) };
+			} catch (error) {
+				logStartup(ctx, prompts.schedulerWakeFailed(errorMessage(error)));
+				return handled;
+			}
 		}
 		// Every user message is kept verbatim below the Log, so answers survive compaction.
 		if (state.file && event.source !== "extension" && event.text.trim()) {

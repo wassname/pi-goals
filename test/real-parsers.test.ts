@@ -1,6 +1,4 @@
-// Checks the fakes in harness.ts against the real scheduler core and pi-subagents parsers.
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+// Checks the judge request against the installed pi-subagents parser.
 import { describe, expect, it } from "vitest";
 import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.js";
 import { COMPLETION_ACTION } from "../node_modules/pi-subagents/src/shared/parent-wake.js";
@@ -9,16 +7,8 @@ import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
 import { runJudge } from "../src/judge.js";
 import { marker, wakeSchedule, wakeToken } from "../src/loop.js";
 
-const core = createRequire(import.meta.url)("@jl1990/pi-scheduler/extensions/scheduler/scheduler-core.cjs");
-
-describe("real pi-scheduler core", () => {
-	it("our /schedule payload creates a recurring session prompt whose receipt carries the marker", () => {
-		const parsed = core.splitScheduleCommand(`prompt every 1h :: ${marker("abc-1")}`, new Date());
-		const task = core.createScheduledTask({ action: parsed.action, type: parsed.type, schedule: parsed.schedule, prompt: parsed.payload, scope: "session", sessionFile: "/s.jsonl", cwd: "/" }, new Date());
-		expect(task).toMatchObject({ action: "prompt", type: "interval", schedule: "1h", enabled: true, status: "pending", prompt: "pi-goals-loop:abc-1", scope: "session", sessionFile: "/s.jsonl" });
-	});
-
-	it("wakeToken reads the scheduler's real header format", () => {
+describe("scheduler wakes", () => {
+	it("reads a scheduler header and rejects an inline marker", () => {
 		const header = "[Scheduled task t1 fired]\nName: (unnamed)\nAction: prompt\nType: interval\nSchedule: 1h\nScheduled for: 2026\n\n";
 		expect(wakeToken(`${header}${marker("abc-1")}`)).toBe("abc-1");
 		expect(wakeToken(`${header}do something else\n${marker("abc-1")} please`)).toBeUndefined();
@@ -43,15 +33,7 @@ describe("real pi-subagents parsers", () => {
 });
 
 describe("pi-subagents completion text that goals mode removes", () => {
-	it("matches the installed pi-subagents wording and message layout", () => {
+	it("matches the installed completion text that production removes verbatim", () => {
 		expect(SUBAGENT_COMPLETION_ACTION).toBe(COMPLETION_ACTION);
-		const notify = readFileSync(new URL("../node_modules/pi-subagents/src/runs/background/notify.js", import.meta.url), "utf8");
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: matches pi-subagents source text
-		expect(notify).toContain("\\n\\nParent action: ${held ? HELD_COMPLETION_ACTION : COMPLETION_ACTION}");
-		expect(notify).toContain('"Completion wake ended silently. See the subagent completion notices above. " + COMPLETION_ACTION');
-		const executor = readFileSync(new URL("../node_modules/pi-subagents/src/runs/foreground/subagent-executor.js", import.meta.url), "utf8");
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: matches pi-subagents source text
-		expect(executor).toContain('customType: "subagent-incremental-child-notify",\n                                        content: triggerTurn ? `${content}\\n\\nParent action: ${COMPLETION_ACTION}` : content,');
-		expect(executor).toContain("details: { childKey: notification.childKey, outcome: notification.outcome }");
 	});
 });

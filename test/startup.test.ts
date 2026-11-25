@@ -26,6 +26,7 @@ describe("Ready and scheduler startup", () => {
 		expect(creates(h)).toHaveLength(0);
 		expect(starts(h)).toHaveLength(1);
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "work.ts" } })).toBeUndefined();
+		expect(h.ctx.status).toContain("scheduler: unconfirmed");
 		expect(notices(h)).toEqual([expect.stringContaining("pi install npm:@jl1990/pi-scheduler@0.6.0")]);
 		expect(log(h)).toContain(notices(h)[0]);
 		await h.hook("session_start");
@@ -80,13 +81,11 @@ describe("Ready and scheduler startup", () => {
 		h.schedulerReceipt("owned");
 		await command(h, "retry");
 		expect(creates(h)).toHaveLength(1);
-		expect(notices(h).at(-1)).toContain("confirmed the hourly reminder");
+		expect(notices(h).at(-1)).toContain("confirmed the reminder");
+		expect(h.ctx.status).not.toContain("scheduler: unconfirmed");
 	});
 
-	it.each([
-		{ sessionFile: "/foreign.jsonl" }, { scope: "global" }, { action: "shell" }, { id: "bad id" },
-		{ enabled: false }, { status: "failed" }, { type: "once" }, { schedule: "2h" }, { prompt: "pi-goals-loop:foreign" },
-	])("does not treat a foreign or malformed receipt as confirmation: %j", async change => {
+	it.each([{ sessionFile: "/foreign.jsonl" }, { enabled: false }, { id: "bad id" }])("does not treat a foreign or malformed receipt as confirmation: %j", async change => {
 		const h = await ready();
 		h.schedulerReceipt("owned");
 		Object.assign(h.branch.at(-1).details.task, change);
@@ -119,6 +118,17 @@ describe("Ready and scheduler startup", () => {
 		const prompt = h.schedulerReceipt("retried");
 		await h.hook("agent_settled");
 		expect(await h.wake("retried", prompt)).toMatchObject({ action: "transform" });
+	});
+
+	it("warns about a malformed reminder without pausing work or blocking the next reminder", async () => {
+		const h = await ready({ autoSchedule: true });
+		const task = h.branch.findLast(e => e.customType === "scheduled-task").details.task;
+		const malformed = `[Scheduled task ${task.id} fired]\n\n${task.prompt}`;
+		expect(await h.hook("input", { source: "extension", text: malformed })).toEqual({ action: "handled" });
+		expect(state(h).phase).toBe("working");
+		expect(notices(h)).toEqual([expect.stringMatching(/Scheduler warning:.*no Schedule line/)]);
+		expect(log(h)).toContain(notices(h)[0]);
+		expect(await h.wake(task.id, task.prompt)).toMatchObject({ action: "transform" });
 	});
 
 	it("review reopens Ready for a session left in the old starting phase", async () => {

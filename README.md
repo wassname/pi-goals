@@ -26,7 +26,7 @@ Requires Pi 1.2 or newer (pi-subagents 0.84 needs it). Install and load pi-sched
 
 Scheduled work is tested with Node Pi 1.5.2 and scheduler 0.6.0. The unmodified scheduler 0.6.0 package fails to load `graceful-fs` in compiled Linux Pi 1.4.0 and 1.5.2. Use Node Pi for scheduled work until that upstream loading problem is fixed. Work can start without a compatible scheduler, but it will not receive hourly reminders.
 
-Ready starts work without waiting for the scheduler. pi-goals records a missing reminder in the transcript and the goals file's Log. To retry the reminder after fixing the scheduler, use `/goals retry`. If an older session still shows `starting`, run `/goals review` and choose Ready again. If the plan changes while the Ready menu is open, review it again; Log and Interview entries do not require a new review.
+Ready starts work without waiting for the scheduler. If the scheduler does not confirm the reminder, the goals status shows `scheduler: unconfirmed`. pi-goals also records a warning in the transcript and the goals file's Log. To retry the reminder after fixing the scheduler, use `/goals retry`. If an older session still shows `starting`, run `/goals review` and choose Ready again. If the plan changes while the Ready menu is open, review it again; Log and Interview entries do not require a new review.
 
 ## Commands
 
@@ -91,7 +91,7 @@ The default loop statement is a few lines: state the goal and progress, start th
 
 Reminders stop when you pause, clear, or finish all goals. They can remind an agent of its goals; they cannot prevent drift between reminders. Tests cover data flow with a fake Pi and real dependency parsers. Run `PI_TEST_BIN=/path/to/node-pi npm run test:pi` for real scheduler create/remove and Ready confirmation checks, with isolated state and no model calls. Use `PI_COMPILED_BIN=/path/to/compiled-pi npm run test:compiled` for the compiled-host regression; scheduler 0.6.0 currently fails that check. Set `PI_TEST_NO_SCHEDULER=1` to check that compiled Pi starts work and records the missing scheduler.
 
-<!-- Use paragraph: PI/Claude; source slop/analysis/20261111_judge_reviews.py. -->
-It has run for several days at a time in about ten research projects, where the sign-off judge rejected about half of the completion requests. That use was not a controlled test. How often the sign-off judge accepted a goal that was not done has not been measured.
+<!-- Use paragraph: PI/Claude; provenance link: PI/OpenAI. -->
+It has run for several days at a time in about ten research projects, where the sign-off judge rejected about half of the completion requests. That use was not a controlled test. How often the sign-off judge accepted a goal that was not done has not been measured. See the [project journal](docs/journal.md#2026-11-11--observed-judge-decisions) for the source.
 
 <!-- README rewrite: PI/OpenAI. -->

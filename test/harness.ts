@@ -77,7 +77,7 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		model: { provider: "p", id: "m" },
 		sessionManager: { getSessionId: () => "sess", getSessionFile: () => join(cwd, "session.jsonl"), getBranch: () => branch, getEntries: () => branch },
 		ui: {
-			setStatus: () => {},
+			setStatus: (_key: string, text?: string) => { ctx.status = text; },
 			setWidget: (_key: string, lines: unknown) => { ctx.widget = lines; },
 			notify: (text: string) => notes.push(text),
 			select: async () => choices.shift(),
