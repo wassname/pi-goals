@@ -5,4 +5,6 @@ dist/
 docs/reviews/raw.jsonl
 docs/reviews/err.txt
 .local/
-/slop/issue-9/
+/slop/*
+!/slop/plans/
+/tests/tdd/

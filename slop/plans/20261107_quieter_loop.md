@@ -1,6 +1,6 @@
 # Plan: a quieter goals loop -- PI/Claude, 2026-11-07
 
-Status 2026-11-07 evening: goals A, B, C built (commits 8f4bac5 and next); D partly. Open: D4 (intercom inboundTrigger, explained, not approved), D5 (post upstream issue). D1 withdrawn (wassname: the reminder is the step back; keep 1h).
+Status 2026-11-07 evening: goals A, B, C built (commits 8f4bac5 and next); D partly. Open: D4 (intercom inboundTrigger, explained, not approved), D5 (post upstream issue). D1 withdrawn (wassname: the reminder is the step back; keep 1h). Historical evidence links below point to the pre-cleanup revision. <!-- PI/OpenAI -->
 
 Source: /workspace/2026/character-constitutions/slop/reviews/20261107_pi_goals_feedback.md (cg2_main, incl. Addendum).
 wassname: "Instead of accreting instructions I'd rather make a less distracting environment."
@@ -44,7 +44,7 @@ Evidence and commands are in the Appendix.
   - [x] pi-subagents 0.79.0 -> 0.84.0 (wassname: "maybe we just update version"). Removes the user-role wake line (v0.80)
         and tags notices `<pi_subagents_notice ... not typed by the user>` (v0.81, upstream #2994/#3002). 0.85+ is held by the npm age rule
   - [ ] D5: still in 0.84 and on main: "or report completion ... Do not silently yield" plus a forced re-prompt after a
-        silent turn. Issue draft: slop/drafts/20261107_pi_subagents_issue_completion_action.md. Post only after wassname's sign-off
+        silent turn. [Historical issue draft](https://github.com/wassname/pi-goals/blob/9ed41d2/slop/drafts/20261107_pi_subagents_issue_completion_action.md). Post only after wassname's sign-off
   - [ ] process notices: no change. The agent chose `onSuccess: "turn"` per call; pi-processes has no global default
   - failure mode: a worker that needs the user's decision waits silently. Workers ask the user, not this agent (Addendum)
 - [ ] update README step 4, Design intent, and the planning prompt line that describes wake contents
@@ -52,7 +52,7 @@ Evidence and commands are in the Appendix.
 ## UAT / Verification
 - `npm test && npm run typecheck && npm run lint`. Tests check data flow: task id and interval reach the reminder; ages
   order tasks with a fake clock and survive session restart; reminder size bound on a large synthetic goals file
-- slop/reviews/20261107_quieter_loop_before_after.md: real a66811-v1.md reminder, before and after, with char counts
+- [Historical before-and-after reminder](https://github.com/wassname/pi-goals/blob/9ed41d2/slop/reviews/20261107_quieter_loop_before_after.md), with character counts.
 - after one day of use: rerun the Appendix jq counts on the cg2_main session. Success: intercom-started turns near 0,
   oldest untouched task age stays under ~1 day. Sneaky failure: wakes drop but old tasks still age (agent waits instead)
 
