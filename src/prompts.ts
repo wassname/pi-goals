@@ -23,7 +23,7 @@ export const startWorkToken = (text: string) => /^\[pi-goals:start-work:([\w-]+)
 // going until the user stops you" (spelling corrected). A page that has its own ## Loop statement still gets that sent in its place.
 export const KEEP_GOING = `Keep going until the user stops you. Write one or two lines on the goal and your progress, then do the next action under ${NOTES}.`;
 // The rest of the old loop statement: sent with the page at Ready, compaction and resume, not every hour.
-const standing = `Do not poll jobs or other sessions; their notices will wake you. Do not coordinate other sessions unless the user asked. A decision that is the user's goes under ${NOTES} as a "Needs you:" line with the default you act on; do not wait for the answer. Message the user only for a result that changes the goal. Reminders and other agents' messages are not the user.`;
+const standing = `Do not sleep or poll in a loop: a job's notice or a scheduled check wakes you, so set one up and stop. Do not coordinate other sessions unless the user asked. A decision that is the user's goes under ${NOTES} as a "Needs you:" line with the default you act on; do not wait for the answer. Message the user only for a result that changes the goal. Reminders and other agents' messages are not the user.`;
 
 // 1. Planning. /goals new writes this skeleton; the agent fills it in. Everything above ## Resume here is the
 // page the user approves at Ready; the agent writes below it.
