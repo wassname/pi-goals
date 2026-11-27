@@ -44,7 +44,13 @@ describe("the page and the agent's notes", () => {
 
 	it("the template is a valid page that fits the one-page limit", () => {
 		expect(wordCount(split(goalsTemplate).page)).toBeLessThan(350);
-		for (const name of ["Goal", "Result mock-up", "Concepts", "Jargon", "Notes", "Loop statement", "Resume here", "Evidence"]) expect(section(goalsTemplate, name)).toBeDefined();
+		expect(section(goalsTemplate, "Loop statement")).toBeUndefined();
+		// What the user approves comes before the appendix heading, and ends there.
+		expect(section(goalsTemplate, "Result mock-up")).not.toContain("Appendix");
+		expect(goalsTemplate.indexOf("# Appendix")).toBeGreaterThan(goalsTemplate.indexOf("## Result mock-up"));
+		expect(goalsTemplate.indexOf("# Appendix")).toBeLessThan(goalsTemplate.indexOf("## Concepts"));
+		expect(title(goalsTemplate)).toBe("<short title>");
+		for (const name of ["Goal", "Result mock-up", "Concepts", "Jargon", "Notes", "Resume here", "Evidence"]) expect(section(goalsTemplate, name)).toBeDefined();
 		expect(goalsTemplate.indexOf("## Goal")).toBeLessThan(goalsTemplate.indexOf("## Result mock-up"));
 		expect(goalsTemplate.indexOf("## Result mock-up")).toBeLessThan(goalsTemplate.indexOf("## Notes"));
 	});

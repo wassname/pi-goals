@@ -1,6 +1,6 @@
 # pi-goals contributor notes
 
-Keep the design small and close to how models are trained (see README, Design intent): one agent with its normal tools, one goal on one page, the stock scheduler for wakes, pi-subagents for the judge (at a stop and at completion). Do not add a private timer, task store or second agent runtime. Keep the user's loop statement wording.
+Keep the design small and close to how models are trained (see README, Design intent): one agent with its normal tools, one goal on one page, the stock scheduler for wakes, pi-subagents for the judge (at a stop and at completion). Do not add a private timer, task store or second agent runtime. The reminder says the goal and to keep going until the user stops it; keep that wording short. A page may carry its own `## Loop statement`, which is then sent in its place, but planning never asks for one.
 
 The page above `## Resume here` is the user's. No code path may let the agent change it while working, and nothing the agent writes below it is re-sent beyond the note's first lines and the newest evidence. The history of earlier designs, with the commits to read, is in `docs/architecture-history.md`.
 

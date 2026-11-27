@@ -6,7 +6,7 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { Type } from "typebox";
 import { liveDescendants } from "./children.js";
 import type { UserMessage } from "./goals.js";
-import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, needsYou, PAGE_WORDS, section, split, stamp, widgetLines, wordCount } from "./goals.js";
+import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, needsYou, PAGE_WORDS, READ_WORDS, section, split, stamp, widgetLines, wordCount } from "./goals.js";
 import { decideSignOff, runJudge, signOffTask, stopVerdict } from "./judge.js";
 import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -104,7 +104,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		return true;
 	}
 	function requirePage(text: string) {
-		if (!section(text, "Goal") || !section(text, "Loop statement") || section(text, NOTES) === undefined) throw new Error(prompts.pageIncomplete);
+		if (!section(text, "Goal") || section(text, NOTES) === undefined) throw new Error(prompts.pageIncomplete);
 	}
 
 	// A click on the widget flips it; so does Pi's ctrl+o (app.tools.expand), read at each render.
@@ -312,8 +312,9 @@ export default function piGoals(pi: ExtensionAPI): void {
 			if (state.phase !== "planning") throw new Error("No goal discussion is active.");
 			const text = read();
 			requirePage(text);
+			const approved = wordCount(`${section(text, "Goal")} ${section(text, "Result mock-up") ?? ""}`);
 			const words = wordCount(split(text).page);
-			if (words > PAGE_WORDS) throw new Error(prompts.pageTooLong(words));
+			if (approved > READ_WORDS || words > PAGE_WORDS) throw new Error(prompts.pageTooLong(approved, words));
 			reviewRequested = true;
 			return result(prompts.reviewQueued);
 		},

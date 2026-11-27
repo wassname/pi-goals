@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { section, split } from "../src/goals.js";
 import piGoals, { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
-import { DEFAULT_LOOP_STATEMENT } from "../src/prompts.js";
+import { KEEP_GOING } from "../src/prompts.js";
 import { GOALS, LOOP, setup, withNote } from "./harness.js";
 
 const state = (h: ReturnType<typeof setup>) => h.branch.findLast(e => e.customType === "pi-goals-single-agent").data;
@@ -22,7 +22,6 @@ describe("planning and Ready", () => {
 		await h.commands.get("goals").handler("new plot the data", h.ctx);
 		const file = state(h).file;
 		expect(file).toMatch(/\.pi\/goals\/sess-v1\.md$/);
-		expect(section(readFileSync(file, "utf8"), "Loop statement")).toBe(DEFAULT_LOOP_STATEMENT);
 		writeFileSync(file, GOALS);
 		await h.hook("input", { source: "interactive", text: "yes, reuse judge_demos.py" });
 		expect(readFileSync(file, "utf8")).toBe(GOALS);
@@ -48,9 +47,16 @@ describe("planning and Ready", () => {
 		const review = () => h.tools.get("RequestPlanReview").execute();
 		writeFileSync(state(h).file, GOALS.replace("## Resume here\n", ""));
 		await expect(review()).rejects.toThrow(/Resume here/);
-		// Packing the same words into fewer lines does not help.
-		writeFileSync(state(h).file, GOALS.replace("Make the plot.", Array.from({ length: 10 }, (_, n) => `- ${`detail ${n} `.repeat(40)}`).join("\n")));
-		await expect(review()).rejects.toThrow(/8\d\d words.*at most 700/s);
+		// What the user reads has its own limit, and packing the same words into fewer lines does not help.
+		writeFileSync(state(h).file, GOALS.replace("Make the plot.", Array.from({ length: 10 }, (_, n) => `- ${`detail ${n} `.repeat(30)}`).join("\n")));
+		await expect(review()).rejects.toThrow(/have 6\d\d words \(at most 500/);
+		// Notes are for the agent, with a looser limit on the whole page.
+		const notes = (words: number) => GOALS.replace("- could look done", `- ${"note ".repeat(words)}\n- could look done`);
+		writeFileSync(state(h).file, notes(600));
+		await review();
+		await h.hook("message_start", { message: { role: "user" } });
+		writeFileSync(state(h).file, notes(1300));
+		await expect(review()).rejects.toThrow(/has 13\d\d \(at most 1200\)/);
 		await h.hook("agent_settled");
 		expect(state(h).phase).toBe("planning");
 	});
@@ -116,6 +122,19 @@ describe("scheduled loop wake", () => {
 		const second = await h.wake("t1", prompt);
 		for (const kept of ["Edited by the user.", "Fitting the bars; job 12 wakes me."]) expect(second.text).toContain(kept);
 		expect(second.text).not.toContain(LOOP);
+	});
+
+	it("says to keep going until the user stops it, unless the page carries its own Loop statement", async () => {
+		const h = setup({ choices: ["Ready"] });
+		const file = await ready(h, GOALS.replace(`## Loop statement\n\n${LOOP}\n\n`, ""));
+		const text = (await h.wake("t1", h.schedulerReceipt("t1"))).text as string;
+		expect(text).toContain(KEEP_GOING);
+		expect(text.indexOf("A plot. Make the plot.")).toBeLessThan(text.indexOf(KEEP_GOING));
+		writeFileSync(file, GOALS);
+		await h.hook("before_agent_start");
+		const custom = (await h.wake("t1", h.schedulerReceipt("t1"))).text as string;
+		expect(custom).toContain(LOOP);
+		expect(custom).not.toContain(KEEP_GOING);
 	});
 
 	it("warns and skips a reminder when the file has no ## Goal, without pausing work", async () => {

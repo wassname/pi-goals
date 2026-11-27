@@ -7,8 +7,11 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 /** The agent writes from this ## heading down; everything above it is the page the user approved. */
 export const NOTES = "Resume here";
 export const EVIDENCE = "Evidence";
-/** What the user can review at once, in words: a line limit was met by packing lines (first real page, 2026-11-27). */
-export const PAGE_WORDS = 700;
+/** Limits in words: a line limit was met by packing lines (first real page, 2026-11-27).
+ * wassname: "the main stuff is ok. notes I don't read and is for the AI". So the part he reads, ## Goal and ## Result mock-up,
+ * has its own limit, and the whole page a looser one: it is re-sent to the agent after every compaction. */
+export const READ_WORDS = 500;
+export const PAGE_WORDS = 1200;
 /** Nonblank lines that one replaceable note may hold. */
 export const NOTE_LINES = 15;
 const EVIDENCE_LINES = 20;
