@@ -2,7 +2,7 @@
 
 <!-- PI/OpenAI: source comparison, 2026-11-27. -->
 
-A goal loop makes two different decisions: **when to give the worker another turn**, and **what evidence is enough to stop**. Codex gives the same worker another turn at idle and has it audit its own work. Claude Code checks the transcript at the stop boundary with a small model. Hermes usually checks just the last reply plus live background state, and can run a shell gate first. `pi-goals` gives periodic reminders and asks a fresh agent to inspect artifacts only when the worker claims completion.
+A goal loop makes two different decisions: **when to give the worker another turn**, and **what evidence is enough to stop**. Codex gives the same worker another turn at idle and has it audit its own work. Claude Code checks the transcript at the stop boundary with a small model. Hermes usually checks just the last reply plus live background state, and can require a shell command to pass before judging. `pi-goals` gives periodic reminders and asks a fresh agent to inspect artifacts only when the worker claims completion.
 
 Here, a *Ralph-style loop* means an outer loop that gives the worker another turn without the user typing “continue.” A strict fresh-context Ralph loop also starts each iteration in a new worker session. None of the four above routinely restarts the worker with fresh context; a fresh **judge** is a separate choice. This is a source comparison, not a benchmark of reliability or cost.
 
