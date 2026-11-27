@@ -103,7 +103,7 @@ Conventions:
 - Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
 - ## Notes, further down, holds design choices and preferences, one line each, the user's words in quotes with spelling corrected: the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; what is out of scope. Never put your own proposal or inference in quotes.
 - The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can, and note it.
-- Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once: "metastable state (you said 'equi stable')".
+- Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once, with the source: "metastable state (from Ostrow; you said 'equi stable')".
 - ${intentGuidance}
 - Reports and questions to the user: ${reportGuidance}
 
