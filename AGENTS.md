@@ -8,7 +8,7 @@ All model-facing text is in `src/prompts.ts`, in conversation order.
 
 ## Tests
 
-Run `npm test`, `npm run typecheck` and `npm run lint` before committing.
+Run `npm test` and `npm run typecheck` before committing.
 
 - `test/harness.ts` fakes Pi, the scheduler commands and the pi-subagents event owner.
 - `test/real-parsers.test.ts` checks the installed pi-subagents parser and reminder inputs.

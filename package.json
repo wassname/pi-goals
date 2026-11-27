@@ -49,18 +49,14 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run lint && npm run typecheck && npm run test",
+    "prepublishOnly": "npm run typecheck && npm run test",
     "test": "vitest run --dir test",
     "test:watch": "vitest --dir test",
     "test:pi": "node --test test/pi-scheduler.mjs",
     "test:compiled": "node --test test/pi-scheduler.mjs",
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check src/ test/",
-    "lint:fix": "biome check --fix src/ test/"
+    "typecheck": "tsc"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.4",
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@jl1990/pi-scheduler": "0.6.0",
