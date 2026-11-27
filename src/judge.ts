@@ -1,4 +1,4 @@
-// PI/OpenAI: stateless sign-off judge through pi-subagents' structured delegation events.
+// PI/OpenAI: stateless read-only judge (sign-off, and review of a stop) through pi-subagents' structured delegation events.
 // PI/OpenAI: register an explicit read-only agent rather than trust a user-overridden reviewer.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import {
 	type SubagentDelegationRequest,
 	type SubagentDelegationResponse,
 } from "pi-subagents/delegation";
-import { judgeSchema, judgeSystem, judgeTask } from "./prompts.js";
+import { judgeSystem, judgeTask } from "./prompts.js";
 
 export const JUDGE_AGENT = "pi-goals-judge";
 const START_TIMEOUT_MS = 15_000;
@@ -32,28 +32,39 @@ export interface JudgeVerdict {
 	checks: JudgeCheck[];
 	missing: string;
 }
-export type JudgeResult = { ok: true; verdict: JudgeVerdict; model?: string } | { ok: false; error: string };
+export interface StopVerdict {
+	verdict: "continue" | "wait" | "blocked";
+	reason: string;
+	next: string;
+}
+/** The structured value a fresh judge returned, not yet checked for shape. */
+export type JudgeResult = { ok: true; value: unknown; model?: string } | { ok: false; error: string };
 
-export function runJudge(
-	events: Events,
-	input: { goal: string; text: string; path: string; cwd: string; model?: string },
-	signal?: AbortSignal,
-	timeouts = { startMs: START_TIMEOUT_MS, totalMs: JUDGE_TIMEOUT_MS },
-): Promise<JudgeResult> {
-	const project: { path: string; text?: string } = { path: resolve(input.cwd, "AGENTS.md") };
+/** The sign-off task: the goals file, and the project's AGENTS.md as a separate source. */
+export function signOffTask(text: string, path: string, cwd: string): string {
+	const project: { path: string; text?: string } = { path: resolve(cwd, "AGENTS.md") };
 	try { project.text = readFileSync(project.path, "utf8"); } catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
+	return judgeTask(text, path, project);
+}
+
+export function runJudge(
+	events: Events,
+	input: { task: string; schema: Record<string, unknown>; cwd: string; model?: string },
+	signal?: AbortSignal,
+	timeouts = { startMs: START_TIMEOUT_MS, totalMs: JUDGE_TIMEOUT_MS },
+): Promise<JudgeResult> {
 	const identity = { requestId: randomUUID(), ownerRunId: `pi-goals-${randomUUID()}`, nodeId: "judge" };
 	const request: SubagentDelegationRequest = {
 		...identity,
 		agent: JUDGE_AGENT,
-		task: judgeTask(input.goal, input.text, input.path, project),
+		task: input.task,
 		context: "fresh",
 		cwd: input.cwd,
 		...(input.model ? { model: input.model } : {}),
 		timeoutMs: timeouts.totalMs,
-		result: { kind: "structured", schema: judgeSchema },
+		result: { kind: "structured", schema: input.schema },
 	};
 	return new Promise((resolve) => {
 		let registration: { dispose(): void };
@@ -98,36 +109,50 @@ export function runJudge(
 
 function fromResponse(response: SubagentDelegationResponse): JudgeResult {
 	if (response.status !== "completed") return { ok: false, error: `judge ${response.status}${response.error ? `: ${response.error}` : ""}` };
-	const value = response.result?.kind === "structured" ? (response.result.value as JudgeVerdict) : undefined;
-	if (!value || (value.verdict !== "accept" && value.verdict !== "reject") || !Array.isArray(value.checks) || typeof value.missing !== "string" || value.checks.some(c => !c || typeof c.path !== "string" || !c.path.trim() || typeof c.quote !== "string" || !c.quote.trim() || typeof c.observation !== "string" || !c.observation.trim())) {
-		return { ok: false, error: "judge returned no structured verdict" };
-	}
-	return { ok: true, verdict: value, model: response.model };
+	if (response.result?.kind !== "structured" || !response.result.value) return { ok: false, error: "judge returned no structured verdict" };
+	return { ok: true, value: response.result.value, model: response.model };
+}
+
+const NO_VERDICT = "judge returned no structured verdict";
+function signOffVerdict(value: unknown): JudgeVerdict | undefined {
+	const v = value as JudgeVerdict;
+	const malformed = (v.verdict !== "accept" && v.verdict !== "reject") || !Array.isArray(v.checks) || typeof v.missing !== "string" || v.checks.some(c => !c || typeof c.path !== "string" || !c.path.trim() || typeof c.quote !== "string" || !c.quote.trim() || typeof c.observation !== "string" || !c.observation.trim());
+	return malformed ? undefined : v;
+}
+
+/** A stop review, or why there is none. */
+export function stopVerdict(result: JudgeResult): StopVerdict | { error: string } {
+	if (!result.ok) return { error: result.error };
+	const v = result.value as StopVerdict;
+	if (!["continue", "wait", "blocked"].includes(v.verdict) || typeof v.reason !== "string" || !v.reason.trim() || typeof v.next !== "string") return { error: NO_VERDICT };
+	return v;
 }
 
 export interface SignOff {
 	text: string;
 	isError: boolean;
-	/** Checkbox to write, or undefined to leave the goal as it is. */
-	mark?: "✓" | "x";
+	accepted: boolean;
+	/** One line for ## Evidence when accepted. */
 	log: string;
 }
 
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 
-export function decideSignOff(goal: string, result: JudgeResult): SignOff {
-	if (!result.ok) {
+export function decideSignOff(result: JudgeResult): SignOff {
+	const value = result.ok ? signOffVerdict(result.value) : undefined;
+	if (!result.ok || !value) {
+		const error = result.ok ? NO_VERDICT : result.error;
 		return {
-			text: `Sign-off judge unavailable (${result.error}). The goal is unchanged. Resolve the failure or ask the user whether to disable the sign-off judge.`,
-			isError: true,
-			log: `review failed "${goal}" (sign-off judge unavailable: ${oneLine(result.error)})`,
+			text: `Sign-off judge unavailable (${error}). The goal is unchanged. Resolve the failure or ask the user whether to disable the sign-off judge.`,
+			isError: true, accepted: false,
+			log: `review failed (sign-off judge unavailable: ${oneLine(error)})`,
 		};
 	}
-	const { verdict, checks, missing } = result.verdict;
+	const { verdict, checks, missing } = value;
 	const review = checks.map((check) => `- ${check.path}: "${check.quote}" -> ${check.observation}`).join("\n");
 	if (verdict === "accept" && checks.length > 0 && !missing.trim()) {
-		return { text: `Sign-off ACCEPTED; goal marked [✓].\n\nSign-off judge checks:\n${review}`, isError: false, mark: "✓", log: `accepted "${goal}" (sign-off judge${result.model ? ` ${result.model}` : ""})` };
+		return { text: `Sign-off ACCEPTED; the goal is finished.\n\nSign-off judge checks:\n${review}`, isError: false, accepted: true, log: `accepted by the sign-off judge${result.model ? ` (${result.model})` : ""}` };
 	}
 	const why = verdict === "accept" ? "the sign-off judge accepted without citing any file it opened" : missing || "no reason given";
-	return { text: `Sign-off REJECTED. Missing:\n${why}${review ? `\n\nSign-off judge checks:\n${review}` : ""}`, isError: true, log: `rejected "${goal}": ${oneLine(why)}` };
+	return { text: `Sign-off REJECTED. Missing:\n${why}${review ? `\n\nSign-off judge checks:\n${review}` : ""}`, isError: true, accepted: false, log: `rejected: ${oneLine(why)}` };
 }

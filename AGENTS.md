@@ -1,6 +1,8 @@
 # pi-goals contributor notes
 
-Keep the design small and close to how models are trained (see README, Design intent): one agent with its normal tools, one goals file, the stock scheduler for wakes, pi-subagents for the judge. Do not add a private timer, task store or second agent runtime. Keep the user's loop statement wording.
+Keep the design small and close to how models are trained (see README, Design intent): one agent with its normal tools, one goal on one page, the stock scheduler for wakes, pi-subagents for the judge (at a stop and at completion). Do not add a private timer, task store or second agent runtime. Keep the user's loop statement wording.
+
+The page above `## Resume here` is the user's. No code path may let the agent change it while working, and nothing the agent writes below it is re-sent beyond the note's first lines and the newest evidence. The history of earlier designs, with the commits to read, is in `docs/architecture-history.md`.
 
 All model-facing text is in `src/prompts.ts`, in conversation order.
 

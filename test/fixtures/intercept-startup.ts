@@ -11,7 +11,7 @@ export default function fixture(pi: ExtensionAPI) {
 	pi.registerCommand("fixture-seed", { description: "Seed an integration goals file", handler: async (_args, ctx) => {
 		const entry = state(ctx);
 		if (entry?.type !== "custom") throw new Error("No goals state");
-		writeFileSync((entry.data as { file: string }).file, "# Integration\n\nA verified result.\n\n## Goals\n\n1. [/] goal: make the result\n\n## Loop statement\n\nKeep working.\n");
+		writeFileSync((entry.data as { file: string }).file, "# Integration\n\nA verified result.\n\n## Goal\n\nMake the result.\n\n## Loop statement\n\nKeep working.\n\n## Resume here\n\n## Evidence\n");
 	} });
 	pi.registerCommand("fixture-state", { description: "Record integration goals state", handler: async (_args, ctx) => {
 		pi.sendMessage({ customType: "fixture-runtime", content: JSON.stringify(process.versions), display: false });

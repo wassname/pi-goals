@@ -10,24 +10,28 @@ import piGoals from "../src/index.js";
 export const LOOP = "Custom loop statement written by the user.";
 export const GOALS = `# Title
 
-A plot.
+## Goal
 
-## Goals
+A plot. Make the plot.
 
-1. [/] goal: make the plot
-   - tasks:
-     1. [ ] load data
-     2. [x] old step
-2. [ ] goal: write the note
+## Result mock-up
+
+| run | score-placeholder |
+
+## Notes
+
+- could look done but is not: a plot without error bars
 
 ## Loop statement
 
 ${LOOP}
 
-## Log
+## Resume here
 
-- 2026-01-01 00:00 historical detail
+## Evidence
 `;
+/** The agent's note, as an edit tool would leave the file. */
+export const withNote = (text: string, note: string) => text.replace("## Resume here\n", `## Resume here\n\n${note}\n`);
 
 export type JudgeReply = { status: string; value?: unknown; error?: string } | "silent";
 
@@ -125,6 +129,14 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 	}
 	/** The stock scheduler's wake: its header lines, a blank line, then the stored prompt. */
 	const wake = (id: string, prompt: string, schedule = "1h") => hook("input", { source: "extension", text: `[Scheduled task ${id} fired]\nName: (unnamed)\nAction: prompt\nType: interval\nSchedule: ${schedule}\nScheduled for: 2026-01-01T00:00:00.000Z\n\n${prompt}` });
-	const complete = (goal: string) => tools.get("CompleteGoal").execute("call", { goal }, undefined, undefined, ctx);
-	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, tools, wake, flush, pi };
+	const complete = () => tools.get("CompleteGoal").execute("call", {}, undefined, undefined, ctx);
+	/** The agent stops: Pi's last actionable boundary, with the text of its last message. */
+	const settle = (last = "Done for now.", event: Record<string, unknown> = {}) => hook("agent_before_settle", { outcome: "completed", continue: false, entries: [], context: { llmMessages: [{ role: "user", content: "go" }, { role: "assistant", content: [{ type: "text", text: last }] }] }, ...event });
+	/** An edit-tool call on a file: the hooks around it, with the write in between. */
+	async function edit(path: string, text: string, id = `call-${sent.length}-${Math.random()}`) {
+		await hook("tool_call", { toolName: "edit", toolCallId: id, input: { path } });
+		writeFileSync(path, text);
+		return hook("tool_result", { toolName: "edit", toolCallId: id, content: [{ type: "text", text: "ok" }] });
+	}
+	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, edit, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, settle, tools, wake, flush, pi };
 }

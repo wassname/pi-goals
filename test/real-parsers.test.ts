@@ -6,6 +6,7 @@ import { parseSubagentDelegationRequest } from "../node_modules/pi-subagents/src
 import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
 import { runJudge } from "../src/judge.js";
 import { marker, wakeSchedule, wakeToken } from "../src/loop.js";
+import { stopSchema } from "../src/prompts.js";
 
 describe("scheduler wakes", () => {
 	it("reads a scheduler header and rejects an inline marker", () => {
@@ -26,7 +27,7 @@ describe("real pi-subagents parsers", () => {
 		registerRuntimeAgentEventListener({ events, on: () => {}, registerTool: () => {} } as any);
 		const parsed: unknown[] = [];
 		events.on("prompt-template:subagent:request", (data) => parsed.push(parseSubagentDelegationRequest(data)));
-		const out = await runJudge(events, { goal: "g", text: "t", path: "p", cwd: "/tmp", model: "p/m" }, undefined, { startMs: 5, totalMs: 50 });
+		const out = await runJudge(events, { task: "t", schema: stopSchema, cwd: "/tmp", model: "p/m" }, undefined, { startMs: 5, totalMs: 50 });
 		expect(out).toMatchObject({ ok: false, error: expect.stringMatching(/did not start/) });
 		expect(parsed[0]).toMatchObject({ ok: true, request: { agent: "pi-goals-judge", context: "fresh" } });
 	});

@@ -1,7 +1,6 @@
 // PI/OpenAI: Ready authorizes work; scheduler receipts only confirm reminders.
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { appendLog } from "../src/goals.js";
 import { GOALS, setup } from "./harness.js";
 
 const state = (h: ReturnType<typeof setup>) => h.branch.findLast(e => e.customType === "pi-goals-single-agent").data;
@@ -9,7 +8,6 @@ const command = (h: ReturnType<typeof setup>, arg: string) => h.commands.get("go
 const starts = (h: ReturnType<typeof setup>) => h.sent.filter(m => m.text.startsWith("[pi-goals] The user approved"));
 const creates = (h: ReturnType<typeof setup>) => h.sent.filter(m => m.text.startsWith("/schedule "));
 const notices = (h: ReturnType<typeof setup>) => h.shown.filter(m => m.customType === "goals-startup" && m.display).map(m => m.content);
-const log = (h: ReturnType<typeof setup>) => readFileSync(state(h).file, "utf8").split("## Log")[1];
 async function ready(options: Parameters<typeof setup>[0] = {}) {
 	const h = setup({ choices: ["Ready"], autoSchedule: false, ...options });
 	await command(h, "new");
@@ -28,7 +26,6 @@ describe("Ready and scheduler startup", () => {
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "work.ts" } })).toBeUndefined();
 		expect(h.ctx.status).toContain("scheduler: unconfirmed");
 		expect(notices(h)).toEqual([expect.stringContaining("pi install npm:@jl1990/pi-scheduler@0.6.0")]);
-		expect(log(h)).toContain(notices(h)[0]);
 		await h.hook("session_start");
 		await h.hook("agent_settled");
 		expect(state(h).phase).toBe("working");
@@ -45,29 +42,6 @@ describe("Ready and scheduler startup", () => {
 		expect(state(h).phase).toBe("planning");
 		expect(creates(h)).toHaveLength(0);
 		expect(notices(h)).toEqual([expect.stringContaining("Work did not start")]);
-		expect(log(h)).toContain(notices(h)[0]);
-	});
-
-	it("ignores Log and Interview entries while the menu is open and after Ready", async () => {
-		const h = setup({ autoStart: false });
-		await command(h, "new");
-		const file = state(h).file;
-		writeFileSync(file, GOALS);
-		h.ctx.ui.select = async () => {
-			await h.hook("input", { source: "interactive", text: "first user note" });
-			writeFileSync(file, appendLog(readFileSync(file, "utf8"), "first log note"));
-			return "Ready";
-		};
-		await command(h, "review");
-		expect(state(h).phase).toBe("working");
-		await h.hook("input", { source: "interactive", text: "second user note" });
-		writeFileSync(file, appendLog(readFileSync(file, "utf8"), "second log note"));
-		const marker = h.sent.at(-1)!.text;
-		const input = () => h.hook("input", { source: "extension", text: marker });
-		expect(await input()).toMatchObject({ action: "transform", text: expect.stringContaining("second user note") });
-		expect(await input()).toEqual({ action: "handled" });
-		expect(log(h)).toContain("second log note");
-		expect(notices(h)).toHaveLength(0);
 	});
 
 	it("records a missing receipt once, then recognizes a late receipt without another create", async () => {
@@ -77,7 +51,6 @@ describe("Ready and scheduler startup", () => {
 		await h.hook("agent_settled");
 		await h.hook("agent_settled");
 		expect(notices(h)).toEqual([expect.stringContaining("not confirmed")]);
-		expect(log(h)).toContain(notices(h)[0]);
 		h.schedulerReceipt("owned");
 		await command(h, "retry");
 		expect(creates(h)).toHaveLength(1);
@@ -127,22 +100,6 @@ describe("Ready and scheduler startup", () => {
 		expect(await h.hook("input", { source: "extension", text: malformed })).toEqual({ action: "handled" });
 		expect(state(h).phase).toBe("working");
 		expect(notices(h)).toEqual([expect.stringMatching(/Scheduler warning:.*no Schedule line/)]);
-		expect(log(h)).toContain(notices(h)[0]);
 		expect(await h.wake(task.id, task.prompt)).toMatchObject({ action: "transform" });
-	});
-
-	it("review reopens Ready for a session left in the old starting phase", async () => {
-		const h = await ready();
-		const file = state(h).file;
-		const { token, reminderSource: source } = state(h);
-		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "sess", phase: "starting", file, startup: { token, source }, judge: true } });
-		h.schedulerReceipt("old");
-		await h.hook("session_start");
-		h.ctx.ui.select = async () => "Ready";
-		await command(h, "review");
-		expect(h.sent.some(m => m.text === "/schedule-remove old")).toBe(true);
-		expect(log(h)).toContain("previous startup did not finish");
-		expect(state(h)).toMatchObject({ phase: "working", file });
-		expect(state(h).token).not.toBe(token);
 	});
 });

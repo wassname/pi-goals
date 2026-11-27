@@ -1,7 +1,7 @@
 {
   "name": "@wassname2/pi-goals",
-  "version": "0.4.0",
-  "description": "One agent, one approved goals file, a scheduled loop that re-sends your loop statement and goals, and an optional read-only judge.",
+  "version": "0.5.0",
+  "description": "One agent, one goal on a page that only you change, a scheduled loop that re-sends your loop statement, and a fresh read-only judge at each stop and at completion.",
   "author": "wassname",
   "license": "MIT",
   "type": "module",

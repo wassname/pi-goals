@@ -101,7 +101,6 @@ test(schedulerEnabled ? "Pi starts work and creates/removes a session reminder" 
 		await rpc("prompt", { message: "/fixture-state" });
 		const snapshot = await waitFor(record => record.type === "message_end" && record.message?.customType === "fixture-state");
 		assert.equal(snapshot.message.details.data.phase, "working");
-		assert.ok(readFileSync(snapshot.message.details.data.file, "utf8").split("## Log")[1].includes(warning.message.content));
 		assert.equal(records.some(record => record.type === "agent_start"), false);
 		return;
 	}
