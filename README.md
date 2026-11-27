@@ -61,4 +61,6 @@ Requires Pi 1.2 or newer. Use Node Pi for scheduled reminders.
 <!-- PI/OpenAI: restored the short design summary. -->
 One agent works with its usual tools and one goals file. Scheduled reminders repeat your instructions, and an optional sign-off judge checks the evidence.
 
-<!-- README rewrite: PI/OpenAI. -->
+See [how agent harnesses keep working toward a goal](docs/goal-implementations.md) for a source comparison with Codex, Claude Code, Hermes, and other Pi extensions.
+
+<!-- README rewrite and comparison link: PI/OpenAI. -->

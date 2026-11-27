@@ -38,6 +38,8 @@ The [Sep 23 review](https://github.com/wassname/pi-goals/commit/3f88ab4) records
 
 ## Peer packages
 
+This was a size comparison of selected peers. See [how agent harnesses keep working toward a goal](goal-implementations.md) for the broader survey, GitHub metrics, and full prompt wording.
+
 Nonblank production source lines, including comments and inline prompts; excludes tests, declaration files, generated copies, dependencies, and Markdown. Counts use published source where available, otherwise the source at the release commit. `Authors*` counts distinct non-bot Git contributors (package path only for collections). Git attribution does not tell who wrote code with an agent. Local `pi-goals` history shows one identifiable human maintainer account family, wassname/Michael J Clark, and several explicitly credited agents.
 
 | Package | Lines | Authors* | What it does at a stop |
