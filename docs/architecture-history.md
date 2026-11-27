@@ -2,7 +2,7 @@
 
 <!-- PI/OpenAI: counted historical snapshots and compared published peer packages, 2026-11-27. -->
 
-`pi-goals` started as a Markdown plan and a sign-off judge. In July the prompt defaulted to **one goal**. In September the project tried both automatic continuation and a separate supervisor. It then returned to one working agent, with the stock scheduler and a fresh sign-off judge. Tasks later moved into the goals file and widget.
+`pi-goals` started as a Markdown plan and a sign-off judge. In July the prompt defaulted to **one goal**. In September the project tried both automatic continuation and a separate supervisor. It then returned to one working agent, with the stock scheduler and a fresh sign-off judge. Tasks later moved into the goals file and widget. On Nov 27 the file became one page that only the user changes, the tasks left it again, and a fresh judge began to review each stop.
 
 ## Major versions of the design
 
