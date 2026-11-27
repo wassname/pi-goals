@@ -44,7 +44,7 @@ One Markdown file per goal, in `.pi/goals/`.
 
 `## Goal` and `## Result mock-up` are what you read and approve. A heading that starts with `Slop:` holds text the agent wrote and you did not approve; the goal and your own messages win over it. Remove the label to approve a section. Everything above `Resume here` is **the page**. You approve it at Ready, and after that only you change it: edit the file, or run `/goals replan` to have the agent draft a change for your approval. An edit by the agent to the page is undone. The agent is shown your edits at its next turn.
 
-From `Resume here` down is the agent's. It may keep what it likes there, but only the first 15 lines of its note and the newest evidence lines are sent back to it. Checklists belong in the task tools and results in the project's journal.
+From `Resume here` down is the agent's. It may keep what it likes there, but only the first 15 lines of its note and the newest evidence lines are sent back to it. Checklists belong in a task tool if you have one, and results in the project's journal.
 
 ## Workflow
 
