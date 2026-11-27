@@ -6,17 +6,24 @@ A Pi extension for work that takes more than one conversation. You and the agent
 
 <!-- PI/Claude: rendered by widgetLines(); collapsed, then expanded. -->
 ```
-● goal working · Find metastable states that steer Qwen · click to expand
-  → Search at layer 16 is running as job 1623: 40 steps, starts out to 6 units.
+● goal working · 1 needs you · click to expand
+  "we want to find metastable states where the model self steers ... and show that they ste[0m…[0m
+  ? Needs you: map at layer 16 or 20? I use 16, your method, until you say.
+  → Now: rerunning the search at layer 16 with 40 steps (job 1623).
 
-● goal working · Find metastable states that steer Qwen · click to collapse
-  Search at layer 16 is running as job 1623: 40 steps, starts out to 6 units.
-  If it cannot recover the planted state: debug the search, do not report a null.
-  A scheduled check wakes me when the job changes state.
-  Question for you: map at layer 16 or 20? I use 16, your method, until you say.
+● goal working · 1 needs you · click to collapse
+  "we want to find metastable states where the model self steers ... and show that they
+  steer better, particularly coherent for longer." One goal, four deliverables:
+
+  Saw: the first search stopped at 8 steps and had not converged.
+  Now: rerunning the search at layer 16 with 40 steps (job 1623).
+  If it fails: check that it can recover a planted state before calling it a null.
+  Waiting on: job 1623; a scheduled check wakes me when it changes state.
+  Needs you: map at layer 16 or 20? I use 16, your method, until you say.
+  You should know: lens direction 3 was a reaction to any write, not a kept direction.
 ```
 
-Click the widget in Pi's fullscreen mode or press `Ctrl+O` to expand it. It shows the agent's current note.
+Click the widget in Pi's fullscreen mode or press `Ctrl+O` to expand it. It shows the goal as you wrote it and the agent's current note. A `Needs you:` line is counted in the header and shown first.
 
 ## The goals file
 
@@ -28,10 +35,11 @@ One Markdown file per goal, in `.pi/goals/`.
 
 ## Goal            one paragraph, in your words: what you want and how you judge it
 ## Result mock-up  what you will be shown when it works
-## Notes           design choices, preferences, terms, resources, what is out of scope
+## Concepts        optional: an idea that keeps needing explanation, defined once
+## Notes           your preferences and design choices, one line each
 ## Loop statement  your standing instructions, sent with every reminder
 
-## Resume here     the agent's one note: what it saw, what is next, what if that fails
+## Resume here     the agent's one note: short labelled lines (Saw, Now, If it fails, Needs you)
 ## Evidence        one line per result, with a link
 ```
 

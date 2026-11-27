@@ -7,8 +7,9 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 /** The agent writes from this ## heading down; everything above it is the page the user approved. */
 export const NOTES = "Resume here";
 export const EVIDENCE = "Evidence";
-/** Nonblank lines: what the user can review at once, and what one replaceable note may hold. */
-export const PAGE_LINES = 80;
+/** What the user can review at once, in words: a line limit was met by packing lines (first real page, 2026-11-27). */
+export const PAGE_WORDS = 700;
+/** Nonblank lines that one replaceable note may hold. */
 export const NOTE_LINES = 15;
 const EVIDENCE_LINES = 20;
 const WIDGET_NOTE_MIN = 30;
@@ -54,6 +55,7 @@ export function keepPage(before: string, after: string): string | undefined {
 }
 
 export const lineCount = (text: string) => text.split("\n").filter((line) => line.trim()).length;
+export const wordCount = (text: string) => text.split(/\s+/).filter(Boolean).length;
 
 /** The agent's note, cut to its limit: what is beyond it is never sent back, so the note gets replaced, not appended to. */
 export function note(text: string): string {
@@ -106,15 +108,35 @@ export interface WidgetStyle {
 }
 const plainStyle: WidgetStyle = { fg: (_color, text) => text };
 
-/** One header line (status and title), then the first line of the agent's note; expanded, the whole note. */
+/** The goal as the user wrote it: the first paragraph of ## Goal, on one line. */
+export function goalLead(text: string): string | undefined {
+	const body = section(text, "Goal");
+	const first = body === undefined ? undefined : parse(body).children.find((node) => node.type === "paragraph");
+	return first && body!.slice(from(first), to(first)).split("\n").map((line) => line.trim()).join(" ");
+}
+
+const WIDGET_GOAL_LINES = 4;
+const starts = (label: string) => (line: string) => line.toLowerCase().startsWith(label);
+/** Note lines that ask the user for a decision; the widget and the status line count them. */
+export const needsYou = (text: string) => note(text).split("\n").filter(starts("needs you:"));
+/** wassname 2026-11-27: "why is it not literally the goal from the goals.md"; a note written as one paragraph was "unreadable";
+ * "remember 'needs you'? that was cool ... and 'you should know' is ok too".
+ * Collapsed: the status, the goal, what needs the user, and the note's "Now:" line. Expanded: the goal wrapped, then every line of the note. */
 export function widgetLines(text: string, status: string, width = 100, { expanded = false, style: s = plainStyle }: { expanded?: boolean; style?: WidgetStyle } = {}): string[] {
 	const clip = (line: string) => truncateToWidth(line, width, "…");
-	const shown = note(text).split("\n").filter(Boolean);
+	const wrap = (line: string, indent: string) => wrapTextWithAnsi(line, Math.max(WIDGET_NOTE_MIN, width - indent.length - 2)).map((part, index) => clip(`  ${index ? indent : ""}${part}`));
+	const noted = note(text).split("\n").filter(Boolean);
+	const goal = goalLead(text) ?? title(text) ?? "(no goal)";
 	const colour = status === "working" ? "accent" : status === "accepted" || status === "self-verified" ? "success" : "warning";
-	const lines = [clip(`${s.fg(colour, `● goal ${status}`)} · ${title(text) ?? "(no title)"}${shown.length > 1 ? s.fg("dim", ` · click to ${expanded ? "collapse" : "expand"}`) : ""}`)];
-	if (!shown.length) return lines;
-	if (!expanded) return [...lines, clip(`  ${s.fg("dim", "→")} ${shown[0]}`)];
-	return [...lines, ...shown.flatMap((line) => wrapTextWithAnsi(line, Math.max(WIDGET_NOTE_MIN, width - 4)).map((part) => clip(`  ${part}`)))];
+	const asks = noted.filter(starts("needs you:"));
+	const paint = (line: string) => starts("needs you:")(line) ? s.fg("warning", line) : starts("you should know:")(line) ? s.fg("accent", line) : line;
+	const header = `${s.fg(colour, `● goal ${status}`)}${asks.length ? ` · ${s.fg("warning", `${asks.length} need${asks.length === 1 ? "s" : ""} you`)}` : ""}${s.fg("dim", ` · click to ${expanded ? "collapse" : "expand"}`)}`;
+	if (!expanded) {
+		const now = noted.find(starts("now:")) ?? noted.find((line) => !asks.includes(line));
+		return [clip(header), clip(`  ${goal}`), ...asks.map((line) => clip(`  ${s.fg("warning", "?")} ${paint(line)}`)), ...(now ? [clip(`  ${s.fg("dim", "→")} ${now}`)] : [])];
+	}
+	const told = wrap(goal, "");
+	return [clip(header), ...told.slice(0, WIDGET_GOAL_LINES), ...(told.length > WIDGET_GOAL_LINES ? [s.fg("dim", "  …")] : []), ...(noted.length ? [""] : []), ...noted.flatMap((line) => wrap(paint(line), "  "))];
 }
 
 /** Local time: agents write notes from the local clock they see. */

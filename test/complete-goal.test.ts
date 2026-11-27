@@ -27,7 +27,7 @@ describe("CompleteGoal", () => {
 		const text = result.content[0].text;
 		expect(text).not.toContain("[pi-goals: resync]");
 		expect(text).toContain("| run | score-placeholder |");
-		expect(h.ctx.widget[0]).toBe("● goal accepted · Title");
+		expect(h.ctx.widget.slice(0, 2)).toEqual(["● goal accepted · click to expand", "  A plot. Make the plot."]);
 		expect(await h.settle()).toBeUndefined();
 		expect(h.requests).toHaveLength(1);
 		expect(h.requests[0]).toMatchObject({ agent: "pi-goals-judge", context: "fresh", model: "p/m", result: { kind: "structured" } });

@@ -6,7 +6,7 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { Type } from "typebox";
 import { liveDescendants } from "./children.js";
 import type { UserMessage } from "./goals.js";
-import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, PAGE_LINES, section, split, stamp, widgetLines } from "./goals.js";
+import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, needsYou, PAGE_WORDS, section, split, stamp, widgetLines, wordCount } from "./goals.js";
 import { decideSignOff, runJudge, signOffTask, stopVerdict } from "./judge.js";
 import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -120,7 +120,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 			const text = read();
 			const status = state.done ?? state.phase ?? "";
 			const scheduler = state.phase === "working" && state.reminderWarning ? " · scheduler: unconfirmed" : "";
-			ctx.ui.setStatus("goals", `${status}${scheduler} · ${relative(ctx.cwd, state.file)}`);
+			const asks = state.phase === "planning" ? 0 : needsYou(text).length;
+			ctx.ui.setStatus("goals", `${status}${scheduler}${asks ? ` · ${asks} need${asks === 1 ? "s" : ""} you` : ""} · ${relative(ctx.cwd, state.file)}`);
 			if (state.phase === "planning") ctx.ui.setWidget("goals", undefined);
 			else if (ctx.mode === "tui") {
 				let cached: { width: number; expanded: boolean; lines: string[] } | undefined;
@@ -309,8 +310,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 			if (state.phase !== "planning") throw new Error("No goal discussion is active.");
 			const text = read();
 			requirePage(text);
-			const lines = lineCount(split(text).page);
-			if (lines > PAGE_LINES) throw new Error(prompts.pageTooLong(lines));
+			const words = wordCount(split(text).page);
+			if (words > PAGE_WORDS) throw new Error(prompts.pageTooLong(words));
 			reviewRequested = true;
 			return result(prompts.reviewQueued);
 		},

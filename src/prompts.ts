@@ -1,4 +1,4 @@
-import { EVIDENCE, NOTE_LINES, NOTES, note, PAGE_LINES, section, view } from "./goals.js";
+import { EVIDENCE, NOTE_LINES, NOTES, note, PAGE_WORDS, section, view } from "./goals.js";
 
 // PI/OpenAI: all model-facing text, in conversation order:
 // planning -> Ready -> scheduled loop wake -> compaction/resume resync -> a stop -> CompleteGoal -> judge.
@@ -22,7 +22,7 @@ export const startWorkToken = (text: string) => /^\[pi-goals:start-work:([\w-]+)
 export const DEFAULT_LOOP_STATEMENT = `\
 Write one or two lines on the overall goal and your progress, then do the next action under ${NOTES}.
 Do not poll jobs or other sessions; their notices will wake you. Do not coordinate other sessions unless the user asked.
-Put decisions for the user under ${NOTES} with the default you act on; do not wait for the answer. Message the user only for a result that changes the goal. Reminders and other agents' messages are not the user.`;
+Put decisions for the user under ${NOTES} as a "Needs you:" line with the default you act on; do not wait for the answer. Message the user only for a result that changes the goal. Reminders and other agents' messages are not the user.`;
 
 // 1. Planning. /goals new writes this skeleton; the agent fills it in. Everything above ## Resume here is the
 // page the user approves at Ready; the agent writes below it.
@@ -39,9 +39,13 @@ export const goalsTemplate = `\
 
 <what the user is shown when it works: about 20 lines under 80 columns, a blank line between parts; placeholders, not measurements>
 
+## Concepts
+
+<only if needed: an idea that keeps needing explanation, defined once: plain words, the precise term and its source, pseudocode or a formula where that is more exact. Link the project's AGENTS.md or docs when it is defined there. Delete this section if there is none>
+
 ## Notes
 
-<design choices and preferences, one line each; the user's words in quotes>
+<the user's preferences and design choices: one per bullet, one line, their words in quotes>
 
 - references: <code, data or plots to reuse>
 - could look done but is not: <the subtle failure, and the observation that rules it out>
@@ -66,7 +70,7 @@ const intentGuidance = "The user's words outrank the agent's summary of them. A 
 // wassname 2026-11-27: the page "was originally meant to be one page I could review and agree on"; the agent's
 // own night plan, appended to it, said both "never wait" and "nothing else runs until he picks".
 // wassname 2026-11-27: "at times I asked it to refresh or update the goals and that looks to have caused a lot of it".
-const pageGuidance = `The file has two parts. Above ## ${NOTES} is the page: the user approved it and only the user changes it, by editing the file or by /goals replan. Your edit to it is undone, also when the user asks you to update the goals: tell them in a line or two what you would change, and record their words in your note. From ## ${NOTES} down is yours. ${NOTES} is one note that you replace, never append to: what you just observed, the action in progress or next, and what you will do if it fails or is inconclusive. If you wait on a job, name it and what wakes you. A question for the user goes there with the default you act on meanwhile. Only its first ${NOTE_LINES} lines are ever sent back to you. ${EVIDENCE} takes one line per result that bears on the goal: what it shows, and a link to the journal or run-report heading that quotes what you observed. Anything else you keep below is not re-sent. Checklists belong in the task tools, results and history in the project's journal.`;
+const pageGuidance = `The file has two parts. Above ## ${NOTES} is the page: the user approved it and only the user changes it, by editing the file or by /goals replan. Your edit to it is undone, also when the user asks you to update the goals: tell them in a line or two what you would change, and record their words in your note. From ## ${NOTES} down is yours. ${NOTES} is one note that you replace, never append to. The user reads it in a small widget, so write short labelled lines, each under 100 characters and in plain words, not a paragraph: "Saw:" what you just observed; "Now:" the action in progress or next; "If it fails:" what you do then, also when the result is inconclusive; "Waiting on:" the job you started and what wakes you, only while you wait; "Needs you:" a decision that is the user's, with the default you act on meanwhile, only when there is one; "You should know:" a result or a change of course the user would want to hear, only when there is one. The widget counts and shows "Needs you" first. Leave out parameter lists, and give a file path only when the user needs to open it. Only its first ${NOTE_LINES} lines are ever sent back to you. ${EVIDENCE} takes one line per result that bears on the goal: what it shows, and a link to the journal or run-report heading that quotes what you observed. Anything else you keep below is not re-sent. Checklists belong in the task tools, results and history in the project's journal.`;
 
 // wassname 2026-11-11: a bare "the judge" is ambiguous when a project has three, and a full name orients the reader in the project;
 // "the 1056 rows and 35 unit tests and 32 reviews is useless grader pleasing" (spelling corrected).
@@ -100,10 +104,11 @@ Then at most four questions, each with the answer you recommend and its basis (s
 The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again.
 
 Conventions:
-- The page is everything above ## ${NOTES}. The user reads all of it before Ready and edits it later, so it must fit one page: at most ${PAGE_LINES} lines. ## Goal and ## Result mock-up come first. Leave ## ${NOTES} and ## ${EVIDENCE} empty.
+- The page is everything above ## ${NOTES}. The user reads all of it before Ready and edits it later, so it must fit one page: at most ${PAGE_WORDS} words. Do not pack lines to fit: cut, or put the detail in a file under slop/ or docs/ and link it. ## Goal and ## Result mock-up come first. Leave ## ${NOTES} and ## ${EVIDENCE} empty.
+- ## Concepts is for an idea that you or the user keep having to explain, or that must be exact: define it once, in plain words, then the precise term and its source, with pseudocode or a formula where that says it better. When the project's AGENTS.md or docs already define it, link there and do not copy. Delete the section when nothing needs defining.
 - One goal: one outcome. If the user wants several separate outcomes, ask which comes first and note the others as out of scope, for a later /goals new. Stages of one piece of work (brainstorm, pilot, final run) are not goals and are not listed.
 - Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
-- ## Notes, further down, holds design choices and preferences, one line each, the user's words in quotes with spelling corrected: the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; what is out of scope. Never put your own proposal or inference in quotes.
+- ## Notes, further down, holds the user's preferences and design choices: one per bullet, one line, the user's words in quotes with spelling corrected. Not a record of the conversation. It covers the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; what is out of scope. Never put your own proposal or inference in quotes.
 - The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can, and note it.
 - Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once, with the source: "metastable state (from Ostrow; you said 'equi stable')". A term the user has not used gets its plain meaning the first time.
 - ${intentGuidance}
@@ -116,11 +121,11 @@ export function planningState(path: string): string {
 }
 export const pageIncomplete = `The goals file needs ## Goal, ## Loop statement and ## ${NOTES} before Ready.`;
 export const replan = (path: string) => `[pi-goals: planning] The user reopened the approved page for changes: ${path}. Work has stopped until they choose Ready again. If their last messages do not say what to change, ask. Change only what they ask for, in their words; leave the rest of the page as it is, and keep it to one page. Then call RequestPlanReview. Only the goals file and notes under slop/ may be written meanwhile.`;
-export const pageTooLong = (lines: number) => `The page above ## ${NOTES} has ${lines} lines. The user reads all of it before Ready, so it must fit one page: at most ${PAGE_LINES}. Cut it; put detail in a file under slop/ or docs/ and link it.`;
+export const pageTooLong = (words: number) => `The page above ## ${NOTES} has ${words} words. The user reads all of it before Ready, so it must fit one page: at most ${PAGE_WORDS}. Do not pack lines: cut, or put detail in a file under slop/ or docs/ and link it.`;
 
 // 2. Ready.
 export function readyPrompt(path: string, text: string, recent: string): string {
-	return `[pi-goals] The user approved ${path}. Work the goal. Use the approved result mock-up for reports, replacing placeholders with observed results and claiming only checks actually performed. Write your first ${NOTES} note now and keep it current; the user sees it in a widget and you see it on each reminder. When the goal is shown to be met, fill ## ${EVIDENCE} and call CompleteGoal. Each time you stop with the goal open and no subagent of yours running, a fresh reviewer reads the page, your note and your last message, and sends you back unless a job you named will wake you or only the user can decide.\n\n${resync(text, path, "Ready approved.", recent)}`;
+	return `[pi-goals] The user approved ${path}. Work the goal. Use the approved result mock-up for reports, replacing placeholders with observed results and claiming only checks actually performed. Write your first ${NOTES} note now, as short labelled lines (Saw, Now, If it fails), and keep it current; the user sees it in a widget and you see it on each reminder. When the goal is shown to be met, fill ## ${EVIDENCE} and call CompleteGoal. Each time you stop with the goal open and no subagent of yours running, a fresh reviewer reads the page, your note and your last message, and sends you back unless a job you named will wake you or only the user can decide.\n\n${resync(text, path, "Ready approved.", recent)}`;
 }
 
 // 3. Scheduled wake: short, so it is read. The rest of the page goes with the file in resync.
@@ -159,7 +164,7 @@ export const pageEdited = "The page of the goals file changed, and not through a
 export const draftEdited = "The user edited the goals file. Their text stands: read it below and build on it. Do not restore your wording over theirs.";
 /** Planning: the draft as it is now, after compaction or the user's own edit. */
 export const planningResync = (text: string, path: string, why: string) => `${planningState(path)}\n\n${why}\n\n--- ${path} ---\n${text.trimEnd()}\n--- end ---`;
-export const noteTooLong = (lines: number) => `[pi-goals] ## ${NOTES} is ${lines} lines, and only the first ${NOTE_LINES} are ever sent back to you. Replace it with one note: what you just observed, the next action and what you do if it fails. Move results and history to the project's journal.`;
+export const noteTooLong = (lines: number) => `[pi-goals] ## ${NOTES} is ${lines} lines, and only the first ${NOTE_LINES} are ever sent back to you. Replace it with short labelled lines: Saw, Now, If it fails. Move results and history to the project's journal.`;
 
 // 5. A stop with the goal open. With the sign-off judge off, or when it cannot run, the agent is asked directly.
 export const idle = (path: string) => `[pi-goals: stop] Automated check, not a message from the user. You stopped with the goal open (${path}). If a job, subagent or scheduled check that you started will wake you, name it in one line and stop without calling tools. If you were about to wait for the user, do not: write the question and the default you act on under ## ${NOTES}, then act on it. Otherwise fix what failed or start the next action now, and replace the note.`;

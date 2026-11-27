@@ -48,8 +48,9 @@ describe("planning and Ready", () => {
 		const review = () => h.tools.get("RequestPlanReview").execute();
 		writeFileSync(state(h).file, GOALS.replace("## Resume here\n", ""));
 		await expect(review()).rejects.toThrow(/Resume here/);
-		writeFileSync(state(h).file, GOALS.replace("Make the plot.", Array.from({ length: 90 }, (_, n) => `- detail ${n}`).join("\n")));
-		await expect(review()).rejects.toThrow(/9\d lines.*at most 80/s);
+		// Packing the same words into fewer lines does not help.
+		writeFileSync(state(h).file, GOALS.replace("Make the plot.", Array.from({ length: 10 }, (_, n) => `- ${`detail ${n} `.repeat(40)}`).join("\n")));
+		await expect(review()).rejects.toThrow(/8\d\d words.*at most 700/s);
 		await h.hook("agent_settled");
 		expect(state(h).phase).toBe("planning");
 	});
@@ -282,16 +283,20 @@ describe("widget rendering", () => {
 		const h = setup({ choices: ["Ready"] });
 		h.ctx.mode = mode;
 		const file = await ready(h);
-		writeFileSync(file, withNote(GOALS.replace("# Title", `# ${"概念 🧪 é ".repeat(100)}`), "Experiment history ".repeat(300)));
+		writeFileSync(file, withNote(GOALS.replace("A plot. Make the plot.", "概念 🧪 é ".repeat(100)), "Experiment history ".repeat(300)));
 		await h.hook("session_start");
 		const component = mode === "tui" ? h.ctx.widget(undefined, { fg: (_color: string, s: string) => s }) : undefined;
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
-			expect(lines).toHaveLength(2);
-			expect(lines[0]).toMatch(/^● goal working · 概/);
+			expect(lines).toHaveLength(3);
+			expect(lines[0]).toMatch(/^● goal working/);
+			expect(lines[1]).toMatch(/^ {2}概/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 		expect(h.ctx.status).toMatch(/^working · \.pi\/goals\/sess-v1\.md$/);
+		writeFileSync(file, withNote(GOALS, "Needs you: log or linear axis? I use log until you say."));
+		await h.hook("turn_end");
+		expect(h.ctx.status).toBe("working · 1 needs you · .pi/goals/sess-v1.md");
 	});
 
 	it("a click or Pi's ctrl+o (tools expanded) flips the widget between the first line of the note and all of it", async () => {
@@ -301,8 +306,8 @@ describe("widget rendering", () => {
 		writeFileSync(file, withNote(GOALS, "Fitting the bars.\nIf it fails: rerun at 40 steps."));
 		await h.hook("session_start");
 		const widget = h.ctx.widget(undefined, { fg: (_color: string, s: string) => s });
-		const collapsed = ["● goal working · Title · click to expand", "  → Fitting the bars."];
-		const expanded = ["● goal working · Title · click to collapse", "  Fitting the bars.", "  If it fails: rerun at 40 steps."];
+		const collapsed = ["● goal working · click to expand", "  A plot. Make the plot.", "  → Fitting the bars."];
+		const expanded = ["● goal working · click to collapse", "  A plot. Make the plot.", "", "  Fitting the bars.", "  If it fails: rerun at 40 steps."];
 		expect(widget.render(100)).toEqual(collapsed);
 		expect(widget.handleMouse({ type: "move", button: "none" })).toBeUndefined();
 		expect(widget.handleMouse({ type: "click", button: "left" })).toEqual({ handled: true });
@@ -348,7 +353,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget).toEqual(["● goal working · Title"]);
+		expect(h.ctx.widget).toEqual(["● goal working · click to expand", "  A plot. Make the plot."]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendEvidence, dialogue, keepPage, lastLines, lineCount, note, section, split, title, view, widgetLines } from "../src/goals.js";
+import { appendEvidence, dialogue, keepPage, lastLines, note, section, split, title, view, widgetLines, wordCount } from "../src/goals.js";
 import { goalsTemplate } from "../src/prompts.js";
 import { GOALS, LOOP, withNote } from "./harness.js";
 
@@ -42,8 +42,8 @@ describe("the page and the agent's notes", () => {
 	});
 
 	it("the template is a valid page that fits the one-page limit", () => {
-		expect(lineCount(split(goalsTemplate).page)).toBeLessThan(40);
-		for (const name of ["Goal", "Result mock-up", "Notes", "Loop statement", "Resume here", "Evidence"]) expect(section(goalsTemplate, name)).toBeDefined();
+		expect(wordCount(split(goalsTemplate).page)).toBeLessThan(350);
+		for (const name of ["Goal", "Result mock-up", "Concepts", "Notes", "Loop statement", "Resume here", "Evidence"]) expect(section(goalsTemplate, name)).toBeDefined();
 		expect(goalsTemplate.indexOf("## Goal")).toBeLessThan(goalsTemplate.indexOf("## Result mock-up"));
 		expect(goalsTemplate.indexOf("## Result mock-up")).toBeLessThan(goalsTemplate.indexOf("## Notes"));
 	});
@@ -83,18 +83,29 @@ describe("what the user typed, for a reader who was not there", () => {
 });
 
 describe("widget", () => {
-	it("shows the status and title, then the first line of the note; expanded, the whole note", () => {
-		expect(widgetLines(GOALS, "working")).toEqual(["● goal working · Title"]);
-		const text = withNote(GOALS, "Fitting the bars.\nIf it fails: rerun at 40 steps.");
-		expect(widgetLines(text, "working")).toEqual(["● goal working · Title · click to expand", "  → Fitting the bars."]);
-		expect(widgetLines(text, "accepted", 100, { expanded: true })).toEqual(["● goal accepted · Title · click to collapse", "  Fitting the bars.", "  If it fails: rerun at 40 steps."]);
+	it("shows the status, the goal as written, and the note's Now line; expanded, the goal wrapped and every line of the note", () => {
+		expect(widgetLines(GOALS, "working")).toEqual(["● goal working · click to expand", "  A plot. Make the plot."]);
+		const text = withNote(GOALS, "Saw: the fit converged in 12 steps.\nNow: drawing the bars.\nIf it fails: rerun at 40 steps.");
+		expect(widgetLines(text, "working")).toEqual(["● goal working · click to expand", "  A plot. Make the plot.", "  → Now: drawing the bars."]);
+		expect(widgetLines(text, "accepted", 100, { expanded: true })).toEqual(["● goal accepted · click to collapse", "  A plot. Make the plot.", "", "  Saw: the fit converged in 12 steps.", "  Now: drawing the bars.", "  If it fails: rerun at 40 steps."]);
+		const asking = withNote(GOALS, "Saw: two candidate axes.\nNow: mapping at layer 16.\nNeeds you: layer 16 or 20 for the map? I use 16 until you say.\nYou should know: the first search did not converge.");
+		expect(widgetLines(asking, "working")).toEqual(["● goal working · 1 needs you · click to expand", "  A plot. Make the plot.", "  ? Needs you: layer 16 or 20 for the map? I use 16 until you say.", "  → Now: mapping at layer 16."]);
+		const painted = widgetLines(asking, "working", 100, { expanded: true, style: { fg: (color: string, s: string) => `<${color}>${s}</>` } });
+		expect(painted).toContain("  <warning>Needs you: layer 16 or 20 for the map? I use 16 until you say.</>");
+		expect(painted).toContain("  <accent>You should know: the first search did not converge.</>");
+		// The goal is its first paragraph, on one line; a list under it is not shown, and a long goal ends in an ellipsis.
+		const long = GOALS.replace("A plot. Make the plot.", `"we want the plot,\nwith error bars." One goal:\n1. find the data\n2. draw it`);
+		expect(widgetLines(long, "working")[1]).toBe('  "we want the plot, with error bars." One goal:');
+		const lines = widgetLines(GOALS.replace("A plot. Make the plot.", "word ".repeat(200)), "working", 60, { expanded: true });
+		expect(lines).toHaveLength(6);
+		expect(lines.at(-1)).toBe("  …");
 	});
 
 	it("colours through the theme style and fits the width", () => {
-		const text = withNote(GOALS.replace("# Title", `# ${"概念 🧪 é ".repeat(40)}`), "Experiment history ".repeat(60));
+		const text = withNote(GOALS.replace("A plot. Make the plot.", "概念 🧪 é ".repeat(40)), "Experiment history ".repeat(60));
 		const style = { fg: (color: string, s: string) => `<${color}>${s}</>` };
 		const lines = widgetLines(text, "paused", 40, { style });
 		expect(lines[0]).toContain("<warning>● goal paused</>");
-		expect(lines).toHaveLength(2);
+		expect(lines).toHaveLength(3);
 	});
 });
