@@ -45,7 +45,8 @@ export const goalsTemplate = `\
 
 - references: <code, data or plots to reuse>
 - could look done but is not: <the subtle failure, and the observation that rules it out>
-- terms: <whose words to use first and second (a paper, the field's standard term, the user's own); words to avoid>
+- terms: <the source to take words from first, then the sources that fill gaps; each standard term with the loose word it replaces>
+- guiding concepts: <ideas the user wants the work to follow, in their words>
 - resources: <credentials, compute and limits, and how each was checked>
 - out of scope: <what the user ruled out, or a second outcome kept for a later goal>
 - ideas: <for a search: candidates to try, the user's first; a starting point, not a list to finish>
@@ -76,7 +77,10 @@ const reportGuidance = "Write to the user as someone who has not followed the se
 // pseudocode). RESULT MOCK UP: ... wdyt? 4 questions"; "and don't ask about the loop"; "the hope is to have the user
 // edit the goal directly so the user can say: no write it like this > this, or: I changed the file, look".
 // wassname 2026-11-27, trying it: "of course not we keep searching until user stops us this is the point of pi-goals"; on a
-// mock-up squeezed into dense lines: "it can have new lines you know".
+// mock-up squeezed into dense lines: "it can have new lines you know"; on terms: "I don't want to use sloppy terms as the user or
+// agent so ideally the agent would say: what terminology should we use, I suggest Ostrow first, and Jones (Chaos paper), or Astrom
+// (control textbooks) to fill gaps, that means: metastable states (you said equi stable), slow modes (you said highways)" and "are
+// there any guiding concepts we need to capture?" (spelling corrected).
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. This phase checks that you understand the goal and what its result will look like. It does not plan the work.
 
@@ -90,17 +94,22 @@ GOAL: one paragraph, in the user's words where you have them: what they want and
 
 RESULT MOCK-UP: what they would be shown when it works: a small results table or a short demo excerpt per part, then a one-line bottom line saying what changed and what that means for the goal. Keep lines under 80 columns so it reads in chat without wrapping, and aim for about 20 lines. Put a blank line between parts; blank lines are free. Never squeeze two things onto one line to save lines. Use placeholders or clearly labelled example values, never invented thresholds or measurements. Show how working, not working and unclear results would read.
 
+TERMS: the words we will both use. Name the source to take them from first (a paper, a textbook, the field's standard usage) and one or two more to fill its gaps. Then list each loose word that you or the user has used, with the term from those sources that you will write instead, one per line, for example:
+- metastable state (you said "equi stable")
+- perturbation (you said "push", I said "write")
+Leave out words that already are the standard term. If the user has used no loose words yet, give only the sources.
+
 wdyt?
 
-Then at most four questions, each with the answer you recommend and its basis (source, quote or guess). Ask only what would change the goal or the result: the outcome, the scope, how it is judged, whose terms to use, spending, publication. Find facts and settle routine choices yourself. Do not ask about the Loop statement: it is the user's default and stays as it is unless they bring it up. Do not ask whether a search that finds nothing is finished: it is not, and the work goes on to the next idea until the user stops it. Respect requests to skip questions.
+Then at most four questions, each with the answer you recommend and its basis (source, quote or guess). Ask only what would change the goal or the result: the outcome, the scope, how it is judged, a guiding concept the work should follow, spending, publication. Find facts and settle routine choices yourself. Do not ask about the Loop statement: it is the user's default and stays as it is unless they bring it up. Do not ask whether a search that finds nothing is finished: it is not, and the work goes on to the next idea until the user stops it. Respect requests to skip questions.
 
-The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again.
+The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again, in the agreed terms.
 
 Conventions:
 - The page is everything above ## ${NOTES}. The user reads all of it before Ready and edits it later, so it must fit one page: at most ${PAGE_LINES} lines. ## Goal and ## Result mock-up come first. Leave ## ${NOTES} and ## ${EVIDENCE} empty.
 - One goal: one outcome. If the user wants several separate outcomes, ask which comes first and note the others as out of scope, for a later /goals new. Stages of one piece of work (brainstorm, pilot, final run) are not goals and are not listed.
 - Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
-- ## Notes, further down, holds design choices and preferences, one line each, the user's words in quotes with spelling corrected: the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; whose terms to use first and second when sources name a thing differently, and words to avoid; what is out of scope. Never put your own proposal or inference in quotes.
+- ## Notes, further down, holds design choices and preferences, one line each, the user's words in quotes with spelling corrected: the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; the agreed terms, as the sources in order and each standard term with the loose word it replaces; a guiding concept the user wants the work to follow; what is out of scope. Never put your own proposal or inference in quotes.
 - The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can, and note it.
 - ${intentGuidance}
 - Reports and questions to the user: ${reportGuidance}
