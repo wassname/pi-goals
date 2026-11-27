@@ -40,6 +40,7 @@ One Markdown file per goal, in `.pi/goals/`.
 ## Slop: Concepts        optional: an idea that keeps needing explanation, defined once
 ## Slop: Jargon          optional: where terms come from (paper > textbook > other field), one per line
 ## Slop: Notes           your preferences and design choices, one line each
+                        including "skills:", your skills to use and when; each reminder repeats it
 
 ## Slop: Resume here     the agent's one note: short labelled lines (Saw, Now, If it fails, Needs you)
 ## Slop: Evidence        one line per result, with a link

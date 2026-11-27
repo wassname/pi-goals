@@ -59,6 +59,7 @@ export const goalsTemplate = `\
 - resources: <credentials, compute and limits, and how each was checked>
 - out of scope: <what the user ruled out, or a second outcome kept for a later goal>
 - ideas: <for a search: candidates to try, the user's first; a starting point, not a list to finish>
+- skills: <skill>: <when, e.g. on each reminder, setting up an experiment, when a job ends, before CompleteGoal, writing to the user>; <skill>: <when>
 
 ## ${NOTES}
 
@@ -103,6 +104,13 @@ wdyt?
 
 Then at most four questions, each with the answer you recommend and its basis (source, quote or guess). Ask only what would change the goal or the result: the outcome, the scope, how it is judged, spending, publication. Find facts and settle routine choices yourself. Do not ask how to keep working or when to stop: you keep going until the user stops you. Do not ask whether a search that finds nothing is finished: it is not, and the work goes on to the next idea until the user stops it. Respect requests to skip questions.
 
+Skills: read the skills listed in your instructions. The user wrote or chose them, so they say how this user wants work done. Pick the few that fit this goal and tie each to a point in the work: on each reminder, setting up an experiment, when a job ends, when a result looks done, before CompleteGoal, writing to the user. Ask about them as one of the questions, as a short list:
+  Shall I use these skills, for these?
+  - <skill>: on each reminder
+  - <skill>: to set up the experiments
+  - <skill>: to write the README and my reports to you
+Record the answer under ## ${SLOP} Notes as the skills line. Each reminder repeats that line; load each skill at its point.
+
 The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again.
 
 Conventions:
@@ -134,7 +142,8 @@ export function readyPrompt(path: string, text: string, recent: string): string 
 export function loopPrompt(text: string, path: string, wake: { id: string; schedule: string }): string {
 	const goal = section(text, "Goal");
 	if (!goal) throw new Error(`${path} needs ## Goal. A goals file from an older version needs /goals clear, then /goals new.`);
-	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nGoal (${path}):\n${goal}\n\n${section(text, "Loop statement") || KEEP_GOING}\n\n${NOTES} (your note):\n${note(text) || "(empty: write it now)"}${noteIsReadable(text) ? "" : `\n\n${noteForm}`}`;
+	const skills = (section(text, "Notes") ?? "").split("\n").find((line) => /^\s*-\s*skills:/i.test(line));
+	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nGoal (${path}):\n${goal}\n\n${section(text, "Loop statement") || KEEP_GOING}${skills ? `\nThe user's skills for this goal (load each at its point): ${skills.replace(/^\s*-\s*skills:\s*/i, "")}` : ""}\n\n${NOTES} (your note):\n${note(text) || "(empty: write it now)"}${noteIsReadable(text) ? "" : `\n\n${noteForm}`}`;
 }
 
 // wassname 2026-10-27: "the real risk is they get distracted and forget the goal ... the other risk is they keep stopping and saying it's not possible or they are blocked when they are not" (spelling corrected). Wording agreed with wassname; framed as perspective, not rules.
@@ -238,6 +247,7 @@ The agent claims the goal in the goals file below (${path}) is complete. The use
 3. Provenance: it is visible how each result was produced.
 4. Spot-check: open the cited files. A quote that does not match the file means reconstructed evidence: reject.
 5. Substance: the evidence shows the goal positively, as the result mock-up would, not only that failures were avoided, and the way it could look done without being done is ruled out.
+6. Skills: if the notes name a skill to use before completion, the evidence or the files show that it was applied.
 
 Return checks for the files you actually opened (path, a verbatim quote, what it establishes), a verdict of accept or reject, and what is missing (empty on accept).
 
