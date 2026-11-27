@@ -6,12 +6,13 @@ A Pi extension for work that takes more than one conversation. You and the agent
 
 <!-- PI/Claude: rendered by widgetLines(); collapsed, then expanded. -->
 ```
-● goal working · 1 needs you · click to expand
+● goal working · 1 needs you · .pi/goals/b0ff3a-v3.md · click to expand
   "we want to find metastable states where the model self steers ... and show that they ste…
   ? Needs you: map at layer 16 or 20? I use 16, your method, until you say.
   → Now: rerunning the search at layer 16 with 40 steps (job 1623).
 
 ● goal working · 1 needs you · click to collapse
+  /workspace/2026/slow-modes/.pi/goals/b0ff3a-v3.md
   "we want to find metastable states where the model self steers ... and show that they
   steer better, particularly coherent for longer." One goal, four deliverables:
 
@@ -23,7 +24,7 @@ A Pi extension for work that takes more than one conversation. You and the agent
   You should know: lens direction 3 was a reaction to any write, not a kept direction.
 ```
 
-Click the widget in Pi's fullscreen mode or press `Ctrl+O` to expand it. It shows the goal as you wrote it and the agent's current note. A `Needs you:` line is counted in the header and shown first.
+Click the widget in Pi's fullscreen mode or press `Ctrl+O` to expand it. It shows the goal as you wrote it and the agent's current note. A `Needs you:` line is counted in the header and shown first. The header carries the file's short path; expanded, the full path is on its own line.
 
 ## The goals file
 

@@ -121,14 +121,16 @@ export default function piGoals(pi: ExtensionAPI): void {
 			const status = state.done ?? state.phase ?? "";
 			const scheduler = state.phase === "working" && state.reminderWarning ? " · scheduler: unconfirmed" : "";
 			const asks = state.phase === "planning" ? 0 : needsYou(text).length;
-			ctx.ui.setStatus("goals", `${status}${scheduler}${asks ? ` · ${asks} need${asks === 1 ? "s" : ""} you` : ""} · ${relative(ctx.cwd, state.file)}`);
+			const path = { short: relative(ctx.cwd, state.file), full: state.file };
+			// While planning there is no widget, so the status line carries the path.
+			ctx.ui.setStatus("goals", `goal ${status}${scheduler}${asks ? ` · ${asks} need${asks === 1 ? "s" : ""} you` : ""}${state.phase === "planning" ? ` · ${path.short}` : ""}`);
 			if (state.phase === "planning") ctx.ui.setWidget("goals", undefined);
 			else if (ctx.mode === "tui") {
 				let cached: { width: number; expanded: boolean; lines: string[] } | undefined;
 				ctx.ui.setWidget("goals", (_tui, theme) => ({
 					render: (width) => {
 						const expanded = clicked !== ctx.ui.getToolsExpanded();
-						if (cached?.width !== width || cached.expanded !== expanded) cached = { width, expanded, lines: widgetLines(text, status, width, { expanded, style: { fg: (color, s) => theme.fg(color, s) } }) };
+						if (cached?.width !== width || cached.expanded !== expanded) cached = { width, expanded, lines: widgetLines(text, status, width, { expanded, path, style: { fg: (color, s) => theme.fg(color, s) } }) };
 						return cached.lines;
 					},
 					handleMouse: (event) => {
@@ -138,7 +140,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 					},
 					invalidate() { cached = undefined; },
 				}));
-			} else ctx.ui.setWidget("goals", widgetLines(text, status));
+			} else ctx.ui.setWidget("goals", widgetLines(text, status, undefined, { path }));
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 

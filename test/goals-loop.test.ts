@@ -289,14 +289,14 @@ describe("widget rendering", () => {
 		for (const width of mode === "tui" ? [20, 80, 160, 20] : [100]) {
 			const lines = component ? component.render(width) : h.ctx.widget;
 			expect(lines).toHaveLength(3);
-			expect(lines[0]).toMatch(/^● goal working/);
+			expect(lines[0]).toMatch(/^● goal working · \.p/);
 			expect(lines[1]).toMatch(/^ {2}概/);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
-		expect(h.ctx.status).toMatch(/^working · \.pi\/goals\/sess-v1\.md$/);
+		expect(h.ctx.status).toBe("goal working");
 		writeFileSync(file, withNote(GOALS, "Needs you: log or linear axis? I use log until you say."));
 		await h.hook("turn_end");
-		expect(h.ctx.status).toBe("working · 1 needs you · .pi/goals/sess-v1.md");
+		expect(h.ctx.status).toBe("goal working · 1 needs you");
 	});
 
 	it("a click or Pi's ctrl+o (tools expanded) flips the widget between the first line of the note and all of it", async () => {
@@ -306,8 +306,8 @@ describe("widget rendering", () => {
 		writeFileSync(file, withNote(GOALS, "Fitting the bars.\nIf it fails: rerun at 40 steps."));
 		await h.hook("session_start");
 		const widget = h.ctx.widget(undefined, { fg: (_color: string, s: string) => s });
-		const collapsed = ["● goal working · click to expand", "  A plot. Make the plot.", "  → Fitting the bars."];
-		const expanded = ["● goal working · click to collapse", "  A plot. Make the plot.", "", "  Fitting the bars.", "  If it fails: rerun at 40 steps."];
+		const collapsed = ["● goal working · .pi/goals/sess-v1.md · click to expand", "  A plot. Make the plot.", "  → Fitting the bars."];
+		const expanded = ["● goal working · click to collapse", `  ${file}`, "  A plot. Make the plot.", "", "  Fitting the bars.", "  If it fails: rerun at 40 steps."];
 		expect(widget.render(100)).toEqual(collapsed);
 		expect(widget.handleMouse({ type: "move", button: "none" })).toBeUndefined();
 		expect(widget.handleMouse({ type: "click", button: "left" })).toEqual({ handled: true });
@@ -353,7 +353,7 @@ describe("context after compaction and resume", () => {
 		await ready(h);
 		await h.hook("session_start");
 		expect((await h.hook("before_agent_start")).message.content).toContain(LOOP);
-		expect(h.ctx.widget).toEqual(["● goal working · click to expand", "  A plot. Make the plot."]);
+		expect(h.ctx.widget).toEqual(["● goal working · .pi/goals/sess-v1.md · click to expand", "  A plot. Make the plot."]);
 		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { owner: "other", phase: "working", file: "x", judge: true } });
 		await h.hook("session_start");
 		expect(h.notes.at(-1)).toContain("forked from one with goals x");

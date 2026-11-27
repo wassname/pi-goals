@@ -121,8 +121,9 @@ const starts = (label: string) => (line: string) => line.toLowerCase().startsWit
 export const needsYou = (text: string) => note(text).split("\n").filter(starts("needs you:"));
 /** wassname 2026-11-27: "why is it not literally the goal from the goals.md"; a note written as one paragraph was "unreadable";
  * "remember 'needs you'? that was cool ... and 'you should know' is ok too".
- * Collapsed: the status, the goal, what needs the user, and the note's "Now:" line. Expanded: the goal wrapped, then every line of the note. */
-export function widgetLines(text: string, status: string, width = 100, { expanded = false, style: s = plainStyle }: { expanded?: boolean; style?: WidgetStyle } = {}): string[] {
+ * Collapsed: the status and the file's short path, the goal, what needs the user, and the note's "Now:" line.
+ * Expanded: the file's full path on its own line, so a terminal can open it, the goal wrapped, then every line of the note. */
+export function widgetLines(text: string, status: string, width = 100, { expanded = false, style: s = plainStyle, path }: { expanded?: boolean; style?: WidgetStyle; path?: { short: string; full: string } } = {}): string[] {
 	const clip = (line: string) => truncateToWidth(line, width, "…");
 	const wrap = (line: string, indent: string) => wrapTextWithAnsi(line, Math.max(WIDGET_NOTE_MIN, width - indent.length - 2)).map((part, index) => clip(`  ${index ? indent : ""}${part}`));
 	const noted = note(text).split("\n").filter(Boolean);
@@ -130,13 +131,13 @@ export function widgetLines(text: string, status: string, width = 100, { expande
 	const colour = status === "working" ? "accent" : status === "accepted" || status === "self-verified" ? "success" : "warning";
 	const asks = noted.filter(starts("needs you:"));
 	const paint = (line: string) => starts("needs you:")(line) ? s.fg("warning", line) : starts("you should know:")(line) ? s.fg("accent", line) : line;
-	const header = `${s.fg(colour, `● goal ${status}`)}${asks.length ? ` · ${s.fg("warning", `${asks.length} need${asks.length === 1 ? "s" : ""} you`)}` : ""}${s.fg("dim", ` · click to ${expanded ? "collapse" : "expand"}`)}`;
+	const header = `${s.fg(colour, `● goal ${status}`)}${asks.length ? ` · ${s.fg("warning", `${asks.length} need${asks.length === 1 ? "s" : ""} you`)}` : ""}${path && !expanded ? s.fg("dim", ` · ${path.short}`) : ""}${s.fg("dim", ` · click to ${expanded ? "collapse" : "expand"}`)}`;
 	if (!expanded) {
 		const now = noted.find(starts("now:")) ?? noted.find((line) => !asks.includes(line));
 		return [clip(header), clip(`  ${goal}`), ...asks.map((line) => clip(`  ${s.fg("warning", "?")} ${paint(line)}`)), ...(now ? [clip(`  ${s.fg("dim", "→")} ${now}`)] : [])];
 	}
 	const told = wrap(goal, "");
-	return [clip(header), ...told.slice(0, WIDGET_GOAL_LINES), ...(told.length > WIDGET_GOAL_LINES ? [s.fg("dim", "  …")] : []), ...(noted.length ? [""] : []), ...noted.flatMap((line) => wrap(paint(line), "  "))];
+	return [clip(header), ...(path ? [s.fg("dim", `  ${path.full}`)] : []), ...told.slice(0, WIDGET_GOAL_LINES), ...(told.length > WIDGET_GOAL_LINES ? [s.fg("dim", "  …")] : []), ...(noted.length ? [""] : []), ...noted.flatMap((line) => wrap(paint(line), "  "))];
 }
 
 /** Local time: agents write notes from the local clock they see. */

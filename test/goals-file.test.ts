@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
 import { appendEvidence, dialogue, keepPage, lastLines, note, section, split, title, view, widgetLines, wordCount } from "../src/goals.js";
 import { goalsTemplate } from "../src/prompts.js";
@@ -93,6 +94,9 @@ describe("widget", () => {
 		const painted = widgetLines(asking, "working", 100, { expanded: true, style: { fg: (color: string, s: string) => `<${color}>${s}</>` } });
 		expect(painted).toContain("  <warning>Needs you: layer 16 or 20 for the map? I use 16 until you say.</>");
 		expect(painted).toContain("  <accent>You should know: the first search did not converge.</>");
+		const path = { short: ".pi/goals/abc-v1.md", full: "/work/project/.pi/goals/abc-v1.md" };
+		expect(widgetLines(asking, "working", 100, { path })[0]).toBe("● goal working · 1 needs you · .pi/goals/abc-v1.md · click to expand");
+		expect(widgetLines(asking, "working", 40, { path, expanded: true }).slice(0, 2).map(stripVTControlCharacters)).toEqual(["● goal working · 1 needs you · click to…", "  /work/project/.pi/goals/abc-v1.md"]);
 		// The goal is its first paragraph, on one line; a list under it is not shown, and a long goal ends in an ellipsis.
 		const long = GOALS.replace("A plot. Make the plot.", `"we want the plot,\nwith error bars." One goal:\n1. find the data\n2. draw it`);
 		expect(widgetLines(long, "working")[1]).toBe('  "we want the plot, with error bars." One goal:');

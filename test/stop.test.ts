@@ -84,7 +84,7 @@ describe("stop review", () => {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		await h.hook("input", { source: "interactive", text: "wait, one question" });
 		expect(await pending).toBeUndefined();
-		expect(h.ctx.status).toMatch(/^working/);
+		expect(h.ctx.status).toMatch(/^goal working/);
 	});
 
 	it("leaves the agent idle while a subagent of this session is running, and reviews the stop once it has exited", async () => {
