@@ -4,12 +4,10 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "strict": true,
-    "esModuleInterop": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "skipLibCheck": true,
-    "jsx": "react-jsx",
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true
+    "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "include": ["src/**/*.ts"]
 }

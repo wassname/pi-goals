@@ -36,6 +36,7 @@ export interface StopVerdict {
 	verdict: "continue" | "wait" | "blocked";
 	reason: string;
 	next: string;
+	comment: string;
 }
 /** The structured value a fresh judge returned, not yet checked for shape. */
 export type JudgeResult = { ok: true; value: unknown; model?: string } | { ok: false; error: string };
@@ -124,7 +125,7 @@ function signOffVerdict(value: unknown): JudgeVerdict | undefined {
 export function stopVerdict(result: JudgeResult): StopVerdict | { error: string } {
 	if (!result.ok) return { error: result.error };
 	const v = result.value as StopVerdict;
-	if (!["continue", "wait", "blocked"].includes(v.verdict) || typeof v.reason !== "string" || !v.reason.trim() || typeof v.next !== "string") return { error: NO_VERDICT };
+	if (!["continue", "wait", "blocked"].includes(v.verdict) || typeof v.reason !== "string" || !v.reason.trim() || typeof v.next !== "string" || typeof v.comment !== "string") return { error: NO_VERDICT };
 	return v;
 }
 

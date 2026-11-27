@@ -91,7 +91,8 @@ const LINE_CHARS = 300;
 export const BEFORE_LINES = 3;
 
 /** The last nonblank lines of a text. */
-export const lastLines = (text: string, count: number) => text.split("\n").filter((line) => line.trim()).slice(-count).join("\n");
+/** The last lines of a reply that say something: a signature ("-- PI/Claude") or a bare file path is skipped. */
+export const lastLines = (text: string, count: number) => text.split("\n").filter((line) => line.trim() && !/^\s*(--\s|\S*\/\S*\.\w+\s*$)/.test(line)).slice(-count).join("\n");
 
 /** The user's messages in order, each after the end of the agent message it answered. A long history keeps its first and last 1,000 lines. */
 export function dialogue(messages: UserMessage[]): string {

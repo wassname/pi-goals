@@ -512,8 +512,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const reviewed = stopVerdict(await runJudge(pi.events, { task, schema: prompts.stopSchema, cwd: ctx.cwd, model: judgeModel(ctx) }, abort.signal, { startMs: 15_000, totalMs: STOP_JUDGE_MS }));
 				if (stale()) return;
 				if ("error" in reviewed) note = `${prompts.stopJudgeFailed(reviewed.error)} ${note}`;
-				else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason), display: true }] };
-				else note = prompts.stopContinue(reviewed.reason, reviewed.next);
+				else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason, reviewed.comment), display: true }] };
+				else note = prompts.stopContinue(reviewed.reason, reviewed.next, reviewed.comment);
 			}
 			continues++;
 			return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: note, display: true }], continue: true };

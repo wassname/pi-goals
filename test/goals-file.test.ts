@@ -89,6 +89,13 @@ describe("what the user typed, for a reader who was not there", () => {
 	});
 });
 
+describe("dialogue", () => {
+	it("shows the end of the agent's reply that the user answered, without its signature or a bare file path", () => {
+		const before = lastLines("Shall I put it up for Ready?\nOr more changes?\n\n-- PI/Claude (claude-fable-5-2)\n/workspace/x/.pi/goals/b0ff3a-v3.md", 3);
+		expect(before).toBe("Shall I put it up for Ready?\nOr more changes?");
+	});
+});
+
 describe("widget", () => {
 	it("shows the status, the goal as written, and the note's Now line; expanded, the goal wrapped and every line of the note", () => {
 		expect(widgetLines(GOALS, "working")).toEqual(["● goal working · click to expand", "  A plot. Make the plot."]);

@@ -20,7 +20,7 @@ const tool = (h: ReturnType<typeof setup>) => h.hook("tool_call", { toolName: "b
 
 describe("stop review", () => {
 	it("sends the agent back with the fresh judge's one finding, which saw the page, the note, the last message and the user's words", async () => {
-		const h = await working(verdict({ verdict: "continue", reason: "The search ran 8 steps and did not converge; the page asks for a found state.", next: "Rerun with 40 steps." }));
+		const h = await working(verdict({ verdict: "continue", reason: "The search ran 8 steps and did not converge; the page asks for a found state.", next: "Rerun with 40 steps.", comment: "" }));
 		writeFileSync(state(h).file, withNote(GOALS, "Search found nothing; waiting for the user to pick."));
 		h.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Drew view 100.\n\nOptions: (a) replicate, (b) larger scale, (c) write up.\nIt waits for your pick." }] } });
 		await h.hook("input", { source: "interactive", text: "I'm afk, don't wait for me" });
@@ -37,15 +37,17 @@ describe("stop review", () => {
 	});
 
 	it.each(["wait", "blocked"])("accepts a stop the judge calls %s: a visible note and no continuation", async (kind) => {
-		const h = await working(verdict({ verdict: kind, reason: "Job 1623 is running and its notice wakes the agent.", next: "" }));
+		const h = await working(verdict({ verdict: kind, reason: "Job 1623 is running and its notice wakes the agent.", next: "", comment: "The demo runs on a spectrum direction before the planted-state check." }));
 		const out = await h.settle("Queued job 1623; its notice wakes me.");
 		expect(out.continue).toBeUndefined();
 		expect(out.entries).toHaveLength(1);
 		expect(out.entries[0].content).toContain(`accepted this stop (${kind}): Job 1623`);
+		// A smaller risk the judge noticed reaches the agent even when the stop stands.
+		expect(out.entries[0].content).toMatch(/Also check: The demo runs on a spectrum direction/);
 	});
 
 	it("keeps going while the agent acts, stops asking once it answers without tools, and starts again after a wake from outside", async () => {
-		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n" }));
+		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n", comment: "" }));
 		expect((await h.settle()).continue).toBe(true);
 		await tool(h);
 		expect((await h.settle()).continue).toBe(true);
@@ -56,7 +58,7 @@ describe("stop review", () => {
 	});
 
 	it("caps continuations between wakes from outside", async () => {
-		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n" }));
+		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n", comment: "" }));
 		let sent = 0;
 		for (let n = 0; n < 15; n++) { await tool(h); if ((await h.settle())?.continue) sent++; }
 		expect(sent).toBe(10);
@@ -88,7 +90,7 @@ describe("stop review", () => {
 	});
 
 	it("leaves the agent idle while a subagent of this session is running, and reviews the stop once it has exited", async () => {
-		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n" }));
+		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n", comment: "" }));
 		// A real child process whose command line carries the runner's path, as a background subagent's does.
 		const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "--", `/x/node_modules/${SUBAGENT_RUNNER}-preload.mjs`], { stdio: "ignore" });
 		try {
@@ -104,14 +106,14 @@ describe("stop review", () => {
 	});
 
 	it("does not review a stop while planning or paused, after an error or abort, or when more work is already queued", async () => {
-		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n" }));
+		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n", comment: "" }));
 		expect(await h.settle("x", { outcome: "aborted" })).toBeUndefined();
 		expect(await h.settle("x", { outcome: "error" })).toBeUndefined();
 		expect(await h.settle("x", { continue: true })).toBeUndefined();
 		expect(await h.settle("x", { context: { llmMessages: [], pendingMessages: [{ role: "user" }] } })).toBeUndefined();
 		await h.commands.get("goals").handler("pause", h.ctx);
 		expect(await h.settle()).toBeUndefined();
-		const planning = setup({ judge: verdict({ verdict: "continue", reason: "r", next: "n" }) });
+		const planning = setup({ judge: verdict({ verdict: "continue", reason: "r", next: "n", comment: "" }) });
 		await planning.commands.get("goals").handler("new", planning.ctx);
 		expect(await planning.settle()).toBeUndefined();
 		expect(h.requests).toHaveLength(0);
