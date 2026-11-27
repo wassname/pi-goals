@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
-import { appendEvidence, dialogue, keepPage, lastLines, note, section, split, title, view, widgetLines, wordCount } from "../src/goals.js";
+import { appendEvidence, dialogue, keepPage, note, section, split, title, view, widgetLines, wordCount } from "../src/goals.js";
 import { goalsTemplate } from "../src/prompts.js";
 import { GOALS, LOOP, withNote } from "./harness.js";
 
