@@ -1,7 +1,7 @@
 // PI/OpenAI: one agent, one goal page, human Ready, a stock scheduled loop, and a fresh judge at a stop and at completion.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { liveDescendants } from "./children.js";
@@ -379,13 +379,16 @@ export default function piGoals(pi: ExtensionAPI): void {
 		refresh(ctx);
 	});
 
-	// The page is the user's: an agent edit to it is undone, and its notes are kept.
+	// The page is the user's: an agent edit to it is undone, and its notes are kept. Agents also edit the file from the
+	// shell (seen 2026-11-27: nine python edits in one planning turn), so a command that names the file counts as an edit.
 	const textBefore = new Map<string, string>();
+	const namesGoalsFile = (command: string) => command.includes(basename(state.file!)) || command.includes(".pi/goals/");
 	pi.on("tool_call", async (event, ctx) => {
 		toolCalls++;
 		const path = ["write", "edit"].includes(event.toolName) ? resolve(ctx.cwd, String((event.input as { path?: string }).path)) : undefined;
 		const goalsEdit = Boolean(state.file) && path === state.file;
-		if (goalsEdit) textBefore.set(event.toolCallId, read());
+		const shellEdit = Boolean(state.file) && event.toolName === "bash" && namesGoalsFile(String((event.input as { command?: string }).command));
+		if (goalsEdit || shellEdit) textBefore.set(event.toolCallId, read());
 		// Planning allows exploration; only file edits outside the goals file and slop/ (briefs, notes), and completion, are blocked.
 		const slopEdit = path !== undefined && !relative(resolve(ctx.cwd, "slop"), path).startsWith("..");
 		if (state.phase !== "planning" || goalsEdit || slopEdit || !["write", "edit", "CompleteGoal"].includes(event.toolName)) return;

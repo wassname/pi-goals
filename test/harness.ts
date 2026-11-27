@@ -138,5 +138,11 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		writeFileSync(path, text);
 		return hook("tool_result", { toolName: "edit", toolCallId: id, content: [{ type: "text", text: "ok" }] });
 	}
-	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, edit, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, settle, tools, wake, flush, pi };
+	/** A shell command that rewrites a file, as agents do with sed or a python one-liner. */
+	async function shell(command: string, path: string, text: string, id = `sh-${sent.length}-${Math.random()}`) {
+		await hook("tool_call", { toolName: "bash", toolCallId: id, input: { command } });
+		writeFileSync(path, text);
+		return hook("tool_result", { toolName: "bash", toolCallId: id, content: [{ type: "text", text: "" }] });
+	}
+	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, edit, shell, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, settle, tools, wake, flush, pi };
 }

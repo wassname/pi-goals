@@ -191,7 +191,7 @@ describe("the approved page", () => {
 		writeFileSync(file, GOALS.replace("Make the plot.", "Make two plots."));
 		await h.hook("turn_end");
 		const during = h.shown.findLast(m => m.customType === "goals-context")!.content;
-		expect(during).toContain("changed outside your edit tools");
+		expect(during).toContain("not through a tool call of yours");
 		expect(during).toContain("Make two plots.");
 		await h.hook("turn_end");
 		expect(h.shown.filter(m => m.customType === "goals-context")).toHaveLength(1);
@@ -199,6 +199,27 @@ describe("the approved page", () => {
 		writeFileSync(file, GOALS.replace("Make the plot.", "Make three plots."));
 		expect((await h.hook("before_agent_start")).message.content).toContain("Make three plots.");
 		expect(await h.hook("before_agent_start")).toBeUndefined();
+	});
+
+	it("treats a shell command that names the goals file as the agent's edit: undone while working, and not called the user's while planning", async () => {
+		const h = setup({ choices: ["Ready"] });
+		await h.commands.get("goals").handler("new", h.ctx);
+		const file = state(h).file as string;
+		const python = `python3 - <<'E'\np='.pi/goals/sess-v1.md'; s=open(p).read(); open(p,'w').write(s)\nE`;
+		expect(await h.shell(python, file, GOALS)).toBeUndefined();
+		await h.hook("turn_end");
+		expect(await h.hook("before_agent_start")).toBeUndefined();
+		expect(h.shown.some(m => m.customType === "goals-context")).toBe(false);
+
+		await h.tools.get("RequestPlanReview").execute();
+		await h.hook("agent_settled");
+		await h.hook("before_agent_start");
+		const out = await h.shell(`sed -i 's/Make the plot/Make any plot/' ${file}`, file, withNote(GOALS.replace("Make the plot.", "Make any plot."), "Changed the goal."));
+		expect(out.content.at(-1).text).toMatch(/undid that part and kept your notes/);
+		expect(split(readFileSync(file, "utf8")).page).toBe(split(GOALS).page);
+		expect(section(readFileSync(file, "utf8"), "Resume here")).toBe("Changed the goal.");
+		// A command that does not name the file is not an edit of it.
+		expect(await h.shell("ls -la", file, readFileSync(file, "utf8"))).toBeUndefined();
 	});
 
 	it("sends back only the first lines of an overgrown note and none of the rest of the appendix", async () => {

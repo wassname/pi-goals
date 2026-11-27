@@ -150,8 +150,8 @@ export function resync(text: string, path: string, why: string, recent: string, 
 	return `[pi-goals: resync] ${why} Below: the goals file (the page, your note and the newest evidence)${recent ? ", then the user's newest messages" : ""}. Continue the goal; the user's latest message outranks the file.\n\n${perspective}\n\n${keepWorking}\n\n${pageGuidance}\n\n${reportGuidance}\n\n${file}`;
 }
 
-export const pageKept = `[pi-goals] That edit changed the page above ## ${NOTES}, which the user approved. The extension undid that part and kept your notes. Only the user changes the page: they edit the file, or run /goals replan so that you can draft a change for their approval. Tell them in a line or two what you would change, and record what they asked for in your note.`;
-export const pageEdited = "The page of the goals file changed outside your edit tools. If the user edited it, it is the goal now: follow it. If you changed it with a shell command, put it back.";
+export const pageKept = `[pi-goals] That changed the page above ## ${NOTES}, which the user approved. The extension undid that part and kept your notes. Only the user changes the page: they edit the file, or run /goals replan so that you can draft a change for their approval. Tell them in a line or two what you would change, and record what they asked for in your note.`;
+export const pageEdited = "The page of the goals file changed, and not through a tool call of yours that names the file. If the user edited it, it is the goal now: follow it. If you changed it some other way, put it back.";
 export const draftEdited = "The user edited the goals file. Their text stands: read it below and build on it. Do not restore your wording over theirs.";
 /** Planning: the draft as it is now, after compaction or the user's own edit. */
 export const planningResync = (text: string, path: string, why: string) => `${planningState(path)}\n\n${why}\n\n--- ${path} ---\n${text.trimEnd()}\n--- end ---`;
