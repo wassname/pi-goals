@@ -1,14 +1,14 @@
 // PI/OpenAI: one agent, one goal page, human Ready, a stock scheduled loop, and a fresh judge at a stop and at completion.
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { liveDescendants } from "./children.js";
 import type { UserMessage } from "./goals.js";
 import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, needsYou, noteIsReadable, PAGE_WORDS, READ_WORDS, section, split, stamp, widgetLines, wordCount } from "./goals.js";
 import { decideSignOff, runJudge, signOffTask, stopVerdict } from "./judge.js";
-import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
 
 const STATE = "pi-goals-single-agent";
@@ -54,6 +54,76 @@ function quietSubagentNotices(messages: Messages): Messages {
 		return { ...message, content: message.content.replaceAll(`\n\nParent action: ${SUBAGENT_COMPLETION_ACTION}`, "").replaceAll(` ${SUBAGENT_COMPLETION_ACTION}`, "") };
 	});
 	return changed ? out : messages;
+}
+
+// --- The reminder: the stock scheduler's commands, never its implementation or storage (PI/OpenAI). ---
+const realpath = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+export const marker = (token: string) => `pi-goals-loop:${token}`;
+export const wakeToken = (text: string) => /^\[Scheduled task [^\]\n]+ fired\][\s\S]*\npi-goals-loop:([\w-]+)\s*$/.exec(text)?.[1];
+export function wakeSchedule(text: string): { id: string; schedule: string } {
+	const match = /^\[Scheduled task ([^\]\n]+) fired\][\s\S]*?\nSchedule: ([^\n]+)\n/.exec(text);
+	if (!match) throw new Error("Scheduler wake has no Schedule line; the pi-scheduler header format changed.");
+	return { id: match[1], schedule: match[2] };
+}
+
+function compatible(path: string): boolean {
+	for (let dir = dirname(path); ; dir = dirname(dir)) {
+		const file = join(dir, "package.json");
+		if (existsSync(file)) {
+			const pkg = JSON.parse(readFileSync(file, "utf8"));
+			const version = /^(\d+)\.(\d+)\.(\d+)$/.exec(pkg.version ?? "");
+			return pkg.name === "@jl1990/pi-scheduler" && !!version && (+version[1] > 0 || +version[2] >= 6);
+		}
+		if (dirname(dir) === dir) return false;
+	}
+}
+
+export function schedulerCommand(pi: ExtensionAPI, name: string, source?: string): { name: string; source: string } {
+	const commands = pi.getCommands().filter(c => c.source === "extension" && c.sourceInfo?.path && (c.name === name || c.name.startsWith(`${name}:`)) && (!source || realpath(c.sourceInfo.path) === source) && compatible(c.sourceInfo.path));
+	if (commands.length !== 1) throw new Error(prompts.schedulerUnavailable);
+	return { name: commands[0].name, source: realpath(commands[0].sourceInfo.path) };
+}
+
+export function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, token: string, source: string): void {
+	if (!ctx.sessionManager.getSessionFile()) throw new Error("The goals loop needs a saved Pi session.");
+	pi.sendUserMessage(`/${schedulerCommand(pi, "schedule", source).name} prompt every 1h :: ${marker(token)}`, { expandPromptTemplates: true, deliverAs: "followUp" });
+}
+
+/** Find the scheduler's creation receipt for this session and reminder. */
+export function loopTaskId(ctx: ExtensionContext, token: string): string | undefined {
+	const sessionFile = ctx.sessionManager.getSessionFile();
+	let id: string | undefined;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type !== "custom_message" || entry.customType !== "scheduled-task") continue;
+		const task = (entry.details as { task?: Record<string, unknown> } | undefined)?.task;
+		if (task?.prompt !== marker(token) || task.action !== "prompt" || task.scope !== "session" || !sessionFile || task.sessionFile !== sessionFile) continue;
+		id = typeof task.id === "string" && /^[\w-]+$/.test(task.id) && task.type === "interval" && task.schedule === "1h" && task.enabled === true && task.status === "pending" ? task.id : undefined;
+	}
+	return id;
+}
+
+export function stopLoop(pi: ExtensionAPI, id: string, source?: string): void {
+	pi.sendUserMessage(`/${schedulerCommand(pi, "schedule-remove", source).name} ${id}`, { expandPromptTemplates: true, deliverAs: "followUp" });
+}
+
+// --- Is a background subagent of this session still running? A snapshot of the processes below this one, not a wait:
+// the run's own completion notice wakes the session. After wassname/pi-intercom-supervisor (from @monotykamary/pi-supervisor, MIT). ---
+const run = promisify(execFile);
+/** pi-subagents 0.84 runs a background child in `node --import …/pi-subagents/runner-peer-preload.mjs …`, below the parent Pi
+ * (seen with ps on Pi 1.6, 2026-11-27). A foreground child shares the parent's process and blocks its turn, so it never meets a stop. */
+export const SUBAGENT_RUNNER = "pi-subagents/runner-peer";
+
+/** How many processes below this one have `marker` in their command line. */
+export async function liveDescendants(marker = SUBAGENT_RUNNER, root = process.pid): Promise<number> {
+	if (process.platform !== "linux" && process.platform !== "darwin") return 0;
+	const { stdout } = await run("ps", ["-eo", "pid=,ppid=,args="], { maxBuffer: 16 * 1024 * 1024 });
+	const rows = stdout.split("\n").map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).flatMap((match) => match ? [{ pid: Number(match[1]), ppid: Number(match[2]), args: match[3] }] : []);
+	const below = new Set([root]);
+	for (let grew = true; grew;) {
+		grew = false;
+		for (const row of rows) if (below.has(row.ppid) && !below.has(row.pid)) { below.add(row.pid); grew = true; }
+	}
+	return rows.filter((row) => row.pid !== root && below.has(row.pid) && row.args.includes(marker)).length;
 }
 
 const initial = (owner: string): State => ({ owner, phase: null, judge: true });

@@ -3,9 +3,8 @@ import { describe, expect, it } from "vitest";
 import { registerRuntimeAgentEventListener } from "../node_modules/pi-subagents/src/agents/runtime-agent-events.js";
 import { COMPLETION_ACTION } from "../node_modules/pi-subagents/src/shared/parent-wake.js";
 import { parseSubagentDelegationRequest } from "../node_modules/pi-subagents/src/slash/delegation-request.js";
-import { SUBAGENT_COMPLETION_ACTION } from "../src/index.js";
+import { marker, SUBAGENT_COMPLETION_ACTION, wakeSchedule, wakeToken } from "../src/index.js";
 import { runJudge } from "../src/judge.js";
-import { marker, wakeSchedule, wakeToken } from "../src/loop.js";
 import { stopSchema } from "../src/prompts.js";
 
 describe("scheduler wakes", () => {

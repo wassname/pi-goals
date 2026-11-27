@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { liveDescendants, SUBAGENT_RUNNER } from "../src/children.js";
+import { liveDescendants, SUBAGENT_RUNNER } from "../src/index.js";
 import { GOALS, type JudgeReply, setup, withNote } from "./harness.js";
 
 const verdict = (value: unknown): JudgeReply => ({ status: "completed", value });
