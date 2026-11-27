@@ -7,21 +7,16 @@ import { GOALS, type JudgeReply, setup } from "./harness.js";
 
 async function working(judge?: JudgeReply, subagents = true, onRequest?: () => void) {
 	const h = setup({ choices: ["Ready"], judge, subagents, onRequest });
-	await h.commands.get("goals").handler("new", h.ctx);
-	const file = h.branch.findLast(e => e.customType === "pi-goals-single-agent").data.file as string;
-	writeFileSync(file, GOALS);
-	await h.tools.get("RequestPlanReview").execute();
-	await h.hook("agent_settled");
+	const file = await h.ready();
 	h.schedulerReceipt("t1");
 	return { ...h, file };
 }
-const state = (h: Awaited<ReturnType<typeof working>>) => h.branch.findLast(e => e.customType === "pi-goals-single-agent").data;
 
 describe("CompleteGoal", () => {
 	it("accept finishes the goal: one evidence line, no more reminders, and a request for the report in the agreed layout", async () => {
 		const h = await working();
 		const result = await h.complete();
-		expect(state(h)).toMatchObject({ phase: "paused", done: "accepted" });
+		expect(h.state()).toMatchObject({ phase: "paused", done: "accepted" });
 		expect(section(readFileSync(h.file, "utf8"), "Evidence")).toMatch(/^- \d{4}-\d\d-\d\d \d\d:\d\d accepted by the sign-off judge; \.pi\/goals\/reviews\/.*\.json$/);
 		expect(h.sent.at(-1)?.text).toBe("/schedule-remove t1");
 		const text = result.content[0].text;
@@ -51,30 +46,25 @@ describe("CompleteGoal", () => {
 		expect(h.agents[0].definition.inheritProjectContext).toBe(false);
 	});
 
-	it.each<[string, JudgeReply]>([
-		["reject", { status: "completed", value: { verdict: "reject", checks: [], missing: "no plot file" } }],
-		["accept without checked files", { status: "completed", value: { verdict: "accept", checks: [], missing: "" } }],
-		["judge failure", { status: "failed", error: "quota" }],
-		["malformed verdict", { status: "completed", value: { verdict: "maybe" } }],
-	])("%s leaves the goal unfinished", async (_name, judge) => {
-		const h = await working(judge);
+	it.each<[string, JudgeReply | undefined, boolean]>([
+		["reject", { status: "completed", value: { verdict: "reject", checks: [], missing: "no plot file" } }, true],
+		["accept without checked files", { status: "completed", value: { verdict: "accept", checks: [], missing: "" } }, true],
+		["judge failure", { status: "failed", error: "quota" }, true],
+		["malformed verdict", { status: "completed", value: { verdict: "maybe" } }, true],
+		["missing pi-subagents", undefined, false],
+	])("%s leaves the goal unfinished", async (_name, judge, subagents) => {
+		const h = await working(judge, subagents);
 		const result = await h.complete();
-		expect(state(h)).toMatchObject({ phase: "working", done: undefined });
+		expect(h.state()).toMatchObject({ phase: "working", done: undefined });
 		expect(readFileSync(h.file, "utf8")).toBe(GOALS);
 		expect(result.content[0].text).not.toContain("is finished");
-	});
-
-	it("missing pi-subagents leaves the goal unfinished", async () => {
-		const h = await working(undefined, false);
-		expect((await h.complete()).content[0].text).toMatch(/unavailable/);
-		expect(state(h).phase).toBe("working");
 	});
 
 	it("with the judge disabled records self-verification, not acceptance", async () => {
 		const h = await working();
 		await h.commands.get("goals").handler("judge off", h.ctx);
 		await h.complete();
-		expect(state(h).done).toBe("self-verified");
+		expect(h.state().done).toBe("self-verified");
 		expect(section(readFileSync(h.file, "utf8"), "Evidence")).toContain("self-verified (sign-off judge disabled)");
 		expect(h.requests).toHaveLength(0);
 	});
@@ -87,7 +77,7 @@ describe("CompleteGoal", () => {
 		await h.complete();
 		await expect(h.complete()).rejects.toThrow(/Ready or resume/);
 		await h.commands.get("goals").handler("resume", h.ctx);
-		expect(state(h)).toMatchObject({ phase: "working", done: undefined });
+		expect(h.state()).toMatchObject({ phase: "working", done: undefined });
 	});
 
 	it("does not record completion when the goals file changed during review", async () => {
@@ -95,7 +85,7 @@ describe("CompleteGoal", () => {
 		const h = await working(undefined, true, () => writeFileSync(edit.file, GOALS.replace("A plot.", "A different plot.")));
 		edit.file = h.file;
 		await expect(h.complete()).rejects.toThrow(/changed during review/);
-		expect(state(h).phase).toBe("working");
+		expect(h.state().phase).toBe("working");
 	});
 });
 

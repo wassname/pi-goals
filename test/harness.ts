@@ -144,5 +144,14 @@ export function setup(opts: { choices?: Array<string | undefined>; judge?: Judge
 		writeFileSync(path, text);
 		return hook("tool_result", { toolName: "bash", toolCallId: id, content: [{ type: "text", text: "" }] });
 	}
-	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, edit, shell, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, settle, tools, wake, flush, pi };
+	const state = () => branch.findLast((e) => e.customType === "pi-goals-single-agent").data;
+	/** /goals new, the agent writes the page, then Ready (or whatever the next menu choice is). Returns the goals file. */
+	async function ready(text = GOALS, request = "new") {
+		await goalsCommand.handler(request, ctx);
+		writeFileSync(state().file, text);
+		await tools.get("RequestPlanReview").execute();
+		await hook("agent_settled");
+		return state().file as string;
+	}
+	return { activeTools: () => activeTools, branch, commands, complete, ctx, cwd, edit, shell, events, hook, shown, notes, requests, agents, schedulerReceipt, sent, settle, state, ready, tools, wake, flush, pi };
 }

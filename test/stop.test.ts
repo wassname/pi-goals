@@ -6,13 +6,9 @@ import { liveDescendants, SUBAGENT_RUNNER } from "../src/index.js";
 import { GOALS, type JudgeReply, setup, withNote } from "./harness.js";
 
 const verdict = (value: unknown): JudgeReply => ({ status: "completed", value });
-const state = (h: ReturnType<typeof setup>) => h.branch.findLast(e => e.customType === "pi-goals-single-agent").data;
 async function working(judge?: JudgeReply, options: Parameters<typeof setup>[0] = {}) {
 	const h = setup({ choices: ["Ready"], judge, ...options });
-	await h.commands.get("goals").handler("new", h.ctx);
-	writeFileSync(state(h).file, GOALS);
-	await h.tools.get("RequestPlanReview").execute();
-	await h.hook("agent_settled");
+	await h.ready();
 	await h.hook("before_agent_start");
 	return h;
 }
@@ -21,7 +17,7 @@ const tool = (h: ReturnType<typeof setup>) => h.hook("tool_call", { toolName: "b
 describe("stop review", () => {
 	it("sends the agent back with the fresh judge's one finding, which saw the page, the note, the last message and the user's words", async () => {
 		const h = await working(verdict({ verdict: "continue", reason: "The search ran 8 steps and did not converge; the page asks for a found state.", next: "Rerun with 40 steps.", comment: "" }));
-		writeFileSync(state(h).file, withNote(GOALS, "Search found nothing; waiting for the user to pick."));
+		writeFileSync(h.state().file, withNote(GOALS, "Search found nothing; waiting for the user to pick."));
 		h.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Drew view 100.\n\nOptions: (a) replicate, (b) larger scale, (c) write up.\nIt waits for your pick." }] } });
 		await h.hook("input", { source: "interactive", text: "I'm afk, don't wait for me" });
 		const out = await h.settle("No state found. The GPU is idle until you choose.", { entries: [{ type: "custom", customType: "other" }] });
