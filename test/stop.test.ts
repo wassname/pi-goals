@@ -32,7 +32,7 @@ describe("stop review", () => {
 		const request = h.requests[0];
 		expect(request).toMatchObject({ agent: "pi-goals-judge", context: "fresh", model: "p/m" });
 		expect(request.result.schema.properties.verdict.enum).toEqual(["continue", "wait", "blocked"]);
-		for (const seen of ["Make the plot.", "waiting for the user to pick", "The GPU is idle until you choose.", "Agent: … Drew view 100.\nAgent: Options: (a) replicate, (b) larger scale, (c) write up.\nAgent: It waits for your pick.\nUser (", "): I'm afk, don't wait for me"]) expect(request.task).toContain(seen);
+		for (const seen of ["Make the plot.", "waiting for the user to pick", "The GPU is idle until you choose.", "(after the agent's message that ended: \"… Drew view 100. / Options: (a) replicate, (b) larger scale, (c) write up. / It waits for your pick.\")\nI'm afk, don't wait for me"]) expect(request.task).toContain(seen);
 		expect(h.agents[0].definition.tools).toEqual(["read", "grep", "find", "ls"]);
 	});
 

@@ -37,7 +37,7 @@ describe("planning and Ready", () => {
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
 		const approved = h.sent.find(m => m.text.startsWith("[pi-goals] The user approved"))!.text;
-		for (const kept of ["# Title\n\n## Goal\n\nA plot. Make the plot.", "score-placeholder", LOOP, "): /goals new plot the data", "): yes, reuse judge_demos.py"]) expect(approved).toContain(kept);
+		for (const kept of ["# Title\n\n## Goal\n\nA plot. Make the plot.", "score-placeholder", LOOP, "\n/goals new plot the data", "\nyes, reuse judge_demos.py"]) expect(approved).toContain(kept);
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
 	});
 

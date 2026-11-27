@@ -67,10 +67,10 @@ describe("the page and the agent's notes", () => {
 });
 
 describe("what the user typed, for a reader who was not there", () => {
-	it("shows each message after the last lines of the agent message it answered", () => {
-		const before = lastLines("I wrote file.m.\n\nIt plots the curve in pink.\nShall I go on?\n", 2);
-		expect(dialogue([{ at: "2026-01-01 10:00", text: "make a plot" }, { at: "2026-01-01 10:05", text: "I don't like it in pink.\nBrown please.", before }])).toBe(
-			"User (2026-01-01 10:00): make a plot\n\nAgent: … It plots the curve in pink.\nAgent: Shall I go on?\nUser (2026-01-01 10:05): I don't like it in pink.\n  Brown please.");
+	it("shows each message under a heading, after the quoted end of the agent message before it, given once", () => {
+		const before = "I wrote file.m.\n\nIt plots the curve in pink.\nShall I go on?\n-- PI/Claude\n/work/.pi/goals/x-v1.md";
+		expect(dialogue([{ at: "2026-01-01 10:00", text: "make a plot" }, { at: "2026-01-01 10:05", text: "I don't like it in pink.\nBrown please.", before }, { at: "2026-01-01 10:06", text: "or grey", before }])).toBe(
+			"### User, 2026-01-01 10:00\nmake a plot\n\n### User, 2026-01-01 10:05\n(after the agent's message that ended: \"… I wrote file.m. / It plots the curve in pink. / Shall I go on?\")\nI don't like it in pink.\nBrown please.\n\n### User, 2026-01-01 10:06\nor grey");
 		expect(dialogue([])).toBe("");
 	});
 
@@ -78,14 +78,14 @@ describe("what the user typed, for a reader who was not there", () => {
 		const many = Array.from({ length: 1500 }, (_, n) => ({ at: "t", text: `message ${n}` }));
 		const lines = dialogue(many).split("\n");
 		expect(lines).toHaveLength(2000);
-		expect(lines[0]).toBe("User (t): message 0");
-		expect(lines[1000]).toBe("… (1000 lines of the middle of the conversation cut) …");
-		expect(lines.at(-1)).toBe("User (t): message 1499");
+		expect(lines.slice(0, 2)).toEqual(["### User, t", "message 0"]);
+		expect(lines[1000]).toMatch(/^… \(2\d{3} lines of the middle of the conversation cut\) …$/);
+		expect(lines.at(-1)).toBe("message 1499");
 		const paste = dialogue([{ at: "t", text: Array.from({ length: 100 }, (_, n) => `row ${n} ${"y".repeat(500)}`).join("\n") }]).split("\n");
-		expect(paste).toHaveLength(61);
-		expect(paste[30]).toBe("  … (40 lines cut) …");
-		expect(paste[0]).toHaveLength("User (t): ".length + 301);
-		expect(paste.at(-1)).toMatch(/^ {2}row 99 y+…$/);
+		expect(paste).toHaveLength(62);
+		expect(paste[31]).toBe("… (40 lines cut) …");
+		expect(paste[1]).toHaveLength(301);
+		expect(paste.at(-1)).toMatch(/^row 99 y+…$/);
 	});
 });
 

@@ -97,11 +97,14 @@ export const lastLines = (text: string, count: number) => text.split("\n").filte
 /** The user's messages in order, each after the end of the agent message it answered. A long history keeps its first and last 1,000 lines. */
 export function dialogue(messages: UserMessage[]): string {
 	const crop = (line: string) => line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS)}…` : line;
-	const lines = messages.flatMap((message) => {
+	const lines = messages.flatMap((message, index) => {
 		const said = message.text.split("\n").filter((line) => line.trim());
 		const kept = said.length > MESSAGE_LINES ? [...said.slice(0, MESSAGE_LINES / 2), `… (${said.length - MESSAGE_LINES} lines cut) …`, ...said.slice(-MESSAGE_LINES / 2)] : said;
-		const before = message.before ? message.before.split("\n").map((line, index) => `Agent: ${index ? "" : "… "}${crop(line)}`) : [];
-		return [...before, ...kept.map((line, index) => index ? `  ${crop(line)}` : `User (${message.at}): ${crop(line)}`), ""];
+		// The agent's words are quoted so they cannot be mistaken for the user's. The user may be answering any part of
+		// that message; their own "> " quotes say which. A follow-up to the same agent message does not repeat it.
+		const end = lastLines(message.before ?? "", BEFORE_LINES);
+		const before = end && end !== lastLines(messages[index - 1]?.before ?? "", BEFORE_LINES) ? [`(after the agent's message that ended: "… ${end.split("\n").map(crop).join(" / ")}")`] : [];
+		return [`### User, ${message.at}`, ...before, ...kept.map(crop), ""];
 	});
 	const cut = lines.length - 2 * DIALOGUE_LINES;
 	return (cut > 0 ? [...lines.slice(0, DIALOGUE_LINES), `… (${cut} lines of the middle of the conversation cut) …`, ...lines.slice(-DIALOGUE_LINES)] : lines).join("\n").trim();
