@@ -177,9 +177,13 @@ describe("the approved page", () => {
 		const text = readFileSync(file, "utf8");
 		expect(split(text).page).toBe(split(GOALS).page);
 		expect(section(text, "Resume here")).toBe("Waiting for the user.");
-		expect(out.content.at(-1).text).toMatch(/undid that part and kept your notes/);
-		// A note-only edit passes without comment.
-		expect(await h.edit(file, withNote(GOALS, "Rerunning at 40 steps."))).toBeUndefined();
+		expect(out.content[1].text).toMatch(/undid that part and kept your notes/);
+		// A note that is not short labelled lines draws one request to rewrite it; a labelled note passes without comment.
+		expect(out.content[2].text).toMatch(/hard to read there.*"Now:"/s);
+		expect(await h.edit(file, withNote(GOALS, "Saw: 8 steps did not converge.\nNow: rerunning at 40 steps.\nIf it fails: check a planted state."))).toBeUndefined();
+		const paragraph = await h.edit(file, withNote(GOALS, `Now: ${"deliverable 1 started with many parameters, ".repeat(8)}`));
+		expect(paragraph.content.at(-1).text).toMatch(/hard to read there/);
+		expect((await h.wake("t1", h.schedulerReceipt("t1"))).text).toMatch(/hard to read there/);
 	});
 
 	it("undoes the edit even when the user's own message asked for it; /goals replan lets the agent draft the change for Ready", async () => {
@@ -234,10 +238,10 @@ describe("the approved page", () => {
 		await h.tools.get("RequestPlanReview").execute();
 		await h.hook("agent_settled");
 		await h.hook("before_agent_start");
-		const out = await h.shell(`sed -i 's/Make the plot/Make any plot/' ${file}`, file, withNote(GOALS.replace("Make the plot.", "Make any plot."), "Changed the goal."));
+		const out = await h.shell(`sed -i 's/Make the plot/Make any plot/' ${file}`, file, withNote(GOALS.replace("Make the plot.", "Make any plot."), "Now: changed the goal."));
 		expect(out.content.at(-1).text).toMatch(/undid that part and kept your notes/);
 		expect(split(readFileSync(file, "utf8")).page).toBe(split(GOALS).page);
-		expect(section(readFileSync(file, "utf8"), "Resume here")).toBe("Changed the goal.");
+		expect(section(readFileSync(file, "utf8"), "Resume here")).toBe("Now: changed the goal.");
 		// A command that does not name the file is not an edit of it.
 		expect(await h.shell("ls -la", file, readFileSync(file, "utf8"))).toBeUndefined();
 	});

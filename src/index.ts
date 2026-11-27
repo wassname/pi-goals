@@ -6,7 +6,7 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { Type } from "typebox";
 import { liveDescendants } from "./children.js";
 import type { UserMessage } from "./goals.js";
-import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, needsYou, PAGE_WORDS, READ_WORDS, section, split, stamp, widgetLines, wordCount } from "./goals.js";
+import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, needsYou, noteIsReadable, PAGE_WORDS, READ_WORDS, section, split, stamp, widgetLines, wordCount } from "./goals.js";
 import { decideSignOff, runJudge, signOffTask, stopVerdict } from "./judge.js";
 import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -409,6 +409,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		page = split(text).page;
 		const lines = lineCount(section(text, NOTES) ?? "");
 		if (state.phase === "working" && lines > NOTE_LINES) notes.push(prompts.noteTooLong(lines));
+		else if (state.phase === "working" && !noteIsReadable(text)) notes.push(prompts.noteForm);
 		if (notes.length) return { content: [...event.content, ...notes.map((note) => ({ type: "text" as const, text: note }))] };
 	});
 

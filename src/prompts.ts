@@ -1,4 +1,4 @@
-import { EVIDENCE, NOTE_LINES, NOTES, note, PAGE_WORDS, READ_WORDS, section, view } from "./goals.js";
+import { EVIDENCE, NOTE_LINES, NOTES, note, noteIsReadable, PAGE_WORDS, READ_WORDS, section, view } from "./goals.js";
 
 // PI/OpenAI: all model-facing text, in conversation order:
 // planning -> Ready -> scheduled loop wake -> compaction/resume resync -> a stop -> CompleteGoal -> judge.
@@ -138,7 +138,7 @@ export function readyPrompt(path: string, text: string, recent: string): string 
 export function loopPrompt(text: string, path: string, wake: { id: string; schedule: string }): string {
 	const goal = section(text, "Goal");
 	if (!goal) throw new Error(`${path} needs ## Goal. A goals file from an older version needs /goals clear, then /goals new.`);
-	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nGoal (${path}):\n${goal}\n\n${section(text, "Loop statement") || KEEP_GOING}\n\n${NOTES} (your note):\n${note(text) || "(empty: write it now)"}`;
+	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nGoal (${path}):\n${goal}\n\n${section(text, "Loop statement") || KEEP_GOING}\n\n${NOTES} (your note):\n${note(text) || "(empty: write it now)"}${noteIsReadable(text) ? "" : `\n\n${noteForm}`}`;
 }
 
 // wassname 2026-10-27: "the real risk is they get distracted and forget the goal ... the other risk is they keep stopping and saying it's not possible or they are blocked when they are not" (spelling corrected). Wording agreed with wassname; framed as perspective, not rules.
@@ -170,6 +170,7 @@ export const pageEdited = "The page of the goals file changed, and not through a
 export const draftEdited = "The user edited the goals file. Their text stands: read it below and build on it. Do not restore your wording over theirs.";
 /** Planning: the draft as it is now, after compaction or the user's own edit. */
 export const planningResync = (text: string, path: string, why: string) => `${planningState(path)}\n\n${why}\n\n--- ${path} ---\n${text.trimEnd()}\n--- end ---`;
+export const noteForm = `[pi-goals] The user reads ## ${NOTES} in a small widget, and this note is hard to read there. Rewrite it as short labelled lines, each under 100 characters and in plain words: "Saw:", "Now:", "If it fails:", and when they apply "Waiting on:", "Needs you:", "You should know:". No parameter lists.`;
 export const noteTooLong = (lines: number) => `[pi-goals] ## ${NOTES} is ${lines} lines, and only the first ${NOTE_LINES} are ever sent back to you. Replace it with short labelled lines: Saw, Now, If it fails. Move results and history to the project's journal.`;
 
 // 5. A stop with the goal open. With the sign-off judge off, or when it cannot run, the agent is asked directly.

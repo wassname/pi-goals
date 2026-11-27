@@ -14,6 +14,7 @@ export const READ_WORDS = 500;
 export const PAGE_WORDS = 1200;
 /** Nonblank lines that one replaceable note may hold. */
 export const NOTE_LINES = 15;
+const NOTE_LINE_CHARS = 160;
 const EVIDENCE_LINES = 20;
 const WIDGET_NOTE_MIN = 30;
 
@@ -120,6 +121,11 @@ export function goalLead(text: string): string | undefined {
 
 const WIDGET_GOAL_LINES = 4;
 const starts = (label: string) => (line: string) => line.toLowerCase().startsWith(label);
+/** The note reads in a small widget: short labelled lines with a "Now:" among them, not a paragraph. */
+export function noteIsReadable(text: string): boolean {
+	const lines = (section(text, NOTES) ?? "").split("\n").filter((line) => line.trim());
+	return !lines.length || (lines.some(starts("now:")) && lines.every((line) => line.length <= NOTE_LINE_CHARS));
+}
 /** Note lines that ask the user for a decision; the widget and the status line count them. */
 export const needsYou = (text: string) => note(text).split("\n").filter(starts("needs you:"));
 /** wassname 2026-11-27: "why is it not literally the goal from the goals.md"; a note written as one paragraph was "unreadable";
