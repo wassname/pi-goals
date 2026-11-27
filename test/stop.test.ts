@@ -40,11 +40,15 @@ describe("stop review", () => {
 		const h = await working(verdict({ verdict: kind, reason: "Job 1623 is running and its notice wakes the agent.", next: "", comment: "The demo runs on a spectrum direction before the planted-state check." }));
 		const out = await h.settle("Queued job 1623; its notice wakes me.");
 		expect(out.continue).toBeUndefined();
-		expect(out.entries).toHaveLength(1);
-		expect(out.entries[0].content).toContain(`accepted this stop (${kind}): Job 1623`);
+		expect(out.entries.at(-1).content).toContain(`accepted this stop (${kind}): Job 1623`);
 		// A smaller risk the judge noticed goes to the user and the session file, not to the agent.
-		expect(out.entries[0].content).not.toMatch(/spectrum direction/);
-		expect(h.notes.join("\n")).toMatch(/not the agent\): The demo runs on a spectrum direction/);
+		const stop = out.entries.find((e: any) => e.customType === "goals-stop");
+		expect(stop.content).not.toMatch(/spectrum direction/);
+		const aside = out.entries.find((e: any) => e.customType === "goals-user-only");
+		expect(aside).toMatchObject({ display: true, content: expect.stringMatching(/comment: The demo runs on a spectrum direction/) });
+		// The context hook removes it before the agent sees the conversation.
+		const context = await h.hook("context", { messages: [{ role: "user", content: "go" }, { role: "custom", customType: "goals-user-only", content: aside.content }] });
+		expect(context.messages).toEqual([{ role: "user", content: "go" }]);
 		expect(h.ctx.sessionManager.getEntries().filter((e: any) => e.customType === "pi-goals-judge-notes").map((e: any) => e.data.comment)).toEqual(["The demo runs on a spectrum direction before the planted-state check."]);
 	});
 

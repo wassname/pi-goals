@@ -14,6 +14,8 @@ import * as prompts from "./prompts.js";
 const STATE = "pi-goals-single-agent";
 /** The user's own messages, kept in the session so the newest survive compaction. */
 const JUDGE_NOTES = "pi-goals-judge-notes";
+/** Chat messages for the user only: the context hook removes them before the agent sees the conversation. */
+const USER_ONLY = "goals-user-only";
 const USER_MESSAGE = "pi-goals-user-message";
 const RECENT_MESSAGES = 5;
 const MESSAGE_CHARS = 4000;
@@ -442,7 +444,9 @@ export default function piGoals(pi: ExtensionAPI): void {
 		return { message: { customType: "goals-context", content: resyncText(ctx, edited), display: false } };
 	});
 	pi.on("context", async (event, ctx) => {
-		const messages = state.phase === "working" ? quietSubagentNotices(event.messages) : event.messages;
+		const shown = event.messages.filter((message) => message.role !== "custom" || message.customType !== USER_ONLY);
+		const quiet = state.phase === "working" ? quietSubagentNotices(shown) : shown;
+		const messages = quiet.length === event.messages.length && quiet.every((message, index) => message === event.messages[index]) ? event.messages : quiet;
 		if (state.file && resyncDue) {
 			resyncDue = false;
 			return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: resyncText(ctx) }], timestamp: Date.now() }] };
@@ -514,13 +518,14 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const task = prompts.stopTask({ text: read(), path: state.file, last: lastReply(event.context.llmMessages), history: history(ctx) });
 				const reviewed = stopVerdict(await runJudge(pi.events, { task, schema: prompts.stopSchema, cwd: ctx.cwd, model: judgeModel(ctx) }, abort.signal, { startMs: 15_000, totalMs: STOP_JUDGE_MS }));
 				if (stale()) return;
-				if (!("error" in reviewed)) {
-					keepFeedback("stop", reviewed.feedback, reviewed.comment);
-					if (reviewed.comment.trim()) ctx.ui.notify(prompts.reviewerComment(reviewed.comment.trim()), "info");
-				}
+				// The judge's comment and feedback are shown in the chat for the user, and removed from what the agent sees.
+				const aside = "error" in reviewed ? undefined : prompts.reviewerAside(reviewed.comment.trim(), (reviewed.feedback ?? "").trim());
+				if (!("error" in reviewed)) keepFeedback("stop", reviewed.feedback, reviewed.comment);
+				const entries = [...event.entries, ...(aside ? [{ type: "custom_message" as const, customType: USER_ONLY, content: aside, display: true }] : [])];
+				const stop = (content: string) => ({ type: "custom_message" as const, customType: "goals-stop", content, display: true });
 				if ("error" in reviewed) note = `${prompts.stopJudgeFailed(reviewed.error)} ${note}`;
-				else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason), display: true }] };
-				else note = prompts.stopContinue(reviewed.reason, reviewed.next);
+				else if (reviewed.verdict !== "continue") return { entries: [...entries, stop(prompts.stopAccepted(reviewed.verdict, reviewed.reason))] };
+				else { continues++; return { entries: [...entries, stop(prompts.stopContinue(reviewed.reason, reviewed.next))], continue: true }; }
 			}
 			continues++;
 			return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: note, display: true }], continue: true };
