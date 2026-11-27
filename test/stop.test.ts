@@ -1,6 +1,8 @@
 // A stop with the goal open: the fresh judge decides whether the agent goes back to work.
+import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { liveDescendants, SUBAGENT_RUNNER } from "../src/children.js";
 import { GOALS, type JudgeReply, setup, withNote } from "./harness.js";
 
 const verdict = (value: unknown): JudgeReply => ({ status: "completed", value });
@@ -20,6 +22,7 @@ describe("stop review", () => {
 	it("sends the agent back with the fresh judge's one finding, which saw the page, the note, the last message and the user's words", async () => {
 		const h = await working(verdict({ verdict: "continue", reason: "The search ran 8 steps and did not converge; the page asks for a found state.", next: "Rerun with 40 steps." }));
 		writeFileSync(state(h).file, withNote(GOALS, "Search found nothing; waiting for the user to pick."));
+		h.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Drew view 100.\n\nOptions: (a) replicate, (b) larger scale, (c) write up.\nIt waits for your pick." }] } });
 		await h.hook("input", { source: "interactive", text: "I'm afk, don't wait for me" });
 		const out = await h.settle("No state found. The GPU is idle until you choose.", { entries: [{ type: "custom", customType: "other" }] });
 		expect(out.continue).toBe(true);
@@ -29,7 +32,7 @@ describe("stop review", () => {
 		const request = h.requests[0];
 		expect(request).toMatchObject({ agent: "pi-goals-judge", context: "fresh", model: "p/m" });
 		expect(request.result.schema.properties.verdict.enum).toEqual(["continue", "wait", "blocked"]);
-		for (const seen of ["Make the plot.", "waiting for the user to pick", "The GPU is idle until you choose.", "> I'm afk, don't wait for me"]) expect(request.task).toContain(seen);
+		for (const seen of ["Make the plot.", "waiting for the user to pick", "The GPU is idle until you choose.", "Agent: … Drew view 100.\nAgent: Options: (a) replicate, (b) larger scale, (c) write up.\nAgent: It waits for your pick.\nUser (", "): I'm afk, don't wait for me"]) expect(request.task).toContain(seen);
 		expect(h.agents[0].definition.tools).toEqual(["read", "grep", "find", "ls"]);
 	});
 
@@ -82,6 +85,22 @@ describe("stop review", () => {
 		await h.hook("input", { source: "interactive", text: "wait, one question" });
 		expect(await pending).toBeUndefined();
 		expect(h.ctx.status).toMatch(/^working/);
+	});
+
+	it("leaves the agent idle while a subagent of this session is running, and reviews the stop once it has exited", async () => {
+		const h = await working(verdict({ verdict: "continue", reason: "r", next: "n" }));
+		// A real child process whose command line carries the runner's path, as a background subagent's does.
+		const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "--", `/x/node_modules/${SUBAGENT_RUNNER}-preload.mjs`], { stdio: "ignore" });
+		try {
+			await expect.poll(() => liveDescendants()).toBe(1);
+			expect(await h.settle("Helper is drawing the map.")).toBeUndefined();
+			expect(h.requests).toHaveLength(0);
+		} finally {
+			child.kill();
+			await new Promise((resolve) => child.once("exit", resolve));
+		}
+		expect(await liveDescendants()).toBe(0);
+		expect((await h.settle()).continue).toBe(true);
 	});
 
 	it("does not review a stop while planning or paused, after an error or abort, or when more work is already queued", async () => {

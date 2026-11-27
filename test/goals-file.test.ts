@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendEvidence, keepPage, lineCount, note, section, split, title, view, widgetLines } from "../src/goals.js";
+import { appendEvidence, dialogue, keepPage, lastLines, lineCount, note, section, split, title, view, widgetLines } from "../src/goals.js";
 import { goalsTemplate } from "../src/prompts.js";
 import { GOALS, LOOP, withNote } from "./harness.js";
 
@@ -56,6 +56,29 @@ describe("the page and the agent's notes", () => {
 		for (const kept of ["A plot. Make the plot.", "step 14", "3 more lines are not sent", "5 earlier lines are in the file", "result 24", "result 5"]) expect(sent).toContain(kept);
 		expect(sent).not.toMatch(/step 15|result 4\n|OVERNIGHT|until he picks/);
 		expect(view(GOALS)).toContain("## Resume here");
+	});
+});
+
+describe("what the user typed, for a reader who was not there", () => {
+	it("shows each message after the last lines of the agent message it answered", () => {
+		const before = lastLines("I wrote file.m.\n\nIt plots the curve in pink.\nShall I go on?\n", 2);
+		expect(dialogue([{ at: "2026-01-01 10:00", text: "make a plot" }, { at: "2026-01-01 10:05", text: "I don't like it in pink.\nBrown please.", before }])).toBe(
+			"User (2026-01-01 10:00): make a plot\n\nAgent: … It plots the curve in pink.\nAgent: Shall I go on?\nUser (2026-01-01 10:05): I don't like it in pink.\n  Brown please.");
+		expect(dialogue([])).toBe("");
+	});
+
+	it("keeps the first and last 1,000 lines of a long history, and the two ends of a long message", () => {
+		const many = Array.from({ length: 1500 }, (_, n) => ({ at: "t", text: `message ${n}` }));
+		const lines = dialogue(many).split("\n");
+		expect(lines).toHaveLength(2000);
+		expect(lines[0]).toBe("User (t): message 0");
+		expect(lines[1000]).toBe("… (1000 lines of the middle of the conversation cut) …");
+		expect(lines.at(-1)).toBe("User (t): message 1499");
+		const paste = dialogue([{ at: "t", text: Array.from({ length: 100 }, (_, n) => `row ${n} ${"y".repeat(500)}`).join("\n") }]).split("\n");
+		expect(paste).toHaveLength(61);
+		expect(paste[30]).toBe("  … (40 lines cut) …");
+		expect(paste[0]).toHaveLength("User (t): ".length + 301);
+		expect(paste.at(-1)).toMatch(/^ {2}row 99 y+…$/);
 	});
 });
 

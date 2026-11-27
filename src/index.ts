@@ -4,7 +4,9 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendEvidence, keepPage, lineCount, NOTE_LINES, NOTES, PAGE_LINES, section, split, stamp, widgetLines } from "./goals.js";
+import { liveDescendants } from "./children.js";
+import type { UserMessage } from "./goals.js";
+import { appendEvidence, BEFORE_LINES, dialogue, keepPage, lastLines, lineCount, NOTE_LINES, NOTES, PAGE_LINES, section, split, stamp, widgetLines } from "./goals.js";
 import { decideSignOff, runJudge, signOffTask, stopVerdict } from "./judge.js";
 import { loopTaskId, schedulerCommand, startLoop, stopLoop, wakeSchedule, wakeToken } from "./loop.js";
 import * as prompts from "./prompts.js";
@@ -13,7 +15,7 @@ const STATE = "pi-goals-single-agent";
 /** The user's own messages, kept in the session so the newest survive compaction. */
 const USER_MESSAGE = "pi-goals-user-message";
 const RECENT_MESSAGES = 5;
-const MESSAGE_CHARS = 1500;
+const MESSAGE_CHARS = 4000;
 const LAST_REPLY_CHARS = 8000;
 const STOP_JUDGE_MS = 180_000;
 /** Continuations after one wake from outside (the user, a reminder, a job notice): a mistaken reviewer cannot spin. */
@@ -85,9 +87,16 @@ export default function piGoals(pi: ExtensionAPI): void {
 	const read = () => readFileSync(state.file!, "utf8");
 	const save = (text: string) => writeFileSync(state.file!, text);
 	const judgeModel = (ctx: ExtensionContext) => state.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
-	const recent = (ctx: ExtensionContext) => ctx.sessionManager.getBranch()
-		.flatMap((entry) => entry.type === "custom" && entry.customType === USER_MESSAGE ? [entry.data as { at: string; text: string }] : [])
-		.slice(-RECENT_MESSAGES).map((message) => `${message.at}\n${message.text.split("\n").map((line) => `> ${line}`).join("\n")}`);
+	const said = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "custom" && entry.customType === USER_MESSAGE ? [entry.data as UserMessage] : []);
+	/** For the worker after compaction: its newest exchanges with the user. For a judge: the whole history, within its line budget. */
+	const recent = (ctx: ExtensionContext) => dialogue(said(ctx).slice(-RECENT_MESSAGES));
+	const history = (ctx: ExtensionContext) => dialogue(said(ctx));
+	/** Keep what the user typed, with the end of the agent message they were answering. */
+	function keepMessage(ctx: ExtensionContext, text: string) {
+		const replies = ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "message" && entry.message.role === "assistant" ? [entry.message] : []);
+		const before = lastLines(lastReply(replies.slice(-1)), BEFORE_LINES);
+		pi.appendEntry(USER_MESSAGE, { at: stamp(), text: clip(text, MESSAGE_CHARS), ...(before ? { before } : {}) } satisfies UserMessage);
+	}
 	function pageMoved(): boolean {
 		const now = split(read()).page;
 		if (now === page) return false;
@@ -286,7 +295,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				generation++; reviewRequested = false; resyncDue = false;
 				persist(); refresh(ctx);
 				// Slash commands skip the input hook; keep the user's opening words too.
-				if (idea) pi.appendEntry(USER_MESSAGE, { at: stamp(), text: clip(`/goals new ${idea}`, MESSAGE_CHARS) });
+				if (idea) keepMessage(ctx, `/goals new ${idea}`);
 				// Steer: a busy agent must get the planning rules now, not after it has already drafted.
 				pi.sendUserMessage(prompts.draft(file, idea), { deliverAs: "steer" });
 			} catch (error) { ctx.ui.notify(String(error), "error"); }
@@ -337,7 +346,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		// The user spoke: a stop review in progress gives way to them.
 		continues = 0;
 		stopReview?.abort();
-		if (state.file && event.text.trim()) pi.appendEntry(USER_MESSAGE, { at: stamp(), text: clip(event.text, MESSAGE_CHARS) });
+		if (state.file && event.text.trim()) keepMessage(ctx, event.text);
 	});
 
 	// The whole file and the user's newest messages after Ready, compaction, resume or a page the user edited:
@@ -407,27 +416,33 @@ export default function piGoals(pi: ExtensionAPI): void {
 		// A reply to a continuation that called no tools is the agent's answer; ask again only after a wake from outside.
 		if (continues >= MAX_CONTINUES || (continues > 0 && ran === 0)) return;
 		const current = generation;
-		let note = prompts.idle(state.file);
-		if (state.judge) {
-			const abort = new AbortController();
-			stopReview = abort;
-			ctx.signal?.addEventListener("abort", () => abort.abort(), { once: true });
-			ctx.ui.setStatus("goals", "reviewing the stop …");
-			let reviewed: ReturnType<typeof stopVerdict>;
-			try {
-				const task = prompts.stopTask({ text: read(), path: state.file, last: lastReply(event.context.llmMessages), recent: recent(ctx) });
-				reviewed = stopVerdict(await runJudge(pi.events, { task, schema: prompts.stopSchema, cwd: ctx.cwd, model: judgeModel(ctx) }, abort.signal, { startMs: 15_000, totalMs: STOP_JUDGE_MS }));
-			} finally {
-				if (stopReview === abort) stopReview = undefined;
-				refresh(ctx);
+		// The user's next message, or a pause, cancels the review from here on.
+		const abort = new AbortController();
+		stopReview = abort;
+		ctx.signal?.addEventListener("abort", () => abort.abort(), { once: true });
+		const stale = () => abort.signal.aborted || current !== generation;
+		try {
+			// wassname 2026-11-27: "we used to wait if a subagent or subprocess was running ... and not mind the idles there".
+			// Its completion notice wakes the session, and the stop is reviewed then.
+			try { if (await liveDescendants()) return; }
+			catch (error) { ctx.ui.notify(`pi-goals could not list running subagents (${errorMessage(error)}); reviewing the stop anyway.`, "warning"); }
+			if (stale()) return;
+			let note = prompts.idle(state.file);
+			if (state.judge) {
+				ctx.ui.setStatus("goals", "reviewing the stop …");
+				const task = prompts.stopTask({ text: read(), path: state.file, last: lastReply(event.context.llmMessages), history: history(ctx) });
+				const reviewed = stopVerdict(await runJudge(pi.events, { task, schema: prompts.stopSchema, cwd: ctx.cwd, model: judgeModel(ctx) }, abort.signal, { startMs: 15_000, totalMs: STOP_JUDGE_MS }));
+				if (stale()) return;
+				if ("error" in reviewed) note = `${prompts.stopJudgeFailed(reviewed.error)} ${note}`;
+				else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason), display: true }] };
+				else note = prompts.stopContinue(reviewed.reason, reviewed.next);
 			}
-			if (abort.signal.aborted || current !== generation) return;
-			if ("error" in reviewed) note = `${prompts.stopJudgeFailed(reviewed.error)} ${note}`;
-			else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason), display: true }] };
-			else note = prompts.stopContinue(reviewed.reason, reviewed.next);
+			continues++;
+			return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: note, display: true }], continue: true };
+		} finally {
+			if (stopReview === abort) stopReview = undefined;
+			refresh(ctx);
 		}
-		continues++;
-		return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: note, display: true }], continue: true };
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -474,7 +489,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 			try {
 				const model = judgeModel(ctx);
 				onUpdate?.(result(prompts.judgeProgress(state.judge)));
-				const reviewed = state.judge ? await runJudge(pi.events, { task: signOffTask(text, state.file!, ctx.cwd), schema: prompts.judgeSchema, cwd: ctx.cwd, model }, signal) : undefined;
+				const reviewed = state.judge ? await runJudge(pi.events, { task: signOffTask(text, state.file!, ctx.cwd, history(ctx)), schema: prompts.judgeSchema, cwd: ctx.cwd, model }, signal) : undefined;
 				if (signal?.aborted || current !== generation) throw new Error("Review interrupted or goals session changed; no completion recorded.");
 				if (read() !== text) throw new Error("The goals file changed during review; inspect the new requirements and review again.");
 				const outcome = reviewed ? decideSignOff(reviewed) : { accepted: true, text: prompts.selfVerified, log: "self-verified (sign-off judge disabled)" };

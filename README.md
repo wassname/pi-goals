@@ -44,9 +44,11 @@ From `## Resume here` down is the agent's. It may keep what it likes there, but 
 1. Run `/goals new <idea>`. The agent replies with a proposed goal wording, a result mock-up, and at most four questions.
 2. Correct the wording in chat or in the file, then choose **Ready**.
 3. The agent works. A reminder each hour sends your loop statement, the goal and the agent's note.
-4. Each time the agent stops with the goal open, a fresh read-only judge reads the page, the note and the agent's last message. If a job that the agent named will wake it, or only you can decide, the stop stands. Otherwise the agent is sent back to work with the judge's one finding.
+4. Each time the agent stops with the goal open, a fresh read-only judge reads the page, the note, the agent's last message and what you typed in the session. If a job that the agent named will wake it, or only you can decide, the stop stands. Otherwise the agent is sent back to work with the judge's one finding. While a background subagent of the session is still running there is no review: its result wakes the agent.
 5. When the agent claims the goal is met, a fresh read-only judge checks the evidence before the goal is finished.
 6. You get the final report in the layout of the result mock-up.
+
+The judge does not read the session. Of the conversation it sees only your own messages, each after the last three lines of the agent message it answered; a long history keeps its first and last 1,000 lines.
 
 The judge is optional. With it off, a stop gets one plain prompt to carry on, and completion is recorded as self-verified. A judge's verdict is another reading of the page and the evidence, not a guarantee that the result is correct.
 
@@ -60,6 +62,8 @@ Add to your Pi settings:
 
 <!-- PI/OpenAI: kept the minimum version and the install choice that affects reminders. -->
 Requires Pi 1.2 or newer. Use Node Pi for scheduled reminders.
+
+Messages from other sessions over pi-intercom start a turn by default, and each turn ends in a stop review. To let only replies to this session's own questions start a turn, set `"inboundTrigger": "replies"` in pi-intercom's `config.json`.
 
 A goals file written by version 0.4 or older has several goals, tasks and a log. It does not work with this version: run `/goals clear`, then `/goals new`.
 

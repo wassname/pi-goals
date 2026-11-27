@@ -38,7 +38,7 @@ describe("planning and Ready", () => {
 		await h.hook("agent_settled");
 		expect(h.sent.filter(m => m.text.startsWith("/schedule ")).length).toBe(1);
 		const approved = h.sent.find(m => m.text.startsWith("[pi-goals] The user approved"))!.text;
-		for (const kept of ["# Title\n\n## Goal\n\nA plot. Make the plot.", "score-placeholder", LOOP, "> /goals new plot the data", "> yes, reuse judge_demos.py"]) expect(approved).toContain(kept);
+		for (const kept of ["# Title\n\n## Goal\n\nA plot. Make the plot.", "score-placeholder", LOOP, "): /goals new plot the data", "): yes, reuse judge_demos.py"]) expect(approved).toContain(kept);
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "train.py" } })).toBeUndefined();
 	});
 
@@ -297,12 +297,12 @@ describe("context after compaction and resume", () => {
 		const file = await ready(h);
 		writeFileSync(file, withNote(GOALS, "Fitting the bars."));
 		for (let n = 1; n <= 8; n++) await h.hook("input", { source: "interactive", text: `user message ${n}.` });
-		await h.hook("input", { source: "interactive", text: "x".repeat(4000) });
+		await h.hook("input", { source: "interactive", text: `${"x".repeat(9000)}\nlast line of a long paste` });
 		await h.hook("before_agent_start");
 		await h.hook("session_compact");
 		const retry = await h.hook("context", { messages: [] });
 		const text = retry.messages.at(-1).content[0].text as string;
-		for (const kept of [LOOP, "A plot.", "Make the plot.", "Fitting the bars.", "user message 8.", "user message 5.", "middle cut"]) expect(text).toContain(kept);
+		for (const kept of [LOOP, "A plot.", "Make the plot.", "Fitting the bars.", "user message 8.", "user message 5.", "middle cut", "last line of a long paste"]) expect(text).toContain(kept);
 		expect(text).not.toContain("user message 4.");
 		expect(text.indexOf("user message 8.")).toBeGreaterThan(text.indexOf("## Evidence"));
 		expect(text.length).toBeLessThan(8000);

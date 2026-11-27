@@ -41,12 +41,12 @@ export interface StopVerdict {
 export type JudgeResult = { ok: true; value: unknown; model?: string } | { ok: false; error: string };
 
 /** The sign-off task: the goals file, and the project's AGENTS.md as a separate source. */
-export function signOffTask(text: string, path: string, cwd: string): string {
+export function signOffTask(text: string, path: string, cwd: string, history: string): string {
 	const project: { path: string; text?: string } = { path: resolve(cwd, "AGENTS.md") };
 	try { project.text = readFileSync(project.path, "utf8"); } catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
-	return judgeTask(text, path, project);
+	return judgeTask(text, path, project, history);
 }
 
 export function runJudge(

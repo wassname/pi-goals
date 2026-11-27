@@ -76,6 +76,30 @@ export function appendEvidence(text: string, entry: string): string {
 	return `${text.slice(0, range[1]).trimEnd()}\n- ${entry}\n${rest ? `\n${rest}` : ""}`;
 }
 
+/** One message the user typed, with the last lines of the agent message it answered. */
+export interface UserMessage { at: string; text: string; before?: string }
+/** wassname 2026-11-27: "first 1000 lines of user messages, last 1000 lines ... each user message with a few lines of prev message". */
+const DIALOGUE_LINES = 1000;
+const MESSAGE_LINES = 60;
+const LINE_CHARS = 300;
+export const BEFORE_LINES = 3;
+
+/** The last nonblank lines of a text. */
+export const lastLines = (text: string, count: number) => text.split("\n").filter((line) => line.trim()).slice(-count).join("\n");
+
+/** The user's messages in order, each after the end of the agent message it answered. A long history keeps its first and last 1,000 lines. */
+export function dialogue(messages: UserMessage[]): string {
+	const crop = (line: string) => line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS)}…` : line;
+	const lines = messages.flatMap((message) => {
+		const said = message.text.split("\n").filter((line) => line.trim());
+		const kept = said.length > MESSAGE_LINES ? [...said.slice(0, MESSAGE_LINES / 2), `… (${said.length - MESSAGE_LINES} lines cut) …`, ...said.slice(-MESSAGE_LINES / 2)] : said;
+		const before = message.before ? message.before.split("\n").map((line, index) => `Agent: ${index ? "" : "… "}${crop(line)}`) : [];
+		return [...before, ...kept.map((line, index) => index ? `  ${crop(line)}` : `User (${message.at}): ${crop(line)}`), ""];
+	});
+	const cut = lines.length - 2 * DIALOGUE_LINES;
+	return (cut > 0 ? [...lines.slice(0, DIALOGUE_LINES), `… (${cut} lines of the middle of the conversation cut) …`, ...lines.slice(-DIALOGUE_LINES)] : lines).join("\n").trim();
+}
+
 /** Theme colours for the widget; the default is plain text (RPC mode and tests). */
 export interface WidgetStyle {
 	fg(color: "accent" | "success" | "warning" | "dim", text: string): string;
