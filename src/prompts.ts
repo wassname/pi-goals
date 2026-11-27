@@ -1,4 +1,4 @@
-import { EVIDENCE, NOTE_LINES, NOTES, note, noteIsReadable, PAGE_WORDS, READ_WORDS, section, view } from "./goals.js";
+import { EVIDENCE, NOTE_LINES, NOTES, note, noteIsReadable, PAGE_WORDS, READ_WORDS, section, SLOP, view } from "./goals.js";
 
 // PI/OpenAI: all model-facing text, in conversation order:
 // planning -> Ready -> scheduled loop wake -> compaction/resume resync -> a stop -> CompleteGoal -> judge.
@@ -40,21 +40,17 @@ export const goalsTemplate = `\
 
 <what the user is shown when it works: about 20 lines under 80 columns, a blank line between parts; placeholders, not measurements>
 
-# Appendix
-
-<drafted by the agent from what the user said. The user reads and approves the two sections above, not this>
-
-## Concepts
+## ${SLOP} Concepts
 
 <only if needed: an idea that keeps needing explanation, defined once: plain words, the precise term and its source, pseudocode or a formula where that is more exact. Link the project's AGENTS.md or docs when it is defined there. Delete this section if there is none>
 
-## Jargon
+## ${SLOP} Jargon
 
 <only if needed. Where terms come from, in order, for example: the nearest paper > a textbook > a paper from another field. Then one line per term. Delete this section if there is none>
 
 - <term> (<source>; replaces "<loose word>"): <its meaning in a few plain words>
 
-## Notes
+## ${SLOP} Notes
 
 <the user's preferences and design choices: one per bullet, one line, their words in quotes>
 
@@ -76,7 +72,7 @@ const intentGuidance = "The user's words outrank the agent's summary of them. A 
 // wassname 2026-11-27: the page "was originally meant to be one page I could review and agree on"; the agent's
 // own night plan, appended to it, said both "never wait" and "nothing else runs until he picks".
 // wassname 2026-11-27: "at times I asked it to refresh or update the goals and that looks to have caused a lot of it".
-const pageGuidance = `The file has three parts. ## Goal and ## Result mock-up are what the user read and approved. Under # Appendix, the sections down to ## ${NOTES} were drafted by an agent from the user's words and not reviewed line by line: where they differ from the goal or from what the user typed, those win. All of that, above ## ${NOTES}, is the page: only the user changes it, by editing the file or by /goals replan. Your edit to it is undone, also when the user asks you to update the goals: tell them in a line or two what you would change, and record their words in your note. From ## ${NOTES} down is yours. ${NOTES} is one note that you replace, never append to. The user reads it in a small widget, so write short labelled lines, each under 100 characters and in plain words, not a paragraph: "Saw:" what you just observed; "Now:" the action in progress or next, in one plain sentence the user reads at a glance: no job ids, file names or parameters (those go under "Waiting on:" and "If it fails:"); "If it fails:" what you do then, also when the result is inconclusive; "Waiting on:" the job you started and what wakes you, only while you wait; "Needs you:" a decision that is the user's, with the default you act on meanwhile, only when there is one; "You should know:" a result or a change of course the user would want to hear, only when there is one. The widget shows the user only "Needs you", "You should know" and "Now"; the other lines are for you after a compaction and for the reviewer. Leave out parameter lists, and give a file path only when the user needs to open it. Only its first ${NOTE_LINES} lines are ever sent back to you. ${EVIDENCE} takes one line per result that bears on the goal: what it shows, and a link to the journal or run-report heading that quotes what you observed. Anything else you keep below is not re-sent. Checklists belong in the task tools, results and history in the project's journal.`;
+const pageGuidance = `The file has three parts. ## Goal and ## Result mock-up are what the user read and approved. A heading that starts with "${SLOP}" holds text an agent wrote and the user did not approve: the sections above ## ${NOTES} were drafted from the user's words, where they differ from the goal or from what the user typed, those win. All of that, above ## ${NOTES}, is the page: only the user changes it, by editing the file or by /goals replan. Your edit to it is undone, also when the user asks you to update the goals: tell them in a line or two what you would change, and record their words in your note. From ## ${NOTES} down is yours. ${NOTES} is one note that you replace, never append to. The user reads it in a small widget, so write short labelled lines, each under 100 characters and in plain words, not a paragraph: "Saw:" what you just observed; "Now:" the action in progress or next, in one plain sentence the user reads at a glance: no job ids, file names or parameters (those go under "Waiting on:" and "If it fails:"); "If it fails:" what you do then, also when the result is inconclusive; "Waiting on:" the job you started and what wakes you, only while you wait; "Needs you:" a decision that is the user's, with the default you act on meanwhile, only when there is one; "You should know:" a result or a change of course the user would want to hear, only when there is one. The widget shows the user only "Needs you", "You should know" and "Now"; the other lines are for you after a compaction and for the reviewer. Leave out parameter lists, and give a file path only when the user needs to open it. Only its first ${NOTE_LINES} lines are ever sent back to you. ${EVIDENCE} takes one line per result that bears on the goal: what it shows, and a link to the journal or run-report heading that quotes what you observed. Anything else you keep below is not re-sent. Checklists belong in the task tools, results and history in the project's journal.`;
 
 // wassname 2026-11-11: a bare "the judge" is ambiguous when a project has three, and a full name orients the reader in the project;
 // "the 1056 rows and 35 unit tests and 32 reviews is useless grader pleasing" (spelling corrected).
@@ -110,7 +106,7 @@ Then at most four questions, each with the answer you recommend and its basis (s
 The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again.
 
 Conventions:
-- The page is everything above ## ${NOTES}. ## Goal and ## Result mock-up come first: they are what the user reads and approves, so together they take at most ${READ_WORDS} words. Everything under # Appendix is yours to draft from what the user said, mainly for you and the judge; the user does not review it line by line, so it never overrides the goal. Keep the # Appendix heading. The whole page takes at most ${PAGE_WORDS} words, because it is sent to you again after every compaction. Do not pack lines to fit: cut, or put the detail in a file under slop/ or docs/ and link it. Leave ## ${NOTES} and ## ${EVIDENCE} empty.
+- The page is everything above ## ${NOTES}. ## Goal and ## Result mock-up come first: they are what the user reads and approves, so together they take at most ${READ_WORDS} words. The sections headed "${SLOP} …" are yours to draft from what the user said, mainly for you and the judge; the user does not approve them, so they never override the goal. Keep the "${SLOP}" labels; the user removes one to approve that section. The whole page takes at most ${PAGE_WORDS} words, because it is sent to you again after every compaction. Do not pack lines to fit: cut, or put the detail in a file under slop/ or docs/ and link it. Leave ## ${NOTES} and ## ${EVIDENCE} empty.
 - ## Concepts is for an idea that you or the user keep having to explain, or that must be exact: define it once, in plain words, then the precise term and its source, with pseudocode or a formula where that says it better. When the project's AGENTS.md or docs already define it, link there and do not copy. Delete the section when nothing needs defining.
 - One goal: one outcome. If the user wants several separate outcomes, ask which comes first and note the others as out of scope, for a later /goals new. Stages of one piece of work (brainstorm, pilot, final run) are not goals and are not listed.
 - Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
@@ -181,7 +177,7 @@ export const stopAccepted = (verdict: string, reason: string) => `[pi-goals: sto
 export const reviewerAside = (comment: string, feedback: string) => comment || feedback ? `[pi-goals: for the user only; the agent does not see this]${comment ? `\nStop reviewer's comment: ${comment}` : ""}${feedback ? `\nFeedback on the review itself: ${feedback}` : ""}` : undefined;
 
 export function stopTask(input: { text: string; path: string; last: string; history: string }): string {
-	return `You review one decision. An agent working on the goal below has stopped and will do nothing until something wakes it. You have no memory of its session; that is the point. Judge the stop from the goals file, the agent's last message and the user's own messages. In the file, the user read and approved ## Goal and ## Result mock-up; under # Appendix an agent drafted the rest from the user's words, and from ## ${NOTES} down the working agent wrote. You cannot run anything. Open a file only to check a claim the stop depends on.
+	return `You review one decision. An agent working on the goal below has stopped and will do nothing until something wakes it. You have no memory of its session; that is the point. Judge the stop from the goals file, the agent's last message and the user's own messages. In the file, the user read and approved ## Goal and ## Result mock-up; a heading that starts with "${SLOP}" holds text an agent wrote and the user did not approve. You cannot run anything. Open a file only to check a claim the stop depends on.
 
 Choose one verdict:
 - "wait": the agent named a specific job, subagent, background wait or scheduled check that it started and that will wake it.
@@ -235,7 +231,7 @@ export const judgeProgress = (enabled: boolean) => enabled ? "Sign-off judge ins
 export function judgeTask(text: string, path: string, project: { path: string; text?: string }, history: string): string {
 	return `You are a strictly read-only judge signing off a goal. You cannot run anything; judge by reading files. Do not ask for a verify command to be re-run: the agent must have saved its output.
 
-The agent claims the goal in the goals file below (${path}) is complete. The user read and approved ## Goal and ## Result mock-up. Under # Appendix an agent drafted the sections down to ## ${NOTES} from the user's words, unreviewed; from ## ${NOTES} down the working agent wrote. Where they differ, the goal and what the user typed win. Check, in order:
+The agent claims the goal in the goals file below (${path}) is complete. The user read and approved ## Goal and ## Result mock-up. A heading that starts with "${SLOP}" holds text an agent wrote and the user did not approve. Where they differ, the goal and what the user typed win. Check, in order:
 0. Fidelity: read ## Goal, ## Result mock-up, the user's words under ## Notes and in the session, the separate project AGENTS.md content and the references first. The user's words outrank the agent's summary. If the method changed, check that it still delivers the user's intended outcome, not merely a score. Reject a substitution; it can be a useful finding without completing the goal.
 1. Evidence exists: an empty or placeholder ## ${EVIDENCE} is a reject.
 2. Each evidence item says what it shows and names its source with a quote of what was observed, either in the item or under the heading it links to in a file you open.

@@ -34,19 +34,18 @@ One Markdown file per goal, in `.pi/goals/`.
 ```md
 # <title>
 
-## Goal            one paragraph, in your words: what you want and how you judge it
-## Result mock-up  what you will be shown when it works
+## Goal                  one paragraph, in your words: what you want and how you judge it
+## Result mock-up        what you will be shown when it works
 
-# Appendix         drafted by the agent from what you said; you need not read it
-## Concepts        optional: an idea that keeps needing explanation, defined once
-## Jargon          optional: where terms come from (paper > textbook > other field), one line per term
-## Notes           your preferences and design choices, one line each
+## Slop: Concepts        optional: an idea that keeps needing explanation, defined once
+## Slop: Jargon          optional: where terms come from (paper > textbook > other field), one per line
+## Slop: Notes           your preferences and design choices, one line each
 
-## Resume here     the agent's one note: short labelled lines (Saw, Now, If it fails, Needs you)
-## Evidence        one line per result, with a link
+## Slop: Resume here     the agent's one note: short labelled lines (Saw, Now, If it fails, Needs you)
+## Slop: Evidence        one line per result, with a link
 ```
 
-`## Goal` and `## Result mock-up` are what you read and approve. Under `# Appendix` the agent drafts the rest from what you said, for itself and the judge; the judges are told that the goal and your own messages win where the appendix differs. Everything above `## Resume here` is **the page**. You approve it at Ready, and after that only you change it: edit the file, or run `/goals replan` to have the agent draft a change for your approval. An edit by the agent to the page is undone. The agent is shown your edits at its next turn.
+`## Goal` and `## Result mock-up` are what you read and approve. A heading that starts with `Slop:` holds text the agent wrote and you did not approve. The label stays on the section when it is quoted alone, so an agent or judge reading only that section still sees it. Remove the label to approve a section. The agent and the judges are told that the goal and your own messages win over a `Slop:` section. Everything above `## Resume here` is **the page**. You approve it at Ready, and after that only you change it: edit the file, or run `/goals replan` to have the agent draft a change for your approval. An edit by the agent to the page is undone. The agent is shown your edits at its next turn.
 
 From `## Resume here` down is the agent's. It may keep what it likes there, but only the first 15 lines of its note and the newest evidence lines are sent back to it. Checklists belong in the task tools and results in the project's journal.
 

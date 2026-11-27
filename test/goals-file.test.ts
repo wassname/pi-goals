@@ -45,14 +45,15 @@ describe("the page and the agent's notes", () => {
 	it("the template is a valid page that fits the one-page limit", () => {
 		expect(wordCount(split(goalsTemplate).page)).toBeLessThan(350);
 		expect(section(goalsTemplate, "Loop statement")).toBeUndefined();
-		// What the user approves comes before the appendix heading, and ends there.
-		expect(section(goalsTemplate, "Result mock-up")).not.toContain("Appendix");
-		expect(goalsTemplate.indexOf("# Appendix")).toBeGreaterThan(goalsTemplate.indexOf("## Result mock-up"));
-		expect(goalsTemplate.indexOf("# Appendix")).toBeLessThan(goalsTemplate.indexOf("## Concepts"));
+		// Every heading after the two the user approves is labelled as agent-written; lookups ignore the label.
+		const headings = goalsTemplate.split("\n").filter((line) => line.startsWith("## "));
+		expect(headings.slice(0, 2)).toEqual(["## Goal", "## Result mock-up"]);
+		for (const heading of headings.slice(2)) expect(heading).toMatch(/^## Slop: /);
+		expect(section("## Slop: Notes\n\n- x\n", "Notes")).toBe("- x");
 		expect(title(goalsTemplate)).toBe("<short title>");
 		for (const name of ["Goal", "Result mock-up", "Concepts", "Jargon", "Notes", "Resume here", "Evidence"]) expect(section(goalsTemplate, name)).toBeDefined();
 		expect(goalsTemplate.indexOf("## Goal")).toBeLessThan(goalsTemplate.indexOf("## Result mock-up"));
-		expect(goalsTemplate.indexOf("## Result mock-up")).toBeLessThan(goalsTemplate.indexOf("## Notes"));
+		expect(goalsTemplate.indexOf("## Result mock-up")).toBeLessThan(goalsTemplate.indexOf("## Slop: Notes"));
 	});
 
 	it("re-sends the page, the first lines of the note and the newest evidence, and none of the rest of the appendix", () => {
@@ -62,7 +63,7 @@ describe("the page and the agent's notes", () => {
 		const sent = view(text);
 		for (const kept of ["A plot. Make the plot.", "step 14", "3 more lines are not sent", "5 earlier lines are in the file", "result 24", "result 5"]) expect(sent).toContain(kept);
 		expect(sent).not.toMatch(/step 15|result 4\n|OVERNIGHT|until he picks/);
-		expect(view(GOALS)).toContain("## Resume here");
+		expect(view(GOALS)).toContain("## Slop: Resume here");
 	});
 });
 

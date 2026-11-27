@@ -4,9 +4,12 @@ import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Heading, Nodes, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
-/** The agent writes from this ## heading down; everything above it is the page the user approved. */
-export const NOTES = "Resume here";
-export const EVIDENCE = "Evidence";
+/** A heading that starts with "Slop:" holds text an agent wrote that the user did not approve (wassname's label, as in
+ * slop/ for agent work). Lookups ignore it, so a file without the labels still reads, and the user can remove it to approve a section. */
+export const SLOP = "Slop:";
+/** The agent writes from this ## heading down; everything above it is the page. */
+export const NOTES = `${SLOP} Resume here`;
+export const EVIDENCE = `${SLOP} Evidence`;
 /** Limits in words: a line limit was met by packing lines (first real page, 2026-11-27).
  * wassname: "the main stuff is ok. notes I don't read and is for the AI". So the part he reads, ## Goal and ## Result mock-up,
  * has its own limit, and the whole page a looser one: it is re-sent to the agent after every compaction. */
@@ -24,7 +27,8 @@ const parse = (text: string): Root => fromMarkdown(text);
 const rootHeadings = (root: Root) => root.children.filter((node): node is Heading => node.type === "heading");
 /** Heading text as written (keeps `code` marks). */
 const headingName = (text: string, heading: Heading) => heading.children.length ? text.slice(from(heading.children[0]), to(heading.children[heading.children.length - 1])).trim() : "";
-const named = (text: string, root: Root, name: string) => rootHeadings(root).find((heading) => heading.depth === 2 && headingName(text, heading).toLowerCase() === name.toLowerCase());
+const bare = (name: string) => name.replace(/^slop:\s*/i, "").toLowerCase();
+const named = (text: string, root: Root, name: string) => rootHeadings(root).find((heading) => heading.depth === 2 && bare(headingName(text, heading)) === bare(name));
 
 function sectionRange(text: string, root: Root, name: string): [number, number] | undefined {
 	const heading = named(text, root, name);
