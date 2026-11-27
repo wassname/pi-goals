@@ -43,13 +43,18 @@ export const goalsTemplate = `\
 
 <only if needed: an idea that keeps needing explanation, defined once: plain words, the precise term and its source, pseudocode or a formula where that is more exact. Link the project's AGENTS.md or docs when it is defined there. Delete this section if there is none>
 
+## Jargon
+
+<only if needed. Where terms come from, in order, for example: the nearest paper > a textbook > a paper from another field. Then one line per term. Delete this section if there is none>
+
+- <term> (<source>; replaces "<loose word>"): <its meaning in a few plain words>
+
 ## Notes
 
 <the user's preferences and design choices: one per bullet, one line, their words in quotes>
 
 - references: <code, data or plots to reuse>
 - could look done but is not: <the subtle failure, and the observation that rules it out>
-- terms: <the paper or textbook whose terms are used, if it matters>
 - resources: <credentials, compute and limits, and how each was checked>
 - out of scope: <what the user ruled out, or a second outcome kept for a later goal>
 - ideas: <for a search: candidates to try, the user's first; a starting point, not a list to finish>
@@ -110,7 +115,7 @@ Conventions:
 - Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
 - ## Notes, further down, holds the user's preferences and design choices: one per bullet, one line, the user's words in quotes with spelling corrected. Not a record of the conversation. It covers the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; what is out of scope. Never put your own proposal or inference in quotes.
 - The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can, and note it.
-- Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once, with the source: "metastable state (from Ostrow; you said 'equi stable')". A term the user has not used gets its plain meaning the first time.
+- Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once, with the source: "metastable state (from Ostrow; you said 'equi stable')". A term the user has not used gets its plain meaning the first time. ## Jargon records this so that you both use the same words: the sources in order of preference (for example the nearest paper > a textbook > a paper from another field), then one line per term. Delete the section when the goal needs no special terms.
 - ${intentGuidance}
 - Reports and questions to the user: ${reportGuidance}
 

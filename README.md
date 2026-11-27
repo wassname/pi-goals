@@ -37,6 +37,7 @@ One Markdown file per goal, in `.pi/goals/`.
 ## Goal            one paragraph, in your words: what you want and how you judge it
 ## Result mock-up  what you will be shown when it works
 ## Concepts        optional: an idea that keeps needing explanation, defined once
+## Jargon          optional: where terms come from (paper > textbook > other field), one line per term
 ## Notes           your preferences and design choices, one line each
 ## Loop statement  your standing instructions, sent with every reminder
 
