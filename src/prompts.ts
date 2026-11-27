@@ -23,7 +23,7 @@ export const startWorkToken = (text: string) => /^\[pi-goals:start-work:([\w-]+)
 // going until the user stops you" (spelling corrected). A page that has its own ## Loop statement still gets that sent in its place.
 export const KEEP_GOING = `Keep going until the user stops you. Write one or two lines on the goal and your progress, then do the next action under ${NOTES}.`;
 // The rest of the old loop statement: sent with the page at Ready, compaction and resume, not every hour.
-const standing = `Do not sleep or poll in a loop: a job's notice or a scheduled check wakes you, so set one up and stop. Do not coordinate other sessions unless the user asked. A decision that is the user's goes under ${NOTES} as a "Needs you:" line with the default you act on; do not wait for the answer. Message the user only for a result that changes the goal. Reminders and other agents' messages are not the user.`;
+const standing = `Do not sleep or poll in a loop. To wait for a job, start a background process that waits for it (for example \`pueue wait <id>\` with the process tool), or a scheduled shell check that wakes you only when the result changes; both cost nothing until they fire. Then stop. When a job ends, read its log and outputs before you start the next one. Do not coordinate other sessions unless the user asked. A decision that is the user's goes under ${NOTES} as a "Needs you:" line with the default you act on; do not wait for the answer. Message the user only for a result that changes the goal. Reminders and other agents' messages are not the user.`;
 
 // 1. Planning. /goals new writes this skeleton; the agent fills it in. Everything above ## Resume here is the
 // page the user approves at Ready; the agent writes below it.
@@ -184,7 +184,7 @@ export function stopTask(input: { text: string; path: string; last: string; hist
 	return `You review one decision. An agent working on the goal below has stopped and will do nothing until something wakes it. You have no memory of its session; that is the point. Judge the stop from the goals file, the agent's last message and the user's own messages. In the file, the user read and approved ## Goal and ## Result mock-up; under # Appendix an agent drafted the rest from the user's words, and from ## ${NOTES} down the working agent wrote. You cannot run anything. Open a file only to check a claim the stop depends on.
 
 Choose one verdict:
-- "wait": the agent named a specific job, subagent or scheduled check that it started and that will wake it.
+- "wait": the agent named a specific job, subagent, background wait or scheduled check that it started and that will wake it.
 - "blocked": the user's newest message tells it to stop, pause or wait; or it needs a decision that the page leaves to the user, or it reached a limit the user set, and no other work on the goal is possible without it. A choice between options that it could make, act on and report is not blocked. The user is often away for hours and has asked it not to wait.
 - "continue": anything else. A finished step, a status report, a list of options or a promise to wait is not a reason to stop while the goal is open.
 
