@@ -20,7 +20,21 @@
 
 The September stock-scheduler design already asked for roughly **50 lines above `## Log`**, excluding User voice. The one-page intent was there; the file still doubled as a task list and history. From that rewrite to the Nov 25 snapshot, source grew by **495** nonblank lines: `index.ts` +220, `goals.ts` +181, prompts +71, scheduler integration +17, judge +6. This counts where code grew, not which additions caused session drift.
 
-Local architecture tags (not releases): `arch/markdown-plan` (`d97b532`), `arch/one-goal-parser-light` (`c0f80b8`), `arch/settle-auto-continue` (`f09d443`), `arch/visible-supervision` (`b0759fe`), `arch/selective-stop-review` (`149d27e`), `arch/stock-scheduler` (`0ca344d`), and `arch/goals-as-task-list` (`608080e`).
+### Architecture tags
+
+Dates are the tagged commits' dates. These are history markers, not releases. **Retired** means the execution design was removed from main; the commits are still readable.
+
+| Tag | Status |
+|---|---|
+| `arch/2026-06-15-plan-md-signoff-judge` | Historical: original Markdown plan and sign-off. |
+| `arch/2026-07-03-one-goal-md-signoff-judge` | Historical: smallest one-goal reference. |
+| `arch/2026-09-01-retired-private-timer-idle-check` | Retired: opt-in idle continuation with its own timer. |
+| `arch/2026-09-09-retired-two-session-supervisor-worker` | Retired: persistent supervisor and separate worker session. |
+| `arch/2026-09-20-retired-two-session-selective-stop-review` | Retired as an execution design; selective review is reusable without a supervisor session. |
+| `arch/2026-09-24-one-agent-stock-scheduler-fresh-judge` | Basis of main: one worker, stock reminders, fresh completion judge. |
+| `arch/2026-10-09-goals-md-replaces-task-tool` | Still on main: the goals file doubles as the task list. |
+
+The [Sep 23 review](https://github.com/wassname/pi-goals/commit/3f88ab4) records a failure of the separate supervisor as a reference judge. The [Oct 5 merge](https://github.com/wassname/pi-goals/commit/d06505f) moved main to the one-agent design.
 
 ## Peer packages
 
