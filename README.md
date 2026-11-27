@@ -7,7 +7,7 @@ A Pi extension for work that takes more than one conversation. You and the agent
 <!-- PI/Claude: rendered by widgetLines(); collapsed, then expanded. -->
 ```
 ● goal working · 1 needs you · click to expand
-  "we want to find metastable states where the model self steers ... and show that they ste[0m…[0m
+  "we want to find metastable states where the model self steers ... and show that they ste…
   ? Needs you: map at layer 16 or 20? I use 16, your method, until you say.
   → Now: rerunning the search at layer 16 with 40 steps (job 1623).
 
