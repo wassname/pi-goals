@@ -2,9 +2,32 @@
 
 <!-- PI/OpenAI: source comparison, 2026-11-27. -->
 
-A goal loop makes two different decisions: **when to give the worker another turn**, and **what evidence is enough to stop**. Codex gives the same worker another turn at idle and has it audit its own work. Claude Code checks the transcript at the stop boundary with a small model. Hermes usually checks just the last reply plus live background state, and can require a shell command to pass before judging. `pi-goals` gives periodic reminders and asks a fresh agent to inspect artifacts only when the worker claims completion.
+`pi-goals` checks completion only when the worker asks for sign-off. If the worker drifts or stops without asking, the reviewer never sees that stop. The next scheduled reminder can restart work, but it does not diagnose why the worker stopped.
 
-Here, a *Ralph-style loop* means an outer loop that gives the worker another turn without the user typing “continue.” A strict fresh-context Ralph loop also starts each iteration in a new worker session. None of the four above routinely restarts the worker with fresh context; a fresh **judge** is a separate choice. This is a source comparison, not a benchmark of reliability or cost.
+Codex starts another turn at idle and asks the same worker to verify its work. The source does not tell us how often it stops correctly. Claude Code checks the transcript when the worker stops. Hermes judges the last reply and can see running jobs, but its judge cannot inspect the repository.
+
+## At a glance
+
+A wake gives the worker another turn. A completion check decides whether the requested outcome was achieved. Only the Ralph example below starts a new **worker** session each iteration.
+
+| Design | When work resumes | Who checks completion, and what they see | When it stops or waits |
+|---|---|---|---|
+| [Codex](#codex-continue-at-idle-audit-in-the-working-session) | Thread becomes idle | Same worker inspects current files and runs checks | Completion claim, verified blocker, user pause, budget or error |
+| [Claude Code](#claude-code-a-session-scoped-stop-hook) | Stop hook says keep going | Small fast model reads the transcript; no tools | Met or impossible clears the goal; live jobs defer the check |
+| [Hermes](#hermes-a-bounded-same-session-loop-with-a-short-judge-input) | After an eligible turn, if the judge says continue | Configurable model reads the last reply and job state; optional shell command checks separately | Done, blocked, or budget; parks on live jobs or a delay |
+| [Our `pi-goals`](#pi-goals-scheduled-reminders-independent-sign-off) | Hourly reminder or a job result | On `CompleteGoal`, a fresh child reads the plan and cited files | Human pause or final sign-off; no review at ordinary idle stops |
+| [`pi-goal-x`](#pi-alternatives) | After Pi finishes settling a run | Optional fresh auditor inspects goal, tasks and workspace | Audit approval, pause or configured limits; can stop repeated tool-free runs |
+| [`pi-aim`](#pi-alternatives) | At Pi's pre-idle check | Separate call on completion claim; reads tool evidence, cannot open files | Approval, blocker, Esc or repeated tool-free runs |
+| [`pi-codex-goal`](#pi-alternatives) | At idle; a result can wake a waiting goal | Same worker inspects files and runs checks | Waits for a named job result; a blocker requires explicit resume |
+| [`pi-supervisor`](#results-outside-goal-names) | Supervisor redirects at idle; can also steer mid-run | Separate call sees transcript context; no repo inspection | Supervisor can stop after repeated attempts, even with minor work left |
+| [`todo-enforcer`](#results-outside-goal-names) | Idle with unfinished tasks; timer can recheck | Task state; no independent completion check by default | No qualifying open tasks or a configured stop condition |
+| [Ralph loop](#results-outside-goal-names) | Fresh worker starts the next work item | Worker reports the iteration result against the saved checklist | Explicit wait, completion, or a loop limit, depending on the variant |
+
+### Recommendation for `pi-goals`
+
+Keep the artifact reviewer for sign-off. First check a few sessions where work stopped too early: did the worker lose the goal, stop with useful work available, or wait for a real dependency? If idle stops are the common failure, try one immediate continuation when an approved goal is active, no user input is queued, and no known dependency is pending. Let job results wake the worker and keep the hourly reminder as a fallback. Stop automatic retries when they yield no new evidence; leave the goal open. Compare this with the existing loop before adding a supervisor call at every stop.
+
+This comparison describes source behavior, not measured reliability or cost.
 
 ## Codex: continue at idle, audit in the working session
 
@@ -53,7 +76,16 @@ The review/event names below are Pi hooks, not Claude Code Stop hooks. The final
 | [`pi-verified-goal`](https://github.com/jkeskikangas/pi-verified-goal) | `agent_before_settle` after queued user input. Optional user-set shell check gates a fresh read-only Pi child on completion; it sees objective, untrusted work summary, verify output and workspace diff. Default worker model, configurable. Rejects leave work open, three rejections block, auditor failure pauses; separate idle/turn/time/token bounds. | [Worker and auditor prompts](https://github.com/jkeskikangas/pi-verified-goal/blob/007a39c0aad5bba0f2f2fcd5eaf3b92111ed40e3/src/prompts.ts) |
 | [`@rahulmutt/pi-ralph`](https://github.com/rahulmutt/pi-ralph) | Fresh worker session per iteration, reuses the user's prompt file; durable progress/logs under `.ralph/`. Stops at iteration limit (three by default), or gracefully after the current pass on `/ralph stop`. No judge. | [Prompt-file delivery](https://github.com/rahulmutt/pi-ralph/blob/da2692b9d66a4361f091c79e0639c074d48df3ac/extensions/index.ts) |
 
-The earlier [size survey](architecture-history.md#peer-packages) missed `Michaelliv/pi-goal`, `pi-goal-x`, `@narumitw/pi-goal`, and `pi-goal-list-loop-audit`, among others. This pass used the [Pi gallery](https://pi.dev/packages?name=goal), npm keyword searches (`goal`, `ralph`) and GitHub name/description searches, not an exhaustive listing. Other leads, not audited here: [`@nicknisi/pi-orchestrate`](https://github.com/nicknisi/pi-extensions/tree/main/packages/orchestrate), which pairs `/goal` and `/loop`; [`@pi-unipi/long-horizon`](https://github.com/Neuron-Mr-White/unipi), which includes goal and Ralph modes; and [`@tduyng/pi-goal`](https://www.npmjs.com/package/@tduyng/pi-goal), which advertises timed and self-paced loops.
+### Results outside `/goal` names
+
+Searched the [Pi gallery](https://pi.dev/packages?name=task), npm and GitHub for goal, aim, tasks, todo, milestone, mission, objective, loop, Ralph, autoresearch, long-running, long-horizon, continuation, supervisor and related terms. A direct peer must retain an objective or task set and use its state to decide whether to continue. Task widgets, manual resume, generic timers and provider retries alone do not qualify. The list keeps examples that differ in how they continue or stop, rather than counting every fork.
+
+- [pi-supervisor](https://github.com/tintinweb/pi-supervisor/blob/63dff13346afa39fe4e6f22001d2a5b7ee60ba8a/src/engine.ts) reviews at idle and can steer the worker back. This is the closest new reference for catching stops before `CompleteGoal`.
+- [todo-enforcer](https://github.com/buihongduc132/todo-enforcer/blob/3c9853d1a9ce86c0436c65f89d8410312b02116a/src/index.ts#L656) continues when tasks are still open. A checked box does not prove the outcome. [pi-task-supervisor](https://github.com/YungeG/pi-task-supervisor/blob/4cc8c0f95f93b1442a8bff2dde167aab2b64a770/README.md#closed-loop-and-evidence) adds an advisor and records actual tool results for acceptance.
+- [pi-until-done](https://github.com/srinitude/pi-until-done/blob/4153586aadb79446b981e249f9a0edd40aef3ee2/README.md) runs a verification command and gives cited evidence to a separate completion judge. [UniPi long-horizon](https://github.com/Neuron-Mr-White/UniPi/blob/527f1654644cece2a4770961e649f60a94a1af8a/packages/long-horizon/README.md) offers separate goal and Ralph modes.
+- [edxeth/pi-ralph-loop](https://github.com/edxeth/pi-ralph-loop/blob/108823f8d1e2089fec1f7202ca3a8905d12df574/README.md) starts a fresh session for each work item. [pi-autoresearch](https://github.com/davebcn87/pi-autoresearch/blob/04b8a50dac7efe80ffc91648bd00ed9b022e24c2/README.md) keeps or reverts each experiment using a metric and optional correctness checks. Both are useful comparisons for long runs, but their stop rules serve different work.
+
+The GitHub snapshot below covers the initial comparison, not every extension found by the broader search.
 
 ## What the prompts emphasize
 
