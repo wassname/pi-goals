@@ -322,7 +322,7 @@ describe("widget rendering", () => {
 		expect(h.ctx.status).toBe("goal working · 1 needs you");
 	});
 
-	it("a click or Pi's ctrl+o (tools expanded) flips the widget between the first line of the note and all of it", async () => {
+	it("a click or Pi's ctrl+o (tools expanded) flips the widget between the Now line and the lines meant for the user", async () => {
 		const h = setup({ choices: ["Ready"] });
 		h.ctx.mode = "tui";
 		const file = await ready(h);
@@ -330,7 +330,7 @@ describe("widget rendering", () => {
 		await h.hook("session_start");
 		const widget = h.ctx.widget(undefined, { fg: (_color: string, s: string) => s });
 		const collapsed = ["● goal working · .pi/goals/sess-v1.md · click to expand", "  A plot. Make the plot.", "  → Fitting the bars."];
-		const expanded = ["● goal working · click to collapse", `  ${file}`, "  A plot. Make the plot.", "", "  Fitting the bars.", "  If it fails: rerun at 40 steps."];
+		const expanded = ["● goal working · click to collapse", `  ${file}`, "  A plot. Make the plot.", "", "  Fitting the bars."];
 		expect(widget.render(100)).toEqual(collapsed);
 		expect(widget.handleMouse({ type: "move", button: "none" })).toBeUndefined();
 		expect(widget.handleMouse({ type: "click", button: "left" })).toEqual({ handled: true });

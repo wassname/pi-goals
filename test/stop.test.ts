@@ -42,8 +42,10 @@ describe("stop review", () => {
 		expect(out.continue).toBeUndefined();
 		expect(out.entries).toHaveLength(1);
 		expect(out.entries[0].content).toContain(`accepted this stop (${kind}): Job 1623`);
-		// A smaller risk the judge noticed reaches the agent even when the stop stands.
-		expect(out.entries[0].content).toMatch(/Also check: The demo runs on a spectrum direction/);
+		// A smaller risk the judge noticed goes to the user and the session file, not to the agent.
+		expect(out.entries[0].content).not.toMatch(/spectrum direction/);
+		expect(h.notes.join("\n")).toMatch(/not the agent\): The demo runs on a spectrum direction/);
+		expect(h.ctx.sessionManager.getEntries().filter((e: any) => e.customType === "pi-goals-judge-notes").map((e: any) => e.data.comment)).toEqual(["The demo runs on a spectrum direction before the planted-state check."]);
 	});
 
 	it("keeps going while the agent acts, stops asking once it answers without tools, and starts again after a wake from outside", async () => {

@@ -97,11 +97,12 @@ describe("dialogue", () => {
 });
 
 describe("widget", () => {
-	it("shows the status, the goal as written, and the note's Now line; expanded, the goal wrapped and every line of the note", () => {
+	it("shows the status, the goal as written, and the note's Now line; expanded, the goal wrapped and the lines meant for the user", () => {
 		expect(widgetLines(GOALS, "working")).toEqual(["● goal working · click to expand", "  A plot. Make the plot."]);
 		const text = withNote(GOALS, "Saw: the fit converged in 12 steps.\nNow: drawing the bars.\nIf it fails: rerun at 40 steps.");
 		expect(widgetLines(text, "working")).toEqual(["● goal working · click to expand", "  A plot. Make the plot.", "  → Now: drawing the bars."]);
-		expect(widgetLines(text, "accepted", 100, { expanded: true })).toEqual(["● goal accepted · click to collapse", "  A plot. Make the plot.", "", "  Saw: the fit converged in 12 steps.", "  Now: drawing the bars.", "  If it fails: rerun at 40 steps."]);
+		expect(widgetLines(text, "accepted", 100, { expanded: true })).toEqual(["● goal accepted · click to collapse", "  A plot. Make the plot.", "", "  Now: drawing the bars."]);
+		// Saw and If it fails are for the agent; the user sees what needs them, what they should know, and Now.
 		const asking = withNote(GOALS, "Saw: two candidate axes.\nNow: mapping at layer 16.\nNeeds you: layer 16 or 20 for the map? I use 16 until you say.\nYou should know: the first search did not converge.");
 		expect(widgetLines(asking, "working")).toEqual(["● goal working · 1 needs you · click to expand", "  A plot. Make the plot.", "  ? Needs you: layer 16 or 20 for the map? I use 16 until you say.", "  → Now: mapping at layer 16."]);
 		const painted = widgetLines(asking, "working", 100, { expanded: true, style: { fg: (color: string, s: string) => `<${color}>${s}</>` } });

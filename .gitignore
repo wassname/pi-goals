@@ -8,3 +8,4 @@ docs/reviews/err.txt
 /slop/*
 !/slop/plans/
 /tests/tdd/
+/docs/human_journal.md

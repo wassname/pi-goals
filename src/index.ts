@@ -13,6 +13,7 @@ import * as prompts from "./prompts.js";
 
 const STATE = "pi-goals-single-agent";
 /** The user's own messages, kept in the session so the newest survive compaction. */
+const JUDGE_NOTES = "pi-goals-judge-notes";
 const USER_MESSAGE = "pi-goals-user-message";
 const RECENT_MESSAGES = 5;
 const MESSAGE_CHARS = 4000;
@@ -154,6 +155,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 	let toolCalls = 0;
 	let stopReview: AbortController | undefined;
 	const persist = () => pi.appendEntry(STATE, { ...state });
+	// A judge's comment to the user and its feedback on the review itself: kept in the session file, never sent to the agent.
+	const keepFeedback = (review: string, feedback = "", comment = "") => { if (feedback.trim() || comment.trim()) pi.appendEntry(JUDGE_NOTES, { at: stamp(), review, comment: comment.trim(), feedback: feedback.trim() }); };
 	const read = () => readFileSync(state.file!, "utf8");
 	const save = (text: string) => writeFileSync(state.file!, text);
 	const judgeModel = (ctx: ExtensionContext) => state.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
@@ -511,9 +514,13 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const task = prompts.stopTask({ text: read(), path: state.file, last: lastReply(event.context.llmMessages), history: history(ctx) });
 				const reviewed = stopVerdict(await runJudge(pi.events, { task, schema: prompts.stopSchema, cwd: ctx.cwd, model: judgeModel(ctx) }, abort.signal, { startMs: 15_000, totalMs: STOP_JUDGE_MS }));
 				if (stale()) return;
+				if (!("error" in reviewed)) {
+					keepFeedback("stop", reviewed.feedback, reviewed.comment);
+					if (reviewed.comment.trim()) ctx.ui.notify(prompts.reviewerComment(reviewed.comment.trim()), "info");
+				}
 				if ("error" in reviewed) note = `${prompts.stopJudgeFailed(reviewed.error)} ${note}`;
-				else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason, reviewed.comment), display: true }] };
-				else note = prompts.stopContinue(reviewed.reason, reviewed.next, reviewed.comment);
+				else if (reviewed.verdict !== "continue") return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: prompts.stopAccepted(reviewed.verdict, reviewed.reason), display: true }] };
+				else note = prompts.stopContinue(reviewed.reason, reviewed.next);
 			}
 			continues++;
 			return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: note, display: true }], continue: true };
@@ -570,6 +577,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const reviewed = state.judge ? await runJudge(pi.events, { task: signOffTask(text, state.file!, ctx.cwd, history(ctx)), schema: prompts.judgeSchema, cwd: ctx.cwd, model }, signal) : undefined;
 				if (signal?.aborted || current !== generation) throw new Error("Review interrupted or goals session changed; no completion recorded.");
 				if (read() !== text) throw new Error("The goals file changed during review; inspect the new requirements and review again.");
+				if (reviewed?.ok) keepFeedback("sign-off", (reviewed.value as { feedback?: string }).feedback);
 				const outcome = reviewed ? decideSignOff(reviewed) : { accepted: true, text: prompts.selfVerified, log: "self-verified (sign-off judge disabled)" };
 				const report = join(ctx.cwd, ".pi/goals/reviews", `${randomUUID()}.json`);
 				mkdirSync(dirname(report), { recursive: true });

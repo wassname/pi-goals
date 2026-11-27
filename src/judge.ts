@@ -37,6 +37,7 @@ export interface StopVerdict {
 	reason: string;
 	next: string;
 	comment: string;
+	feedback?: string;
 }
 /** The structured value a fresh judge returned, not yet checked for shape. */
 export type JudgeResult = { ok: true; value: unknown; model?: string } | { ok: false; error: string };

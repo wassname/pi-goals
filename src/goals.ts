@@ -142,12 +142,13 @@ export function widgetLines(text: string, status: string, width = 100, { expande
 	const asks = noted.filter(starts("needs you:"));
 	const paint = (line: string) => starts("needs you:")(line) ? s.fg("warning", line) : starts("you should know:")(line) ? s.fg("accent", line) : line;
 	const header = `${s.fg(colour, `● goal ${status}`)}${asks.length ? ` · ${s.fg("warning", `${asks.length} need${asks.length === 1 ? "s" : ""} you`)}` : ""}${path && !expanded ? s.fg("dim", ` · ${path.short}`) : ""}${s.fg("dim", ` · click to ${expanded ? "collapse" : "expand"}`)}`;
-	if (!expanded) {
-		const now = noted.find(starts("now:")) ?? noted.find((line) => !asks.includes(line));
-		return [clip(header), clip(`  ${goal}`), ...asks.map((line) => clip(`  ${s.fg("warning", "?")} ${paint(line)}`)), ...(now ? [clip(`  ${s.fg("dim", "→")} ${now}`)] : [])];
-	}
+	// The rest of the note (Saw, Waiting on, If it fails) is for the agent and the judge, not shown here.
+	const now = noted.find(starts("now:")) ?? noted.find((line) => !asks.includes(line));
+	const know = noted.filter(starts("you should know:"));
+	if (!expanded) return [clip(header), clip(`  ${goal}`), ...asks.map((line) => clip(`  ${s.fg("warning", "?")} ${paint(line)}`)), ...(now ? [clip(`  ${s.fg("dim", "→")} ${now}`)] : [])];
 	const told = wrap(goal, "");
-	return [clip(header), ...(path ? [s.fg("dim", `  ${path.full}`)] : []), ...told.slice(0, WIDGET_GOAL_LINES), ...(told.length > WIDGET_GOAL_LINES ? [s.fg("dim", "  …")] : []), ...(noted.length ? [""] : []), ...noted.flatMap((line) => wrap(paint(line), "  "))];
+	const shown = [...asks, ...know, ...(now ? [now] : [])];
+	return [clip(header), ...(path ? [s.fg("dim", `  ${path.full}`)] : []), ...told.slice(0, WIDGET_GOAL_LINES), ...(told.length > WIDGET_GOAL_LINES ? [s.fg("dim", "  …")] : []), ...(shown.length ? [""] : []), ...shown.flatMap((line) => wrap(paint(line), "  "))];
 }
 
 /** Local time: agents write notes from the local clock they see. */
