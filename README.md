@@ -82,7 +82,6 @@ A goals file written by version 0.4 or older has several goals, tasks and a log.
 /goals replan          reopen an approved page so the agent can draft a change
 /goals pause           stop reminders and stop reviews; keep the goals file
 /goals resume          resume a paused or finished goal
-/goals retry           retry failed reminder creation
 /goals clear           stop reminders and detach the goals file
 /goals judge off|on|<provider/model>
 ```

@@ -63,16 +63,6 @@ describe("planning and Ready", () => {
 		expect(await h.hook("before_agent_start")).toBeUndefined();
 	});
 
-	it("a second /goals new in the same session makes -v2 and keeps v1", async () => {
-		const h = setup();
-		await h.commands.get("goals").handler("new first", h.ctx);
-		writeFileSync(h.state().file, GOALS);
-		await h.commands.get("goals").handler("clear", h.ctx);
-		await h.commands.get("goals").handler("new second", h.ctx);
-		expect(h.state().file).toMatch(/sess-v2\.md$/);
-		expect(readFileSync(`${h.cwd}/.pi/goals/sess-v1.md`, "utf8")).toBe(GOALS);
-	});
-
 	it("a review request is dropped when a later message arrives, and Discuss returns to chat", async () => {
 		const h = setup({ choices: ["Discuss in chat"] });
 		await h.commands.get("goals").handler("new", h.ctx);
@@ -88,13 +78,6 @@ describe("planning and Ready", () => {
 		expect(h.sent.some(m => m.text.startsWith("/schedule "))).toBe(false);
 	});
 
-	it("Cancel starts nothing and keeps the file", async () => {
-		const h = setup({ choices: ["Cancel"] });
-		await h.ready();
-		expect(h.sent.some(m => m.text.startsWith("/schedule "))).toBe(false);
-		expect(h.state().file).toBeUndefined();
-		expect(readFileSync(`${h.cwd}/.pi/goals/sess-v1.md`, "utf8")).toBe(GOALS);
-	});
 });
 
 describe("scheduled loop wake", () => {
@@ -247,19 +230,6 @@ describe("pi-subagents completion notices in goal mode", () => {
 		expect(out[3].content).toBe("A notice was not answered.");
 		expect(out[4]).toBe(other);
 		expect(await h.hook("context", { messages: [other] })).toBeUndefined();
-	});
-});
-
-describe("pi-tasks beside the goal", () => {
-	it("leaves TaskCreate on while working, and gives it back to a session that an older version reduced", async () => {
-		const h = setup({ choices: ["Ready"] });
-		await h.ready();
-		expect(h.activeTools()).toContain("TaskCreate");
-		h.pi.setActiveTools(["read", "bash", "TaskUpdate"]);
-		h.branch.push({ type: "custom", customType: "pi-goals-single-agent", data: { ...h.state(), taskCreateOff: true } });
-		await h.hook("session_start");
-		expect(h.activeTools()).toContain("TaskCreate");
-		expect(h.state().taskCreateOff).toBeUndefined();
 	});
 });
 

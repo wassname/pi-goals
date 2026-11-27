@@ -5,10 +5,7 @@ import { EVIDENCE, NOTE_LINES, NOTES, note, noteIsReadable, PAGE_WORDS, READ_WOR
 
 export const schedulerUnavailable = "Load exactly one @jl1990/pi-scheduler >=0.6.0: pi install npm:@jl1990/pi-scheduler@0.6.0, then /reload. Use Node Pi if compiled Pi cannot load the scheduler.";
 export const changedPlan = "[pi-goals] The plan changed while the Ready menu was open. Work did not start. Use /goals review to approve the current plan.";
-export const noReminderReceipt = "Check the scheduler's notifications and /schedules all.";
-export const reminderWarning = (reason: string) => `[pi-goals] Scheduler warning: the reminder is not confirmed. Work can continue. ${reason} Use /goals retry to retry the reminder.`;
-export const reminderConfirmed = "[pi-goals] The scheduler confirmed the reminder.";
-export const reminderRetrying = "[pi-goals] Retrying the scheduler. Work can continue; check the goals status and /schedules all.";
+export const reminderWarning = (reason: string) => `[pi-goals] Scheduler warning: no hourly reminder. Work can continue. ${reason} After fixing it, run /goals pause and /goals resume.`;
 export const schedulerWakeFailed = (reason: string) => `[pi-goals] Scheduler warning: skipped a goals reminder. Work can continue. ${reason}`;
 export const schedulerCleanupFailed = (id: string, reason: string) => `[pi-goals] Scheduler warning: could not request removal of ${id}. ${reason} Inspect /schedules all.`;
 export const reviewUnavailable = "Review opens only while drafting a plan.";

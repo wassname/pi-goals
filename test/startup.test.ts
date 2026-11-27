@@ -20,7 +20,7 @@ describe("Ready and scheduler startup", () => {
 		expect(creates(h)).toHaveLength(0);
 		expect(starts(h)).toHaveLength(1);
 		expect(await h.hook("tool_call", { toolName: "write", input: { path: "work.ts" } })).toBeUndefined();
-		expect(h.ctx.status).toContain("scheduler: unconfirmed");
+		expect(h.ctx.status).toContain("no reminders");
 		expect(notices(h)).toEqual([expect.stringContaining("pi install npm:@jl1990/pi-scheduler@0.6.0")]);
 		await h.hook("session_start");
 		await h.hook("agent_settled");
@@ -40,44 +40,13 @@ describe("Ready and scheduler startup", () => {
 		expect(notices(h)).toEqual([expect.stringContaining("Work did not start")]);
 	});
 
-	it("records a missing receipt once; retry recognizes a late receipt, or makes a new reminder but never a second kickoff", async () => {
-		const h = await ready();
-		expect(starts(h)).toHaveLength(1);
-		await h.hook("agent_settled");
-		await h.hook("agent_settled");
-		expect(notices(h)).toEqual([expect.stringContaining("not confirmed")]);
-		const token = h.state().token;
-		await command(h, "retry");
-		expect(h.state().token).not.toBe(token);
-		expect(creates(h)).toHaveLength(2);
-		const prompt = h.schedulerReceipt("retried");
-		await h.hook("agent_settled");
-		expect(await h.wake("retried", prompt)).toMatchObject({ action: "transform" });
-		await command(h, "retry");
-		expect(creates(h)).toHaveLength(2);
-		expect(notices(h).at(-1)).toContain("confirmed the reminder");
-		expect(h.ctx.status).not.toContain("scheduler: unconfirmed");
-		expect(starts(h)).toHaveLength(1);
-	});
-
-	it.each([{ sessionFile: "/foreign.jsonl" }, { enabled: false }, { id: "bad id" }])("does not treat a foreign or malformed receipt as confirmation: %j", async change => {
-		const h = await ready();
-		h.schedulerReceipt("owned");
-		Object.assign(h.branch.at(-1).details.task, change);
-		await h.hook("agent_settled");
-		expect(h.state().phase).toBe("working");
-		expect(notices(h)[0]).toContain("not confirmed");
-		await command(h, "pause");
-		expect(h.sent.some(m => m.text.startsWith("/schedule-remove"))).toBe(false);
-	});
-
-	it.each(["pause", "clear"])("%s drops a queued kickoff and removes a late owned reminder", async action => {
+	it.each(["pause", "clear"])("%s drops a queued kickoff; a wake from the ended reminder is dropped and its task removed", async action => {
 		const h = await ready({ autoStart: false });
 		const marker = h.sent.at(-1)!.text;
 		await command(h, action);
-		h.schedulerReceipt("late");
+		const prompt = h.schedulerReceipt("late");
 		expect(await h.hook("input", { source: "extension", text: marker })).toEqual({ action: "handled" });
-		await h.hook("agent_settled");
+		expect(await h.wake("late", prompt)).toEqual({ action: "handled" });
 		expect(h.sent.at(-1)?.text).toBe("/schedule-remove late");
 		expect(h.state().phase).toBe(action === "pause" ? "paused" : null);
 	});

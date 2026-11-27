@@ -12,10 +12,10 @@ import { decideSignOff, runJudge, signOffTask, stopVerdict } from "./judge.js";
 import * as prompts from "./prompts.js";
 
 const STATE = "pi-goals-single-agent";
-/** The user's own messages, kept in the session so the newest survive compaction. */
 const JUDGE_NOTES = "pi-goals-judge-notes";
 /** Chat messages for the user only: the context hook removes them before the agent sees the conversation. */
 const USER_ONLY = "goals-user-only";
+/** The user's own messages, kept in the session so the newest survive compaction. */
 const USER_MESSAGE = "pi-goals-user-message";
 const RECENT_MESSAGES = 5;
 const MESSAGE_CHARS = 4000;
@@ -26,8 +26,8 @@ const MAX_CONTINUES = 10;
 interface State {
 	owner: string;
 	phase: "planning" | "working" | "paused" | null;
-	retired?: { token: string; source?: string }[];
 	reminderSource?: string;
+	/** The scheduler could not be used, so there are no reminders. */
 	reminderWarning?: boolean;
 	file?: string;
 	/** Identifies this Ready's scheduled wakes; older or foreign wakes are dropped. */
@@ -92,17 +92,12 @@ export function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, token: string
 	pi.sendUserMessage(`/${schedulerCommand(pi, "schedule", source).name} prompt every 1h :: ${marker(token)}`, { expandPromptTemplates: true, deliverAs: "followUp" });
 }
 
-/** Find the scheduler's creation receipt for this session and reminder. */
+/** The scheduler's id for this reminder, from the receipt it records in the session. */
 export function loopTaskId(ctx: ExtensionContext, token: string): string | undefined {
-	const sessionFile = ctx.sessionManager.getSessionFile();
-	let id: string | undefined;
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "custom_message" || entry.customType !== "scheduled-task") continue;
-		const task = (entry.details as { task?: Record<string, unknown> } | undefined)?.task;
-		if (task?.prompt !== marker(token) || task.action !== "prompt" || task.scope !== "session" || !sessionFile || task.sessionFile !== sessionFile) continue;
-		id = typeof task.id === "string" && /^[\w-]+$/.test(task.id) && task.type === "interval" && task.schedule === "1h" && task.enabled === true && task.status === "pending" ? task.id : undefined;
-	}
-	return id;
+	return ctx.sessionManager.getBranch().flatMap((entry) => {
+		const task = entry.type === "custom_message" && entry.customType === "scheduled-task" ? (entry.details as { task?: { id: string; prompt: string } } | undefined)?.task : undefined;
+		return task?.prompt === marker(token) ? [task.id] : [];
+	}).at(-1);
 }
 
 export function stopLoop(pi: ExtensionAPI, id: string, source?: string): void {
@@ -194,7 +189,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 		try {
 			const text = read();
 			const status = state.done ?? state.phase ?? "";
-			const scheduler = state.phase === "working" && state.reminderWarning ? " · scheduler: unconfirmed" : "";
+			const scheduler = state.phase === "working" && state.reminderWarning ? " · no reminders" : "";
 			const asks = state.phase === "planning" ? 0 : needsYou(text).length;
 			const path = { short: relative(ctx.cwd, state.file), full: state.file };
 			// While planning there is no widget, so the status line carries the path.
@@ -219,46 +214,26 @@ export default function piGoals(pi: ExtensionAPI): void {
 		} catch (error) { ctx.ui.setWidget("goals", [String(error)]); }
 	}
 
-	function cleanRetired(ctx: ExtensionContext) {
-		for (const task of state.retired ?? []) {
-			const id = loopTaskId(ctx, task.token);
-			if (!id) continue;
-			try { stopLoop(pi, id, task.source); }
-			catch (error) { ctx.ui.notify(prompts.schedulerCleanupFailed(id, errorMessage(error)), "warning"); continue; }
-			state = { ...state, retired: state.retired!.filter(t => t.token !== task.token) };
-			persist();
-		}
+	/** Remove a reminder of ours from the scheduler. */
+	function removeTask(ctx: ExtensionContext, id: string, source?: string) {
+		try { stopLoop(pi, id, source); }
+		catch (error) { ctx.ui.notify(prompts.schedulerCleanupFailed(id, errorMessage(error)), "warning"); }
 	}
-
-	function retireReminder() {
-		if (!state.token) return;
-		state = { ...state, retired: [...(state.retired ?? []), { token: state.token, source: state.reminderSource }], token: undefined, reminderSource: undefined, reminderWarning: undefined };
+	/** End this Ready's reminder. A wake from it that arrives later is dropped and its task removed then. */
+	function endReminder(ctx: ExtensionContext) {
+		const id = state.token && loopTaskId(ctx, state.token);
+		if (id) removeTask(ctx, id, state.reminderSource);
+		state = { ...state, token: undefined, reminderSource: undefined, reminderWarning: undefined };
 	}
 	function pause(ctx: ExtensionContext) {
 		kickoff = undefined;
 		stopReview?.abort();
-		retireReminder();
+		endReminder(ctx);
 		state = { ...state, phase: "paused" };
-		generation++; persist(); refresh(ctx); cleanRetired(ctx);
+		generation++; persist(); refresh(ctx);
 	}
 
 	const notice = (message: string) => pi.sendMessage({ customType: "goals-startup", content: message, display: true }, { triggerTurn: false });
-	function warnReminder(ctx: ExtensionContext, reason: string) {
-		if (state.reminderWarning) return;
-		state = { ...state, reminderWarning: true }; persist(); refresh(ctx);
-		notice(prompts.reminderWarning(reason));
-	}
-	function checkReminder(ctx: ExtensionContext): boolean {
-		if (state.phase !== "working") return false;
-		try { schedulerCommand(pi, "schedule", state.reminderSource); }
-		catch (error) { warnReminder(ctx, errorMessage(error)); return false; }
-		if (!state.token || !loopTaskId(ctx, state.token)) { warnReminder(ctx, prompts.noReminderReceipt); return false; }
-		if (state.reminderWarning) {
-			state = { ...state, reminderWarning: undefined }; persist(); refresh(ctx);
-			notice(prompts.reminderConfirmed);
-		}
-		return true;
-	}
 	function scheduleReminder(ctx: ExtensionContext) {
 		try {
 			const { source } = schedulerCommand(pi, "schedule");
@@ -266,8 +241,8 @@ export default function piGoals(pi: ExtensionAPI): void {
 			state = { ...state, reminderSource: source }; persist();
 			startLoop(pi, ctx, state.token!, source);
 		} catch (error) {
-			if (state.reminderWarning) notice(prompts.reminderWarning(errorMessage(error)));
-			else warnReminder(ctx, errorMessage(error));
+			state = { ...state, reminderWarning: true }; persist(); refresh(ctx);
+			notice(prompts.reminderWarning(errorMessage(error)));
 		}
 	}
 	function begin(ctx: ExtensionContext, approved = read()) {
@@ -302,23 +277,22 @@ export default function piGoals(pi: ExtensionAPI): void {
 					if (edited !== undefined) save(edited);
 					continue;
 				}
-				if (choice === "Cancel") { state = { ...initial(state.owner), retired: state.retired }; generation++; persist(); refresh(ctx); }
+				if (choice === "Cancel") { state = initial(state.owner); generation++; persist(); refresh(ctx); }
 				return;
 			}
 		} finally { reviewing = false; }
 	}
 
 	pi.registerCommand("goals", {
-		description: "Goals: new [idea], review, replan, pause, resume, retry, clear, judge [off|on|provider/model]",
+		description: "Goals: new [idea], review, replan, pause, resume, clear, judge [off|on|provider/model]",
 		handler: async (args, ctx) => {
 			try {
 				let arg = args.trim();
-				cleanRetired(ctx);
 				if (!arg) arg = (await ctx.ui.select("Goals", state.file ? ["review", "replan", "pause", "resume", "clear"] : ["new"])) ?? "";
 				if (!arg) return;
 				if (arg === "clear") {
 					if (state.token) pause(ctx);
-					state = { ...initial(ctx.sessionManager.getSessionId()), retired: state.retired };
+					state = initial(ctx.sessionManager.getSessionId());
 					generation++; resyncDue = false; reviewRequested = false;
 					persist(); refresh(ctx); return;
 				}
@@ -327,27 +301,13 @@ export default function piGoals(pi: ExtensionAPI): void {
 					if (state.phase !== "working" && state.phase !== "paused") throw new Error("Replan reopens an approved goal page; use /goals new first.");
 					kickoff = undefined;
 					stopReview?.abort();
-					retireReminder();
+					endReminder(ctx);
 					state = { ...state, phase: "planning", done: undefined };
-					generation++; persist(); refresh(ctx); cleanRetired(ctx);
+					generation++; persist(); refresh(ctx);
 					pi.sendUserMessage(prompts.replan(state.file!), { deliverAs: "steer" });
 					return;
 				}
 				if (arg === "resume") { if (state.phase !== "paused") throw new Error("Only a paused or finished goal can resume."); begin(ctx); return; }
-				if (arg === "retry") {
-					if (state.phase !== "working") throw new Error("Only a working goal can retry reminders.");
-					if (kickoff) throw new Error("Retry the scheduler after the Ready prompt is delivered.");
-					if (state.token && loopTaskId(ctx, state.token)) {
-						if (checkReminder(ctx)) ctx.ui.notify(prompts.reminderConfirmed, "info");
-						else ctx.ui.notify(prompts.schedulerUnavailable, "warning");
-						return;
-					}
-					ctx.ui.notify(prompts.reminderRetrying, "info");
-					const reminderWarning = state.reminderWarning;
-					retireReminder();
-					state = { ...state, token: randomUUID(), reminderWarning }; persist();
-					scheduleReminder(ctx); return;
-				}
 				if (arg === "review") {
 					if (state.phase !== "planning") ctx.ui.notify(prompts.reviewUnavailable, "info");
 					else await review(ctx);
@@ -358,7 +318,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 					state = { ...state, judge: value !== "off", model: ["", "on", "off"].includes(value) ? undefined : value };
 					persist(); ctx.ui.notify(`Judge ${state.judge ? state.model ?? "uses the session model" : "disabled: completion is self-verification, and a stop is not reviewed"}.`, "info"); return;
 				}
-				if (arg !== "new" && !arg.startsWith("new ")) throw new Error("Use /goals new [idea], review, replan, pause, resume, retry, clear, or judge.");
+				if (arg !== "new" && !arg.startsWith("new ")) throw new Error("Use /goals new [idea], review, replan, pause, resume, clear, or judge.");
 				if (state.file) throw new Error("Clear the current goal before starting a new one; the file is preserved.");
 				const idea = arg.slice(3).trim();
 				const dir = join(ctx.cwd, ".pi/goals");
@@ -400,8 +360,6 @@ export default function piGoals(pi: ExtensionAPI): void {
 		if (event.message.role === "user") reviewRequested = false;
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
-		cleanRetired(ctx);
-		if (!kickoff) checkReminder(ctx);
 		if (!reviewRequested) return;
 		reviewRequested = false;
 		try { await review(ctx); } catch (error) { ctx.ui.notify(String(error), "error"); }
@@ -417,7 +375,11 @@ export default function piGoals(pi: ExtensionAPI): void {
 			}
 			const token = wakeToken(event.text);
 			if (!token) return;
-			if (token !== state.token || state.phase !== "working") { cleanRetired(ctx); return handled; }
+			// A wake from an ended reminder: drop it, and remove its task, named in the wake itself.
+			if (token !== state.token || state.phase !== "working") {
+				try { removeTask(ctx, wakeSchedule(event.text).id); } catch (error) { notice(prompts.schedulerWakeFailed(errorMessage(error))); }
+				return handled;
+			}
 			continues = 0;
 			try { return { action: "transform" as const, text: prompts.loopPrompt(read(), state.file!, wakeSchedule(event.text)) }; }
 			catch (error) { notice(prompts.schedulerWakeFailed(errorMessage(error))); return handled; }
@@ -539,30 +501,22 @@ export default function piGoals(pi: ExtensionAPI): void {
 		generation++; reviewRequested = false; kickoff = undefined;
 		stopReview?.abort();
 		const last = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === STATE).at(-1);
-		const saved = last?.type === "custom" ? last.data as State & { taskCreateOff?: boolean } : undefined;
+		const saved = last?.type === "custom" ? last.data as State : undefined;
 		state = saved?.owner === ctx.sessionManager.getSessionId() ? saved : initial(ctx.sessionManager.getSessionId());
 		// A fork has a new session ID, so it does not inherit goals; say so once, then record that this session has none.
 		if (saved?.file && saved.owner !== state.owner) { ctx.ui.notify(prompts.forkNotice(saved.file), "info"); persist(); }
-		// Earlier versions turned TaskCreate off while goals ran, and Pi restores the tool list from the transcript.
-		if (saved?.taskCreateOff && saved.owner === state.owner) {
-			const active = pi.getActiveTools();
-			if (!active.includes("TaskCreate") && pi.getAllTools().some((tool) => tool.name === "TaskCreate")) pi.setActiveTools([...active, "TaskCreate"]);
-			state = { ...state, taskCreateOff: undefined } as State; persist();
-		}
 		try {
 			// A file from before the one-page format (several goals, tasks, a log) cannot be worked: detach it, unchanged.
 			if (state.file && state.phase !== "planning" && section(read(), NOTES) === undefined && section(read(), "Goals") !== undefined) {
 				ctx.ui.notify(prompts.oldFormat(state.file), "warning");
-				retireReminder();
-				state = { ...initial(state.owner), retired: state.retired }; persist();
+				endReminder(ctx);
+				state = initial(state.owner); persist();
 			}
 		} catch (error) { ctx.ui.notify(String(error), "error"); }
 		resyncDue = Boolean(state.file);
 		refresh(ctx);
 		try {
 			if (watched()) page = split(read()).page;
-			cleanRetired(ctx);
-			checkReminder(ctx);
 		} catch (error) { ctx.ui.notify(String(error), "error"); }
 	});
 	pi.on("session_shutdown", async () => { generation++; stopReview?.abort(); });
