@@ -17,7 +17,7 @@
 | Oct 9 | [`608080e`](https://github.com/wassname/pi-goals/commit/608080e) | 700 | Goals file became the task list. Shows tasks at wakes and in the widget; disables `TaskCreate` during goal work. |
 | Nov 7 | [`8f4bac5`](https://github.com/wassname/pi-goals/commit/8f4bac5) | 776 | Shortened wakes to the loop statement, aim, goal status, and open tasks sorted by age. Oct 28 had switched parsing to CommonMark (`30287dd`, 799 lines). |
 | Nov 25 | [`6e8c127`](https://github.com/wassname/pi-goals/commit/6e8c127) | 1,076 | Snapshot after scheduler receipt/retry handling and an expandable task widget. Ready starts work even if reminder setup fails (`9ed41d2`). |
-| Nov 27 | branch `one-page-goal` | 1,015 | One goal on one page that only the user changes; no tasks, Log or Interview in the file. The agent's note below the page is cut to 15 lines when re-sent. A fresh judge reviews each stop (Pi's `agent_before_settle`), without a private timer, unless a background subagent is still running. The judge sees the page, the note, the last message and the user's own messages, not the session. Planning proposes a goal wording and a result mock-up. |
+| Nov 27 | [`53ea69a`](https://github.com/wassname/pi-goals/commit/53ea69a) | 1,015 | One goal on one page that only the user changes; no tasks, Log or Interview in the file. The agent's note below the page is cut to 15 lines when re-sent. A fresh judge reviews each stop (Pi's `agent_before_settle`), without a private timer, unless a background subagent is still running. The judge sees the page, the note, the last message and the user's own messages, not the session. Planning proposes a goal wording and a result mock-up. |
 
 The September stock-scheduler design already asked for roughly **50 lines above `## Log`**, excluding User voice. The one-page intent was there; the file still doubled as a task list and history. From that rewrite to the Nov 25 snapshot, source grew by **495** nonblank lines: `index.ts` +220, `goals.ts` +181, prompts +71, scheduler integration +17, judge +6. This counts where code grew, not which additions caused session drift.
 
@@ -33,8 +33,8 @@ Dates are the tagged commits' dates. These are history markers, not releases. **
 | `arch/2026-09-09-retired-two-session-supervisor-worker` | Retired: persistent supervisor and separate worker session. |
 | `arch/2026-09-20-retired-two-session-selective-stop-review` | Retired as an execution design; selective review is reusable without a supervisor session. |
 | `arch/2026-09-24-one-agent-stock-scheduler-fresh-judge` | Basis of main: one worker, stock reminders, fresh completion judge. |
-| `arch/2026-10-09-goals-md-replaces-task-tool` | On main until `one-page-goal` merges: the goals file doubles as the task list. |
-| `arch/2026-11-27-one-page-goal-stop-judge` | Branch `one-page-goal`: user-owned page, fresh judge at each stop. |
+| `arch/2026-10-09-goals-md-replaces-task-tool` | Retired on Nov 27: the goals file doubled as the task list. |
+| `arch/2026-11-27-one-page-goal-stop-judge` | On main: user-owned page, fresh judge at each stop. |
 
 The [Sep 23 review](https://github.com/wassname/pi-goals/commit/3f88ab4) records a failure of the separate supervisor as a reference judge. The [Oct 5 merge](https://github.com/wassname/pi-goals/commit/d06505f) moved main to the one-agent design.
 
