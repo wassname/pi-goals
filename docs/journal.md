@@ -1,5 +1,7 @@
 # pi-goals journal
 
+See [architecture history](architecture-history.md) for the main designs and source-size comparisons.
+
 ## 2026-11-25 — Ready starts work without waiting for the scheduler
 
 The old startup checked for a scheduler receipt before the scheduler finished saving it. In a disposable Pi session, the valid receipt arrived but the goals stayed `starting`. Separately, a Log-only edit invalidated the old whole-file approval check. [The fix](https://github.com/wassname/pi-goals/commit/9ed41d2) separates plan approval from reminder creation. With Pi 1.5.2 (Node) and scheduler 0.6.0, a forced scheduler write error left work `working` and produced a warning in both the transcript and goals Log. With storage restored, `/goals retry` created a reminder without restarting work. This did not fix the scheduler loading problem on compiled Pi.
