@@ -37,7 +37,7 @@ export const goalsTemplate = `\
 
 ## Result mock-up
 
-<what the user is shown when it works, under 15 lines and 80 columns; placeholders, not measurements>
+<what the user is shown when it works: about 20 lines under 80 columns, a blank line between parts; placeholders, not measurements>
 
 ## Notes
 
@@ -75,6 +75,8 @@ const reportGuidance = "Write to the user as someone who has not followed the se
 // wassname 2026-11-27, the reply he wants: "I propose this goal wording: GOAL: 1 paragraph (maybe some
 // pseudocode). RESULT MOCK UP: ... wdyt? 4 questions"; "and don't ask about the loop"; "the hope is to have the user
 // edit the goal directly so the user can say: no write it like this > this, or: I changed the file, look".
+// wassname 2026-11-27, trying it: "of course not we keep searching until user stops us this is the point of pi-goals"; on a
+// mock-up squeezed into dense lines: "it can have new lines you know".
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. This phase checks that you understand the goal and what its result will look like. It does not plan the work.
 
@@ -86,18 +88,18 @@ I propose this goal wording:
 
 GOAL: one paragraph, in the user's words where you have them: what they want and how they will judge it. Use pseudocode when it says it more exactly. Keep the concrete deliverables they asked for; runs, tests and reports support a goal but do not replace it.
 
-RESULT MOCK-UP: what they would be shown when it works, under 15 lines and 80 columns so it reads in chat without wrapping. A small results table or a short demo excerpt, with a one-line bottom line: what changed and what that means for the goal. Use placeholders or clearly labelled example values, never invented thresholds or measurements. Show how working, not working and unclear results would read.
+RESULT MOCK-UP: what they would be shown when it works: a small results table or a short demo excerpt per part, then a one-line bottom line saying what changed and what that means for the goal. Keep lines under 80 columns so it reads in chat without wrapping, and aim for about 20 lines. Put a blank line between parts; blank lines are free. Never squeeze two things onto one line to save lines. Use placeholders or clearly labelled example values, never invented thresholds or measurements. Show how working, not working and unclear results would read.
 
 wdyt?
 
-Then at most four questions, each with the answer you recommend and its basis (source, quote or guess). Ask only what would change the goal or the result: the outcome, the scope, how it is judged, whose terms to use, spending, publication. Find facts and settle routine choices yourself. Do not ask about the Loop statement: it is the user's default and stays as it is unless they bring it up. Respect requests to skip questions.
+Then at most four questions, each with the answer you recommend and its basis (source, quote or guess). Ask only what would change the goal or the result: the outcome, the scope, how it is judged, whose terms to use, spending, publication. Find facts and settle routine choices yourself. Do not ask about the Loop statement: it is the user's default and stays as it is unless they bring it up. Do not ask whether a search that finds nothing is finished: it is not, and the work goes on to the next idea until the user stops it. Respect requests to skip questions.
 
 The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again.
 
 Conventions:
 - The page is everything above ## ${NOTES}. The user reads all of it before Ready and edits it later, so it must fit one page: at most ${PAGE_LINES} lines. ## Goal and ## Result mock-up come first. Leave ## ${NOTES} and ## ${EVIDENCE} empty.
 - One goal: one outcome. If the user wants several separate outcomes, ask which comes first and note the others as out of scope, for a later /goals new. Stages of one piece of work (brainstorm, pilot, final run) are not goals and are not listed.
-- Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. Do not add a budget or stop rule that turns "nothing found" into done unless the user set one.
+- Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
 - ## Notes, further down, holds design choices and preferences, one line each, the user's words in quotes with spelling corrected: the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; whose terms to use first and second when sources name a thing differently, and words to avoid; what is out of scope. Never put your own proposal or inference in quotes.
 - The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can, and note it.
 - ${intentGuidance}
