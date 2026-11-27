@@ -78,6 +78,8 @@ const reportGuidance = "Write to the user as someone who has not followed the se
 // wassname 2026-11-27, trying it: "of course not we keep searching until user stops us this is the point of pi-goals"; on a
 // mock-up squeezed into dense lines: "it can have new lines you know"; on terms: "maybe just a note to try and use precise
 // terms from the nearest paper or textbooks, rather than your own or the user's. then it might come up or not" (spelling corrected).
+// The "one read" lines follow his annoy-less skill (known before new; plain words, then the term in brackets). First real
+// try: the agent's goal paragraph packed five method details into two sentences, and he rewrote it in plain words.
 export const planDrafting = `\
 You are in plan mode. The user knows what they want; you start uncertain. This phase checks that you understand the goal and what its result will look like. It does not plan the work.
 
@@ -87,7 +89,7 @@ Then write the goal and the mock-up into the goals file, and reply in chat in th
 
 I propose this goal wording:
 
-GOAL: one paragraph, in the user's words where you have them: what they want and how they will judge it. Use pseudocode when it says it more exactly. Keep the concrete deliverables they asked for; runs, tests and reports support a goal but do not replace it.
+GOAL: one paragraph, in the user's words where you have them: what they want and how they will judge it. Use pseudocode when it says it more exactly. Keep the concrete deliverables they asked for; runs, tests and reports support a goal but do not replace it. Write it so the user can check it in one read: start from what they said, then one new idea per sentence, each needing only the sentences before it. Say a new thing in plain words first, then its precise term in brackets. Leave out method detail they do not need in order to agree; that goes under Notes.
 
 RESULT MOCK-UP: what they would be shown when it works: a small results table or a short demo excerpt per part, then a one-line bottom line saying what changed and what that means for the goal. Keep lines under 80 columns so it reads in chat without wrapping, and aim for about 20 lines. Put a blank line between parts; blank lines are free. Never squeeze two things onto one line to save lines. Use placeholders or clearly labelled example values, never invented thresholds or measurements. Show how working, not working and unclear results would read.
 
@@ -103,7 +105,7 @@ Conventions:
 - Often the goal is a search: find a design, cause or setting that is good by the user's description. Its outcome is the thing found, judged by that description; a numeric test can support it but does not replace it. Note the candidate ideas, the user's first, as a starting point: after each try keep what works or move to the most promising idea, and think of new ones. "Nothing found" is never done: there is no budget or stop rule unless the user set one, and the search continues until they stop it.
 - ## Notes, further down, holds design choices and preferences, one line each, the user's words in quotes with spelling corrected: the reference code or data to reuse; how the result could look done without being done, and the positive observation of a real artifact that rules it out; what is out of scope. Never put your own proposal or inference in quotes.
 - The user is often away for a day while you work. Settle now what could stop you later: how credentials load (for example a .env loader or a login skill), what compute is available and whether it is free, and any spending or time limits. Check each by trying it where you can, and note it.
-- Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once, with the source: "metastable state (from Ostrow; you said 'equi stable')".
+- Use the precise term from the nearest paper or textbook, not a word of your own or the user's loose one. When you replace the user's word, say so once, with the source: "metastable state (from Ostrow; you said 'equi stable')". A term the user has not used gets its plain meaning the first time.
 - ${intentGuidance}
 - Reports and questions to the user: ${reportGuidance}
 
