@@ -59,7 +59,7 @@ export const goalsTemplate = `\
 - resources: <credentials, compute and limits, and how each was checked>
 - out of scope: <what the user ruled out, or a second outcome kept for a later goal>
 - ideas: <for a search: candidates to try, the user's first; a starting point, not a list to finish>
-- skills: <skill>: <when, e.g. on each reminder, setting up an experiment, when a job ends, before CompleteGoal, writing to the user>; <skill>: <when>
+- skills: <skill>: <stage>; <skill>: <stage>   (stages: planning, setting up, each reminder, a job ends, a stop, before CompleteGoal, reporting)
 
 ## ${NOTES}
 
@@ -104,12 +104,20 @@ wdyt?
 
 Then at most four questions, each with the answer you recommend and its basis (source, quote or guess). Ask only what would change the goal or the result: the outcome, the scope, how it is judged, spending, publication. Find facts and settle routine choices yourself. Do not ask how to keep working or when to stop: you keep going until the user stops you. Do not ask whether a search that finds nothing is finished: it is not, and the work goes on to the next idea until the user stops it. Respect requests to skip questions.
 
-Skills: read the skills listed in your instructions. The user wrote or chose them, so they say how this user wants work done. Pick the few that fit this goal and tie each to a point in the work: on each reminder, setting up an experiment, when a job ends, when a result looks done, before CompleteGoal, writing to the user. Ask about them as one of the questions, as a short list:
-  Shall I use these skills, for these?
-  - <skill>: on each reminder
-  - <skill>: to set up the experiments
-  - <skill>: to write the README and my reports to you
-Record the answer under ## ${SLOP} Notes as the skills line. Each reminder repeats that line; load each skill at its point.
+Skills: read the skills listed in your instructions. The user wrote or chose them, so they say how this user wants work done. Pick the few that fit this goal and tie each to a stage of the work:
+  planning: writing this goal and its mock-up
+  setting up: the repository, scripts and logging, after Ready
+  each reminder: the hourly wake
+  a job ends: reading its log and outputs
+  a stop: before you stop with the goal open
+  before CompleteGoal: checking that the result is real
+  reporting: the README, notes and messages to the user
+After the questions, and not counted among them, add a numbered list the user can answer by number, for example "skills 1 y 2 n 3 y":
+  SKILLS: use these, at these stages? (answer e.g. "skills 1 y 2 n")
+  1. <skill>: each reminder (I recommend y)
+  2. <skill>: setting up (I recommend y)
+  3. <skill>: reporting (I recommend n: <why>)
+A line the user does not answer takes your recommendation. Record the result under ## ${SLOP} Notes as the skills line. pi-goals repeats that line at each reminder, a sent-back stop and the final report; load each skill at its stage.
 
 The user edits the goal directly. When they quote wording ("no, write it like this"), put their words in verbatim. When they change the file, you are shown the new text: it stands, and you build on it. Never restore your wording over theirs. After each change, show the current GOAL and RESULT MOCK-UP in chat again.
 
@@ -142,8 +150,7 @@ export function readyPrompt(path: string, text: string, recent: string): string 
 export function loopPrompt(text: string, path: string, wake: { id: string; schedule: string }): string {
 	const goal = section(text, "Goal");
 	if (!goal) throw new Error(`${path} needs ## Goal. A goals file from an older version needs /goals clear, then /goals new.`);
-	const skills = (section(text, "Notes") ?? "").split("\n").find((line) => /^\s*-\s*skills:/i.test(line));
-	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nGoal (${path}):\n${goal}\n\n${section(text, "Loop statement") || KEEP_GOING}${skills ? `\nThe user's skills for this goal (load each at its point): ${skills.replace(/^\s*-\s*skills:\s*/i, "")}` : ""}\n\n${NOTES} (your note):\n${note(text) || "(empty: write it now)"}${noteIsReadable(text) ? "" : `\n\n${noteForm}`}`;
+	return `[pi-goals: loop] Automated reminder, not a message from the user. It fires every ${wake.schedule} (scheduled task ${wake.id}); change that with manage_scheduled_task if it is too often or too rare.\n\nGoal (${path}):\n${goal}\n\n${section(text, "Loop statement") || KEEP_GOING}${skillsReminder(text)}\n\n${NOTES} (your note):\n${note(text) || "(empty: write it now)"}${noteIsReadable(text) ? "" : `\n\n${noteForm}`}`;
 }
 
 // wassname 2026-10-27: "the real risk is they get distracted and forget the goal ... the other risk is they keep stopping and saying it's not possible or they are blocked when they are not" (spelling corrected). Wording agreed with wassname; framed as perspective, not rules.
@@ -181,6 +188,11 @@ export const noteTooLong = (lines: number) => `[pi-goals] ## ${NOTES} is ${lines
 // 5. A stop with the goal open. With the sign-off judge off, or when it cannot run, the agent is asked directly.
 export const idle = (path: string) => `[pi-goals: stop] Automated check, not a message from the user. You stopped with the goal open (${path}). If a job, subagent or scheduled check that you started will wake you, name it in one line and stop without calling tools. If you were about to wait for the user, do not: write the question and the default you act on under ## ${NOTES}, then act on it. Otherwise fix what failed or start the next action now, and replace the note.`;
 export const stopJudgeFailed = (error: string) => `The stop reviewer could not run (${error}).`;
+/** The skills line of the notes, which the user agreed at planning, repeated at each stage pi-goals controls. */
+export function skillsReminder(text: string): string {
+	const line = (section(text, "Notes") ?? "").split("\n").find((l) => /^\s*-\s*skills:/i.test(l));
+	return line ? `\nThe user's skills for this goal (load each at its stage): ${line.replace(/^\s*-\s*skills:\s*/i, "")}` : "";
+}
 export const stopContinue = (reason: string, next: string) => `[pi-goals: stop] Automated review, not a message from the user. A fresh reviewer read the goal page, your note and your last message, not your session.\n\nIt found: ${reason}${next ? `\nNext: ${next}` : ""}\n\nIt cannot see what you ran, so it can be wrong about facts. If it is, say why in one line and carry on with your own next action. If it is right, act on it now and replace ## ${NOTES}. Either way do not wait for the user.`;
 export const stopAccepted = (verdict: string, reason: string) => `[pi-goals: stop] The stop reviewer accepted this stop (${verdict}): ${reason}`;
 export const reviewerAside = (comment: string, feedback: string) => comment || feedback ? `[pi-goals: for the user only; the agent does not see this]${comment ? `\nStop reviewer's comment: ${comment}` : ""}${feedback ? `\nFeedback on the review itself: ${feedback}` : ""}` : undefined;

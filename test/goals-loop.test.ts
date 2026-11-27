@@ -140,7 +140,7 @@ describe("scheduled loop wake", () => {
 	it("repeats the skills line of the notes in each reminder", async () => {
 		const h = setup({ choices: ["Ready"] });
 		await ready(h, GOALS.replace("- could look done", "- skills: ml-debug: on each reminder; annoy-less: writing to the user\n- could look done"));
-		expect((await h.wake("t1", h.schedulerReceipt("t1"))).text).toContain("(load each at its point): ml-debug: on each reminder; annoy-less: writing to the user");
+		expect((await h.wake("t1", h.schedulerReceipt("t1"))).text).toContain("(load each at its stage): ml-debug: on each reminder; annoy-less: writing to the user");
 	});
 
 	it("warns and skips a reminder when the file has no ## Goal, without pausing work", async () => {

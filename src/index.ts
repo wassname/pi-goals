@@ -525,7 +525,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				const stop = (content: string) => ({ type: "custom_message" as const, customType: "goals-stop", content, display: true });
 				if ("error" in reviewed) note = `${prompts.stopJudgeFailed(reviewed.error)} ${note}`;
 				else if (reviewed.verdict !== "continue") return { entries: [...entries, stop(prompts.stopAccepted(reviewed.verdict, reviewed.reason))] };
-				else { continues++; return { entries: [...entries, stop(prompts.stopContinue(reviewed.reason, reviewed.next))], continue: true }; }
+				else { continues++; return { entries: [...entries, stop(prompts.stopContinue(reviewed.reason, reviewed.next) + prompts.skillsReminder(read()))], continue: true }; }
 			}
 			continues++;
 			return { entries: [...event.entries, { type: "custom_message" as const, customType: "goals-stop", content: note, display: true }], continue: true };
@@ -591,7 +591,7 @@ export default function piGoals(pi: ExtensionAPI): void {
 				save(appendEvidence(text, `${stamp()} ${outcome.log}; ${relative(ctx.cwd, report)}`));
 				state = { ...state, done: reviewed ? "accepted" : "self-verified" };
 				pause(ctx);
-				return result([outcome.text, relative(ctx.cwd, report), prompts.goalFinished(state.file!, section(text, "Result mock-up"))].join("\n\n"));
+				return result([outcome.text, relative(ctx.cwd, report), prompts.goalFinished(state.file!, section(text, "Result mock-up")) + prompts.skillsReminder(text)].join("\n\n"));
 			} finally { judging = false; }
 		},
 	});
